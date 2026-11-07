@@ -6,8 +6,6 @@ name: Проверка бесплатных моделей
 
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
 
 concurrency:
   group: model-probe

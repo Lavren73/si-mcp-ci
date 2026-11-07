@@ -131,6 +131,22 @@ jobs:
           echo "== файлы отчётов"
           find project/server -name "TEST-*.xml" 2>/dev/null | head -20 || true
 
+      # ТЗ-04: сторож красных — сравнивает список упавших тестов с эталоном из приватного репозитория.
+      # Прогон и так красный (40 известных падений), поэтому важно другое: появились ли НОВЫЕ.
+      - name: Сторож красных (ТЗ-04)
+        if: always()
+        working-directory: project
+        shell: bash
+        run: |
+          set +e
+          python3 server/scripts/сторож-красных.py /tmp/mvn.log \
+            docs/отчёты-проверок/эталон-красных-2026-11-07.txt
+          code=$?
+          if [ "$code" = "0" ]; then echo "Регресса нет: список красных совпал с эталоном."; exit 0; fi
+          if [ "$code" = "2" ]; then echo "::warning::Падений стало меньше — эталон пора обновить."; exit 0; fi
+          echo "::error::Появились НОВЫЕ падения — это регресс."
+          exit 1
+
       - name: Лог Maven
         if: always()
         uses: actions/upload-artifact@v4
