@@ -51,7 +51,10 @@ jobs:
 
       - name: Что собираем
         working-directory: project
-        run: git log -1 --format='коммит: %H%nавтор: %an%nдата: %ad%nтема: %s'
+        # блок-скаляр обязателен: в обычном (незакавыченном) скаляре
+        # конструкция «двоеточие + пробел» делает YAML невалидным
+        run: |
+          git log -1 --format='коммит: %H%nавтор: %an%nдата: %ad%nтема: %s'
 
       - name: JDK 17 (Temurin) + кэш Maven
         uses: actions/setup-java@v4
