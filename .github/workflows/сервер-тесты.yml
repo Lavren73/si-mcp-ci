@@ -63,6 +63,19 @@ jobs:
           java-version: '17'
           cache: maven
 
+      - name: Какой Maven стоит по умолчанию (для протокола)
+        run: mvn -v || true
+
+      # Tycho 4.0.5 несовместим с Maven 4: падает на «No implementation for
+      # MavenTargetLocationFactory was bound». Поэтому версия пинована ровно та,
+      # на которой сборка проверена в песочнице (Maven 3.9.9 + Temurin 17).
+      - name: Maven 3.9.9
+        run: |
+          curl -fsSL https://archive.apache.org/dist/maven/maven-3/3.9.9/binaries/apache-maven-3.9.9-bin.tar.gz -o /tmp/mvn.tgz
+          sudo tar -xzf /tmp/mvn.tgz -C /opt
+          echo "/opt/apache-maven-3.9.9/bin" >> "$GITHUB_PATH"
+          /opt/apache-maven-3.9.9/bin/mvn -v
+
       - name: Компиляция (без тестов)
         working-directory: project/server
         shell: bash
