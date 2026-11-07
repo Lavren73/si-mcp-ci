@@ -115,12 +115,12 @@ jobs:
           set +e
           python3 project/server/scripts/сторож-красных.py /tmp/mvn.log \
             project/docs/отчёты-проверок/эталон-красных-2026-11-07.txt
-          код=$?
-          if [ "$код" -eq 2 ]; then
+          code=$?          # имя переменной только латиницей: bash не принимает кириллицу
+          if [ "$code" -eq 2 ]; then
             echo "::warning::Список красных стал короче — кто-то починил тест, эталон надо обновить"
             exit 0
           fi
-          exit "$код"
+          exit "$code"
 
       - name: Итог по тестам
         if: always()
