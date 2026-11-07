@@ -43,6 +43,12 @@ jobs:
           persist-credentials: false
           fetch-depth: 1
 
+      - name: Экран для SWT (Xvfb)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq xvfb xauth libgtk-3-0 >/dev/null
+          echo "xvfb: $(which xvfb-run)"
+
       - name: Сколько у раннера памяти
         run: |
           echo "процессоров: $(nproc)"
@@ -84,7 +90,7 @@ jobs:
           LC_ALL: C.UTF-8
           MAVEN_OPTS: -Xmx3g
         run: |
-          mvn -B -ntp -Dstyle.color=never -DskipTests compile 2>&1 | tee /tmp/compile.log | tail -40
+          xvfb-run -a mvn -B -ntp -Dstyle.color=never -DskipTests compile 2>&1 | tee /tmp/compile.log | tail -40
           exit "${PIPESTATUS[0]}"
 
       # Код возврата берём из PIPESTATUS: иначе упавший mvn дал бы зелёный шаг,
@@ -97,7 +103,7 @@ jobs:
           LC_ALL: C.UTF-8
           MAVEN_OPTS: -Xmx3g
         run: |
-          mvn -B -ntp -Dstyle.color=never verify 2>&1 | tee /tmp/mvn.log | tail -120
+          xvfb-run -a mvn -B -ntp -Dstyle.color=never verify 2>&1 | tee /tmp/mvn.log | tail -120
           exit "${PIPESTATUS[0]}"
 
       - name: Итог по тестам
