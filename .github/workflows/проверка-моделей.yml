@@ -1,0 +1,89 @@
+name: Проверка бесплатных моделей
+
+# Опыт: доступны ли GitHub Models на раннере без единого платного ключа.
+# Ключ — тот самый GITHUB_TOKEN, который Actions выдаёт сам, с правом models: read.
+# Если работает, живые тесты моделей можно гонять в CI бесплатно и без секретов.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+concurrency:
+  group: model-probe
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  models: read          # ровно то право, которое нужно для GitHub Models
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Каталог моделей
+        run: |
+          set +e
+          curl -s -o /tmp/models.json -w 'каталог: HTTP %{http_code}\n' \
+            "https://models.github.ai/catalog/models" \
+            -H "Authorization: Bearer ${{ github.token }}" \
+            -H 'Accept: application/vnd.github+json'
+          echo "--- первые байты ответа ---"
+          head -c 400 /tmp/models.json
+          echo
+          echo "--- сколько моделей и кто провайдер ---"
+          python3 - <<'PY'
+          import json
+          try:
+              d = json.load(open('/tmp/models.json'))
+          except Exception as e:
+              print('не JSON:', e); raise SystemExit(0)
+          if isinstance(d, dict):
+              print('ответ-объект:', list(d)[:5]); raise SystemExit(0)
+          print('моделей:', len(d))
+          pubs = {}
+          for m in d:
+              pubs[m.get('publisher', '?')] = pubs.get(m.get('publisher', '?'), 0) + 1
+          print('по издателям:', dict(sorted(pubs.items(), key=lambda x: -x[1])[:12]))
+          print('примеры:', [m.get('id') for m in d[:8]])
+          PY
+
+      - name: Вызов модели с инструментом (нужно для MCP-тестов)
+        run: |
+          set +e
+          curl -s -o /tmp/chat.json -w 'chat: HTTP %{http_code}\n' \
+            -X POST "https://models.github.ai/inference/chat/completions" \
+            -H "Authorization: Bearer ${{ github.token }}" \
+            -H 'Content-Type: application/json' \
+            -d '{
+                  "model": "openai/gpt-4o-mini",
+                  "messages": [{"role": "user", "content": "Узнай имя проекта инструментом и назови его."}],
+                  "tools": [{"type": "function", "function": {
+                      "name": "get_project_name",
+                      "description": "Имя текущего проекта 1С",
+                      "parameters": {"type": "object", "properties": {}}}}],
+                  "max_tokens": 100
+                }'
+          echo "--- ответ ---"
+          head -c 1200 /tmp/chat.json
+          echo
+          python3 - <<'PY'
+          import json
+          try:
+              d = json.load(open('/tmp/chat.json'))
+          except Exception as e:
+              print('не JSON:', e); raise SystemExit(0)
+          if 'error' in d:
+              print('ОШИБКА:', str(d['error'])[:300]); raise SystemExit(0)
+          m = d['choices'][0]['message']
+          print('модель:', d.get('model'))
+          print('текст:', (m.get('content') or '')[:200])
+          print('tool_calls:', json.dumps(m.get('tool_calls'), ensure_ascii=False)[:400])
+          print('usage:', d.get('usage'))
+          PY
+
+      - name: Сколько это стоит
+        run: |
+          echo "GitHub Models на бесплатном тарифе: запросы не тарифицируются,"
+          echo "но есть лимиты по частоте и суточному числу запросов для аккаунта."
