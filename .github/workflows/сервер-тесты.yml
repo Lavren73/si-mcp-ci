@@ -62,12 +62,14 @@ jobs:
         run: |
           git log -1 --format='коммит: %H%nавтор: %an%nдата: %ad%nтема: %s'
 
-      - name: JDK 17 (Temurin) + кэш Maven
+      # Кэш ~/.m2 намеренно НЕ включён: в прогоне 42401605284 восстановленный кэш
+      # отдал набор, в котором Maven не нашёл tycho-maven-plugin:4.0.5, и сборка
+      # упала на «Unresolveable build extension». Холодный прогон — 8–9 минут.
+      - name: JDK 17 (Temurin)
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
-          cache: maven
 
       - name: Какой Maven стоит по умолчанию (для протокола)
         run: mvn -v || true
