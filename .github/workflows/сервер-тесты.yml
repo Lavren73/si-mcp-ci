@@ -108,6 +108,20 @@ jobs:
           xvfb-run -a mvn -B -ntp -Dstyle.color=never verify 2>&1 | tee /tmp/mvn.log | tail -120
           exit "${PIPESTATUS[0]}"
 
+      - name: Сторож красных (ТЗ-04)
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          python3 project/server/scripts/сторож-красных.py /tmp/mvn.log \
+            project/docs/отчёты-проверок/эталон-красных-2026-11-07.txt
+          код=$?
+          if [ "$код" -eq 2 ]; then
+            echo "::warning::Список красных стал короче — кто-то починил тест, эталон надо обновить"
+            exit 0
+          fi
+          exit "$код"
+
       - name: Итог по тестам
         if: always()
         shell: bash
