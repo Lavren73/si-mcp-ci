@@ -27,7 +27,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: Lavren73/SI-MCP
-          ref: 1b6e73839475c93de22edc49f444f2742d8a826d
+          ref: 6eb190952eb97f8f606376268392daa444ca9f9c
           ssh-key: ${{ secrets.SI_MCP_DEPLOY_KEY }}
           path: project
           persist-credentials: false
