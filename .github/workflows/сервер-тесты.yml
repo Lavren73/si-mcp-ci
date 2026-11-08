@@ -49,29 +49,30 @@ jobs:
           if [ "$HAS_DEPLOY_KEY" != "true" ] && [ "$HAS_TOKEN" != "true" ]; then
             echo "::error::Нет доступа к Lavren73/SI-MCP. Задайте в ЭТОМ репозитории (si-mcp-ci) один из секретов:"
             echo "  SI_MCP_DEPLOY_KEY — приватный SSH-ключ, публичная половина добавлена deploy key в проект;"
-            echo "  SI_MCP_TOKEN      — PAT с чтением проекта (проще всего, deploy key не нужен)."
+            echo "  SI_MCP_TOKEN      — PAT с чтением проекта (проще всего: одна строка, формат не ломается)."
             echo "Секрет, созданный в репозитории SI-MCP, здесь не виден: workflow выполняется в si-mcp-ci."
             exit 1
           fi
 
-      - name: Исходники SI-MCP по deploy key (SSH)
-        if: env.HAS_DEPLOY_KEY == 'true'
-        uses: actions/checkout@v4
-        with:
-          repository: Lavren73/SI-MCP
-          ref: ${{ inputs.ref || 'agent/obmen-20261102' }}
-          ssh-key: ${{ secrets.SI_MCP_DEPLOY_KEY }}
-          path: project
-          persist-credentials: false
-          fetch-depth: 1
-
+      # Токен идёт первым: одна строка, форматов не ломает. Ключ — запасной путь.
       - name: Исходники SI-MCP по токену (HTTPS)
-        if: env.HAS_DEPLOY_KEY != 'true' && env.HAS_TOKEN == 'true'
+        if: env.HAS_TOKEN == 'true'
         uses: actions/checkout@v4
         with:
           repository: Lavren73/SI-MCP
           ref: ${{ inputs.ref || 'agent/obmen-20261102' }}
           token: ${{ secrets.SI_MCP_TOKEN }}
+          path: project
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Исходники SI-MCP по deploy key (SSH)
+        if: env.HAS_TOKEN != 'true' && env.HAS_DEPLOY_KEY == 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: Lavren73/SI-MCP
+          ref: ${{ inputs.ref || 'agent/obmen-20261102' }}
+          ssh-key: ${{ secrets.SI_MCP_DEPLOY_KEY }}
           path: project
           persist-credentials: false
           fetch-depth: 1
