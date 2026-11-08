@@ -1,5 +1,6 @@
-# №16: установка дистрибутивов владельца в отдельном временном runner для тестов.
-# Никакие архивы и ссылки не публикуются в репозитории; источники задаются secrets.
+# №16, 08.11.2026: установить предоставленные владельцем дистрибутивы и выполнить тесты.
+# Источники дистрибутивов и проект берутся из приватной ветки SI-MCP с deploy key;
+# архивы, идентификаторы источников, ключи и исходники не публикуются как артефакты.
 name: Проверка установки 1С и EDT
 on:
   workflow_dispatch:
@@ -8,23 +9,37 @@ on:
 permissions:
   contents: read
 jobs:
-  install:
+  install-and-test:
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
-    env:
-      EDT_FILE_ID: ${{ secrets.SI_CI_EDT_FILE_ID }}
-      PLATFORM_FILE_ID: ${{ secrets.SI_CI_PLATFORM_FILE_ID }}
+    timeout-minutes: 360
     steps:
-      - name: Проверка источников
+      - name: Исходники и приватные адреса SI-MCP
+        uses: actions/checkout@v4
+        with:
+          repository: Lavren73/SI-MCP
+          ref: agent/16-ci-installer-sources
+          ssh-key: ${{ secrets.SI_MCP_DEPLOY_KEY }}
+          path: project
+          persist-credentials: false
+      - name: Подготовка инструментов и адресов
         shell: bash
         run: |
           set -euo pipefail
-          test -n "$EDT_FILE_ID" || { echo '::error::Не задан секрет SI_CI_EDT_FILE_ID'; exit 1; }
-          test -n "$PLATFORM_FILE_ID" || { echo '::error::Не задан секрет SI_CI_PLATFORM_FILE_ID'; exit 1; }
-          printf 'Ядер: %s\n' "$(nproc)"
+          mapfile -t ids < project/.ci/installer-source-ids.txt
+          test "${#ids[@]}" -eq 2
+          for id in "${ids[@]}"; do
+            [[ "$id" =~ ^[A-Za-z0-9_-]+$ ]] || exit 1
+            echo "::add-mask::$id"
+          done
+          printf 'EDT_FILE_ID=%s\nPLATFORM_FILE_ID=%s\n' "${ids[0]}" "${ids[1]}" >> "$GITHUB_ENV"
+          printf 'CPU: %s\n' "$(nproc)"
           free -h
           df -h "$RUNNER_TEMP"
-      - name: Загрузка и проверка архивов
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq xvfb xauth libgtk-3-0 unzip > /dev/null
+      - name: Скачать и проверить оба архива
+        id: download
+        continue-on-error: true
         shell: bash
         run: |
           set -euo pipefail
@@ -38,7 +53,10 @@ jobs:
           cd "$RUNNER_TEMP/si-ci"
           echo 'b58a3d8aec0bbe5288ac10d37eb97b741bdb5f58eaacade3927f50e438a750d1  edt.tar.gz' | sha256sum -c -
           echo '68313114d6daf454eff2920707360c6a5178c2aea041d043f53767118676c4fd  platform.zip' | sha256sum -c -
-      - name: Установка компонента запуска EDT
+      - name: Установить компонент запуска EDT
+        id: edt
+        if: steps.download.outcome == 'success'
+        continue-on-error: true
         shell: bash
         run: |
           set -euo pipefail
@@ -48,7 +66,10 @@ jobs:
           sudo ./1ce-installer-cli query
           sudo ./1ce-installer-cli install --disable-service-creation
           sudo ./1ce-installer-cli query installed
-      - name: Установка платформы 1С
+      - name: Установить платформу 1С
+        id: platform
+        if: steps.download.outcome == 'success'
+        continue-on-error: true
         shell: bash
         run: |
           set -euo pipefail
@@ -58,10 +79,42 @@ jobs:
           sudo "$RUNNER_TEMP/si-ci/platform/setup-full-8.3.27.2342-x86_64.run" \
             --mode unattended --unattendedmodeui none --installer-language en \
             --enable-components server,server_admin,client_full,ru
-          find /opt/1cv8 -maxdepth 5 -type f \( -name 1cv8 -o -name ragent \) -print
-      - name: Установленные файлы
+          test -d /opt/1cv8
+          find /opt/1cv8 -maxdepth 6 -type f \( -name 1cv8 -o -name ragent \) -print
+      - name: JDK 17 для сборки
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Maven 3.9.9
         shell: bash
         run: |
           set -euo pipefail
-          test -d /opt/1cv8
-          echo 'Инсталляторы завершились без ошибки. Запуск EDT, лицензия и серверная ИБ не проверены.'
+          curl -fsSL --retry 3 https://archive.apache.org/dist/maven/maven-3/3.9.9/binaries/apache-maven-3.9.9-bin.tar.gz -o "$RUNNER_TEMP/mvn.tgz"
+          sudo tar -xzf "$RUNNER_TEMP/mvn.tgz" -C /opt
+          echo '/opt/apache-maven-3.9.9/bin' >> "$GITHUB_PATH"
+          /opt/apache-maven-3.9.9/bin/mvn -version
+      - name: Тесты сервера mvn verify
+        id: server-tests
+        continue-on-error: true
+        working-directory: project/server
+        shell: bash
+        env:
+          LANG: C.UTF-8
+          LC_ALL: C.UTF-8
+          MAVEN_OPTS: -Xmx3g
+        run: |
+          set -o pipefail
+          xvfb-run -a mvn -B -ntp -Dstyle.color=never verify 2>&1 | tee "$RUNNER_TEMP/mvn.log" | tail -120
+      - name: Вердикт
+        if: always()
+        shell: bash
+        env:
+          DOWNLOAD: ${{ steps.download.outcome }}
+          EDT: ${{ steps.edt.outcome }}
+          PLATFORM: ${{ steps.platform.outcome }}
+          TESTS: ${{ steps.server-tests.outcome }}
+        run: |
+          echo "Загрузка: $DOWNLOAD; EDT Start: $EDT; платформа: $PLATFORM; mvn verify: $TESTS"
+          echo 'Лицензия, живая база и запуск полной EDT в этом workflow не проверяются.'
+          [[ "$DOWNLOAD" == success && "$EDT" == success && "$PLATFORM" == success && "$TESTS" == success ]]
