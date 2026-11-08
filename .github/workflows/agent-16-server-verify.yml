@@ -1,0 +1,153 @@
+# Тесты сервера MCP.
+#
+# Публичный «домик»: исходников здесь нет. Код берётся из приватного репозитория
+# по deploy key (только чтение, только SI-MCP). Публичный репозиторий не тратит квоту
+# минут и получает раннер 4 vCPU / 16 ГБ — этого хватает `mvn verify`, который
+# в песочнице участника убивается по памяти (1982 МБ → код 137).
+#
+# Автор схемы: №13 (агент Arena), 07.11.2026. Ловушка PIPESTATUS и кэш ~/.m2 —
+# из наработки №16 (объявление O-100).
+name: Сервер SI-MCP — независимая проверка №16
+
+on:
+  push:
+    branches: [agent/16-server-verify]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: mvn verify (13 модулей, тесты в OSGi)
+    runs-on: ubuntu-24.04       # не ubuntu-latest: он мигрирует на Ubuntu 26
+    timeout-minutes: 60
+
+    steps:
+      - name: Исходники SI-MCP (приватный репозиторий, deploy key)
+        uses: actions/checkout@v4
+        with:
+          repository: Lavren73/SI-MCP
+          ref: 1b6e73839475c93de22edc49f444f2742d8a826d
+          ssh-key: ${{ secrets.SI_MCP_DEPLOY_KEY }}
+          path: project
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Экран для SWT (Xvfb)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq xvfb xauth libgtk-3-0 >/dev/null
+          echo "xvfb: $(which xvfb-run)"
+
+      - name: Сколько у раннера памяти
+        run: |
+          echo "процессоров: $(nproc)"
+          free -m | head -2
+          df -h / | tail -1
+
+      - name: Что собираем
+        working-directory: project
+        # блок-скаляр обязателен: в обычном (незакавыченном) скаляре
+        # конструкция «двоеточие + пробел» делает YAML невалидным
+        run: |
+          git log -1 --format='коммит: %H%nавтор: %an%nдата: %ad%nтема: %s'
+
+      # Кэш ~/.m2 намеренно НЕ включён: в прогоне 42401605284 восстановленный кэш
+      # отдал набор, в котором Maven не нашёл tycho-maven-plugin:4.0.5, и сборка
+      # упала на «Unresolveable build extension». Холодный прогон — 8–9 минут.
+      - name: JDK 17 (Temurin)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Какой Maven стоит по умолчанию (для протокола)
+        run: mvn -v || true
+
+      # Tycho 4.0.5 несовместим с Maven 4: падает на «No implementation for
+      # MavenTargetLocationFactory was bound». Поэтому версия пинована ровно та,
+      # на которой сборка проверена в песочнице (Maven 3.9.9 + Temurin 17).
+      - name: Maven 3.9.9
+        run: |
+          curl -fsSL https://archive.apache.org/dist/maven/maven-3/3.9.9/binaries/apache-maven-3.9.9-bin.tar.gz -o /tmp/mvn.tgz
+          sudo tar -xzf /tmp/mvn.tgz -C /opt
+          echo "/opt/apache-maven-3.9.9/bin" >> "$GITHUB_PATH"
+          /opt/apache-maven-3.9.9/bin/mvn -v
+
+      - name: Компиляция (без тестов)
+        working-directory: project/server
+        shell: bash
+        env:
+          LANG: C.UTF-8
+          LC_ALL: C.UTF-8
+          MAVEN_OPTS: -Xmx3g
+        run: |
+          xvfb-run -a mvn -B -ntp -Dstyle.color=never -DskipTests compile 2>&1 | tee /tmp/compile.log | tail -40
+          exit "${PIPESTATUS[0]}"
+
+      # Код возврата берём из PIPESTATUS: иначе упавший mvn дал бы зелёный шаг,
+      # потому что последняя команда конвейера — tail.
+      - name: Тесты (mvn verify)
+        working-directory: project/server
+        shell: bash
+        env:
+          LANG: C.UTF-8
+          LC_ALL: C.UTF-8
+          MAVEN_OPTS: -Xmx3g
+        run: |
+          set +e
+          xvfb-run -a mvn -B -ntp -Dstyle.color=never verify 2>&1 | tee /tmp/mvn.log | tail -120
+          code="${PIPESTATUS[0]}"
+          echo "MVN_EXIT=$code"
+          echo "$code" > /tmp/mvn-exit.txt
+          exit "$code"
+
+      - name: Сторож красных (ТЗ-04)
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          python3 project/server/scripts/сторож-красных.py /tmp/mvn.log \
+            project/docs/отчёты-проверок/эталон-красных-2026-11-07.txt
+          code=$?          # имя переменной только латиницей: bash не принимает кириллицу
+          if [ "$code" -eq 2 ]; then
+            echo "::warning::Список красных стал короче — кто-то починил тест, эталон надо обновить"
+            exit 0
+          fi
+          exit "$code"
+
+      - name: Итог по тестам
+        if: always()
+        shell: bash
+        run: |
+          echo "== строки отчёта"
+          grep -E "Tests run|BUILD (SUCCESS|FAILURE)|Reactor Summary" /tmp/mvn.log | tail -40 || echo "строк отчёта нет"
+          echo "== отчёты XML и отдельные тесты"
+          python3 - <<'PYXML'
+          import pathlib, xml.etree.ElementTree as E
+          files=list(pathlib.Path('project/server').rglob('TEST-*.xml'))
+          print('XML files:',len(files))
+          for p in files:
+              try:
+                  r=E.parse(p).getroot()
+                  print('SUITE',r.get('name'),'tests',r.get('tests'),'failures',r.get('failures'),'errors',r.get('errors'),'skipped',r.get('skipped'))
+                  for c in r.iter('testcase'):
+                      name=(c.get('classname','')+'.'+c.get('name',''))
+                      if any(w in name.lower() for w in ('token','origin','heavy','port','interfaces','bindall','socket')):
+                          status='failure' if c.find('failure') is not None else 'error' if c.find('error') is not None else 'skipped' if c.find('skipped') is not None else 'pass'
+                          fail=c.find('failure') if c.find('failure') is not None else c.find('error')
+                          print('CASE',status,name, (fail.get('message','').splitlines()[0][:400] if fail is not None else ''))
+              except Exception as e: print('XML_ERROR',p,type(e).__name__,str(e))
+          PYXML
+
+      - name: Лог Maven
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mvn-log
+          path: |
+            /tmp/mvn.log
+            /tmp/compile.log
+            /tmp/mvn-exit.txt
+          retention-days: 1
+          if-no-files-found: ignore
