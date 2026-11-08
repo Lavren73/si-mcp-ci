@@ -64,7 +64,9 @@ jobs:
           tar -xzf "$RUNNER_TEMP/si-ci/edt.tar.gz" -C "$RUNNER_TEMP/si-ci/edt"
           cd "$RUNNER_TEMP/si-ci/edt"
           sudo ./1ce-installer-cli query
-          sudo ./1ce-installer-cli install --disable-service-creation
+          # №16, 08.11.2026: облачная VM не отдаёт частоту CPU; отдельно измерены 4 CPU и 15 ГиБ RAM.
+          # Обходим только аппаратную проверку установщика, подписи не отключаем.
+          sudo ./1ce-installer-cli install --disable-service-creation --ignore-hardware-checks
           sudo ./1ce-installer-cli query installed
       - name: Установить платформу 1С
         id: platform
