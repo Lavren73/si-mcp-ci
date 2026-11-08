@@ -1,0 +1,230 @@
+# №16: проверочная поставка, только из зафиксированного commit. Публичный CI
+# видит только ciphertext; закрытый ключ остаётся за пределами runner.
+name: SI-MCP — собрать и проверить кандидат для владельца
+on:
+  push:
+    branches: [agent/16-delivery-verify]
+permissions:
+  contents: read
+jobs:
+  candidate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    steps:
+      - name: Зафиксированные исходники SI-MCP
+        uses: actions/checkout@v4
+        with:
+          repository: Lavren73/SI-MCP
+          ref: 626a31f3750e8bc0c31df14d7fa954af94c5b589
+          ssh-key: ${{ secrets.SI_MCP_DEPLOY_KEY }}
+          path: project
+          persist-credentials: false
+      - name: Среда
+        run: |
+          set -euo pipefail
+          git -C project log -1 --format='SI-MCP commit: %H'
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq xvfb xauth libgtk-3-0 unzip > /dev/null
+          mkdir -p "$RUNNER_TEMP/si-live"
+      - name: JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Maven 3.9.9
+        run: |
+          set -euo pipefail
+          curl -fsSL --retry 3 https://archive.apache.org/dist/maven/maven-3/3.9.9/binaries/apache-maven-3.9.9-bin.tar.gz -o "$RUNNER_TEMP/mvn.tgz"
+          tar -xzf "$RUNNER_TEMP/mvn.tgz" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/apache-maven-3.9.9/bin" >> "$GITHUB_PATH"
+      - name: Полный mvn verify кандидата
+        id: verify
+        continue-on-error: true
+        working-directory: project/server
+        env:
+          MAVEN_OPTS: -Xmx3g
+          LANG: C.UTF-8
+          LC_ALL: C.UTF-8
+        run: |
+          set +e
+          xvfb-run -a mvn -B -ntp -Dstyle.color=never verify 2>&1 | tee "$RUNNER_TEMP/si-live/verify.log" | tail -120
+          code="${PIPESTATUS[0]}"
+          echo "MVN_VERIFY_EXIT=$code"
+          exit "$code"
+      - name: Построить p2 site без повторного запуска тестов
+        id: package
+        continue-on-error: true
+        working-directory: project/server
+        env:
+          MAVEN_OPTS: -Xmx3g
+          LANG: C.UTF-8
+          LC_ALL: C.UTF-8
+        run: |
+          set -euo pipefail
+          xvfb-run -a mvn -B -ntp -Dstyle.color=never -DskipTests package 2>&1 | tee "$RUNNER_TEMP/si-live/package.log" | tail -100
+          site=$(find repositories/si.edt.mcp.server.repository/target -maxdepth 1 -name 'SI-EDT-*.zip' -type f -print -quit)
+          test -n "$site"
+          cp "$site" "$RUNNER_TEMP/si-live/site.zip"
+          sha256sum "$RUNNER_TEMP/si-live/site.zip"
+      - name: Отпечатки и состав site.zip
+        if: steps.package.outcome == 'success'
+        run: |
+          python3 - <<'PY'
+          import hashlib,io,os,zipfile
+          p=os.environ['RUNNER_TEMP']+'/si-live/site.zip'
+          sha=lambda b:hashlib.sha256(b).hexdigest()
+          with zipfile.ZipFile(p) as site:
+              names=[n for n in site.namelist() if n.startswith('plugins/si.edt.mcp.server_') and n.endswith('.jar')]
+              assert len(names)==1, names
+              blob=site.read(names[0]); print('PLUGIN_JAR_SHA256',sha(blob))
+              with zipfile.ZipFile(io.BytesIO(blob)) as jar:
+                  manifest=jar.read('META-INF/MANIFEST.MF').decode('utf-8').replace('\r\n ','')
+                  print('SnakeYAML mentioned in Bundle-ClassPath:', 'lib/snakeyaml-2.2.jar' in manifest)
+                  inner=jar.read('lib/snakeyaml-2.2.jar'); print('SNAKEYAML_JAR_SHA256',sha(inner))
+                  with zipfile.ZipFile(io.BytesIO(inner)) as dep:
+                      classes=[n for n in dep.namelist() if n.startswith('org/yaml/') and n.endswith('.class')]
+                      print('SNAKEYAML_CLASSES',len(classes),'REPRESENTER', 'org/yaml/snakeyaml/representer/Representer.class' in classes)
+          PY
+      - name: Передать site только зашифрованным артефактом
+        if: steps.package.outcome == 'success'
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/si-live/transfer-public.pem" <<'CERT'
+          -----BEGIN CERTIFICATE-----
+          MIIEPTCCAqWgAwIBAgIUMTl4KzTm2zIhPGFsvv9f03+iqyswDQYJKoZIhvcNAQEL
+          BQAwLjEsMCoGA1UEAwwjU0ktTUNQIHRlbXBvcmFyeSBlbmNyeXB0ZWQgdHJhbnNm
+          ZXIwHhcNMjYxMTA4MTcwODA4WhcNMjYxMTEwMTcwODA4WjAuMSwwKgYDVQQDDCNT
+          SS1NQ1AgdGVtcG9yYXJ5IGVuY3J5cHRlZCB0cmFuc2ZlcjCCAaIwDQYJKoZIhvcN
+          AQEBBQADggGPADCCAYoCggGBAN9YfkHojcIUBRILXSqdSmiVP1G1VuH/DVCbzjle
+          MqM44rjMV7p00pVAzONzZ0A7umDyBQxOCgA22dJuQDU6R7U81sqAP7pBOyzrNz92
+          kIB+UsM8uB4sY7a2dKHdlA+O6q7dAhbRlrlYpiuk5R1IyA+uFd1H7REKDXW9VmHs
+          4XyZXtgNlTX+IGjbhRlCXtWTLgb2osxXL8JUTJPqWpEzr6Rs7AvyQt9WGKO+B+kV
+          ql4WSJ7BfvGoREsZBQfbwWV3dobRRYdQNqROC+pE/5izWQkUMUtZ/E6cdkiBmE4t
+          e1JSyD8eoVtJH/P2eOhCmsAdrcaCUJCnUbVHEik6NUZCSF2wZ7YFaT33ofP5XLL0
+          nbm4/CjQtKq8ZKW0U1N/10Qk7RnWV0CCVS/UTafnmly5fitOZhJA5WAMEG3D6GFh
+          H2k6db2ffpjfrun5/E8C3TVPpb5amD7HHd1Kopb1gjzhNbncuuwckZREKt1U19GL
+          CRyPGWczXbmK+nlxExjiFryY6QIDAQABo1MwUTAdBgNVHQ4EFgQU5h1mFyhaubeb
+          KRWUC506ceIRNsMwHwYDVR0jBBgwFoAU5h1mFyhaubebKRWUC506ceIRNsMwDwYD
+          VR0TAQH/BAUwAwEB/zANBgkqhkiG9w0BAQsFAAOCAYEAAdkwBr/ZPHZcYMe+bKtk
+          9OxlMpqjPczyVVjPPZsSe++FKbottduvWuvf3d6PzIffub+/bjILpbo2dx+VPUvM
+          4iayAcyv6Rvoyeu1sihkCUD0r7oIFMAt9AIpo82c8grptTIV/C9p+DudI+eq3bJg
+          juiACTPTOTApxmgzKeJR2h6RPwo25StdE3OtNpZ0w9GWRuvGGoOqjx1eP/ssbyMx
+          nfE6lwO+K3ouGI6MPKMnwwch6pQBc3IgLz0ZmRJKB+IyXoyxe8yuJBx4tra8fQ79
+          yKoHS8AHo1kWGOh0L9fySr9vdQdOGZmjcPbknKnJuJusaA8KNtk7u9c0oMB7ZyKO
+          IxU4meery4hb6Z3wyKkVKzm6tTebYhfJRrUbfFRC6ZXX+HBJV6GHYD3pj639Vud3
+          lDrZd1kyu0eUHXOkigh/HuO/yF7XgVkELSVrzhChQqM/DSROoV5Fd1n2V0QFcgRY
+          LwpNBcyt0MtX9sxj4nlj9QjxoT272plC5RXoHVvpPXtw
+          -----END CERTIFICATE-----
+          CERT
+          openssl cms -encrypt -binary -aes-256-cbc -in "$RUNNER_TEMP/si-live/site.zip" -outform DER -out "$RUNNER_TEMP/si-live/site.zip.p7m" "$RUNNER_TEMP/si-live/transfer-public.pem"
+          ls -lh "$RUNNER_TEMP/si-live/site.zip.p7m"
+      - name: Зашифрованный архив для владельца
+        if: steps.package.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: si-edt-encrypted-for-owner
+          path: ${{ runner.temp }}/si-live/site.zip.p7m
+          retention-days: 1
+      - name: Тест SnakeYAML на JDK 17
+        id: yaml
+        continue-on-error: true
+        working-directory: project/server
+        env:
+          MAVEN_OPTS: -Xmx3g
+          LANG: C.UTF-8
+          LC_ALL: C.UTF-8
+        run: |
+          set -o pipefail
+          xvfb-run -a mvn -B -ntp -Dstyle.color=never -Dtest=YamlBundleLoadingTest -DfailIfNoTests=false verify 2>&1 | tee "$RUNNER_TEMP/si-live/yaml.log" | tail -100
+      - name: JDK 25 для EDT
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+      - name: Запомнить JDK 25
+        run: echo "EDT_JAVA=$JAVA_HOME" >> "$GITHUB_ENV"
+      - name: Получить Eclipse и установить компоненты EDT 2026.2
+        id: edt
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          curl -fsSL --retry 3 --connect-timeout 20 --max-time 600 https://archive.eclipse.org/eclipse/downloads/drops4/R-4.38-202512010920/eclipse-platform-4.38-linux-gtk-x86_64.tar.gz -o "$RUNNER_TEMP/eclipse.tar.gz"
+          tar -xzf "$RUNNER_TEMP/eclipse.tar.gz" -C "$RUNNER_TEMP"
+          REPOS='https://edt.1c.ru/downloads/releases/ruby/2026.2/,https://download.eclipse.org/releases/2025-12/,https://download.eclipse.org/tools/orbit/downloads/drops/R20211213173813/repository/,https://download.eclipse.org/tools/orbit/simrel/orbit-aggregation/release/4.38.0/'
+          timeout 1800s xvfb-run -a "$RUNNER_TEMP/eclipse/eclipse" -vm "$EDT_JAVA/bin/java" -nosplash -application org.eclipse.equinox.p2.director \
+            -repository "$REPOS" -installIU com._1c.g5.v8.dt.feature.feature.group,com._1c.g5.v8.dt.bp.scheme.feature.feature.group \
+            -destination "$RUNNER_TEMP/eclipse" -p2.os linux -p2.ws gtk -p2.arch x86_64
+      - name: Установить собранный SI-MCP в EDT
+        id: install
+        if: steps.edt.outcome == 'success' && steps.package.outcome == 'success'
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          SITE="$RUNNER_TEMP/si-live/site.zip"
+          echo "Checking installation from exact archived site: $(sha256sum "$SITE")"
+          timeout 900s xvfb-run -a "$RUNNER_TEMP/eclipse/eclipse" -vm "$EDT_JAVA/bin/java" -nosplash -application org.eclipse.equinox.p2.director \
+            -repository "jar:file:$SITE!/,https://edt.1c.ru/downloads/releases/ruby/2026.2/,https://download.eclipse.org/releases/2025-12/,https://download.eclipse.org/tools/orbit/downloads/drops/R20211213173813/repository/,https://download.eclipse.org/tools/orbit/simrel/orbit-aggregation/release/4.38.0/" \
+            -installIU si.edt.mcp.server.feature.feature.group -destination "$RUNNER_TEMP/eclipse" -p2.os linux -p2.ws gtk -p2.arch x86_64
+      - name: Запустить workbench и проверить настоящий MCP
+        id: mcp
+        if: steps.install.outcome == 'success'
+        continue-on-error: true
+        env:
+          PYTHONPATH: ${{ github.workspace }}/project/client
+        run: |
+          set -euo pipefail
+          WS="$RUNNER_TEMP/si-live/edt-workspace"
+          mkdir -p "$WS/.metadata/.plugins/org.eclipse.core.runtime/.settings"
+          printf '%s\n' 'eclipse.preferences.version=1' 'mcpServerAutoStart=true' 'mcpServerPort=12260' 'mcpAuthEnabled=true' 'mcpAuthToken=ci-ephemeral-token' > "$WS/.metadata/.plugins/org.eclipse.core.runtime/.settings/si.edt.mcp.server.prefs"
+          Xvfb :88 -screen 0 1280x800x24 > "$RUNNER_TEMP/si-live/xvfb.log" 2>&1 & xpid=$!
+          export DISPLAY=:88
+          "$RUNNER_TEMP/eclipse/eclipse" -vm "$EDT_JAVA/bin/java" -nosplash -data "$WS" -consoleLog -vmargs -Xmx3g > "$RUNNER_TEMP/si-live/edt.log" 2>&1 & epid=$!
+          trap 'kill "$epid" "$xpid" 2>/dev/null || true; echo "--- EDT console tail ---"; tail -120 "$RUNNER_TEMP/si-live/edt.log" || true; echo "--- workspace log tail ---"; tail -120 "$WS/.metadata/.log" 2>/dev/null || true' EXIT
+          python3 - <<'PY'
+          import socket, time
+          for _ in range(150):
+              try:
+                  with socket.create_connection(('127.0.0.1',12260),timeout=2):
+                      print('MCP port opened on localhost')
+                      break
+              except OSError:
+                  time.sleep(2)
+          else:
+              raise SystemExit('No MCP listener within 300 seconds')
+          import urllib.request, urllib.error
+          req=urllib.request.Request('http://127.0.0.1:12260/mcp',data=b'{}',headers={'Content-Type':'application/json'})
+          try:
+              with urllib.request.urlopen(req,timeout=10) as response: status=response.status
+          except urllib.error.HTTPError as exc: status=exc.code
+          print('Unauthenticated HTTP status:',status)
+          if status != 401: raise SystemExit('Expected authentication refusal')
+          from siagent.mcp import McpClient
+          client=McpClient('http://127.0.0.1:12260/mcp',token='ci-ephemeral-token',timeout=30)
+          try:
+              s=client.initialize()
+              print('initialize:',s.protocol_version,s.server_info)
+              print('ping:',client.ping())
+              tools=client.list_tools()
+              print('tools/list count:',len(tools))
+              names={t.get('name') for t in tools}
+              print('get_edt_version listed:', 'get_edt_version' in names)
+              if 'get_edt_version' not in names: raise SystemExit('Version tool absent from catalog')
+              result=client.call_tool('get_edt_version',{})
+              print('get_edt_version:',result['text'], 'is_error:',result['is_error'])
+              if result['is_error']: raise SystemExit('Version tool returned an error')
+          finally:
+              client.close()
+          PY
+      - name: Вердикт без скрытия ошибок
+        if: always()
+        env:
+          V: ${{ steps.verify.outcome }}
+          B: ${{ steps.package.outcome }}
+          Y: ${{ steps.yaml.outcome }}
+          E: ${{ steps.edt.outcome }}
+          I: ${{ steps.install.outcome }}
+          M: ${{ steps.mcp.outcome }}
+        run: |
+          echo "mvn verify=$V; package without tests=$B; YAML JDK17=$Y; EDT components=$E; exact ZIP installation=$I; MCP=$M"
+          echo 'Это проверочная поставка, не релиз; полноценный продукт EDT/база 1С не проверяются.'
+          [[ "$V" == success && "$B" == success && "$Y" == success && "$E" == success && "$I" == success && "$M" == success ]]
