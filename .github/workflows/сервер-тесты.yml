@@ -31,30 +31,47 @@ jobs:
     name: mvn verify (13 модулей, тесты в OSGi)
     runs-on: ubuntu-24.04       # не ubuntu-latest: он мигрирует на Ubuntu 26
     timeout-minutes: 60
+    # Доступ к приватному проекту можно задать любым из двух секретов ЭТОГО репозитория:
+    # SI_MCP_DEPLOY_KEY (приватный SSH-ключ, к нему нужен deploy key в проекте) либо
+    # SI_MCP_TOKEN (PAT с чтением проекта — проще: ничего больше настраивать не нужно).
+    # Секреты нельзя сравнивать в if:, поэтому заранее считаем только признак «задан/нет».
+    env:
+      HAS_DEPLOY_KEY: ${{ secrets.SI_MCP_DEPLOY_KEY != '' }}
+      HAS_TOKEN: ${{ secrets.SI_MCP_TOKEN != '' }}
 
     steps:
-      # Диагностика №13 (08.11.2026): если секрет пуст, checkout уходит на HTTPS и падает
+      # Диагностика №13 (08.11.2026): если доступа нет, checkout уходит на HTTPS и падает
       # с «repository not found» — сообщение уводит в сторону (кажется, что репозиторий удалён).
-      # Проверяем заранее и говорим ровно то, что случилось: секрета нет в ЭТОМ репозитории.
-      - name: Задан ли ключ доступа к проекту
+      - name: Задан ли доступ к проекту
         shell: bash
-        env:
-          DEPLOY_KEY: ${{ secrets.SI_MCP_DEPLOY_KEY }}
         run: |
-          if [ -z "$DEPLOY_KEY" ]; then
-            echo "::error::Секрет SI_MCP_DEPLOY_KEY не задан в репозитории si-mcp-ci (или пуст)."
-            echo "Он должен лежать здесь: Settings -> Secrets and variables -> Actions -> этот репозиторий."
-            echo "Секрет в репозитории SI-MCP не виден: workflow выполняется в si-mcp-ci."
+          echo "deploy_key: $HAS_DEPLOY_KEY, token: $HAS_TOKEN"
+          if [ "$HAS_DEPLOY_KEY" != "true" ] && [ "$HAS_TOKEN" != "true" ]; then
+            echo "::error::Нет доступа к Lavren73/SI-MCP. Задайте в ЭТОМ репозитории (si-mcp-ci) один из секретов:"
+            echo "  SI_MCP_DEPLOY_KEY — приватный SSH-ключ, публичная половина добавлена deploy key в проект;"
+            echo "  SI_MCP_TOKEN      — PAT с чтением проекта (проще всего, deploy key не нужен)."
+            echo "Секрет, созданный в репозитории SI-MCP, здесь не виден: workflow выполняется в si-mcp-ci."
             exit 1
           fi
-          echo "Ключ доступа задан (длина ${#DEPLOY_KEY} символов)."
 
-      - name: Исходники SI-MCP (приватный репозиторий, deploy key)
+      - name: Исходники SI-MCP по deploy key (SSH)
+        if: env.HAS_DEPLOY_KEY == 'true'
         uses: actions/checkout@v4
         with:
           repository: Lavren73/SI-MCP
           ref: ${{ inputs.ref || 'agent/obmen-20261102' }}
           ssh-key: ${{ secrets.SI_MCP_DEPLOY_KEY }}
+          path: project
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Исходники SI-MCP по токену (HTTPS)
+        if: env.HAS_DEPLOY_KEY != 'true' && env.HAS_TOKEN == 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: Lavren73/SI-MCP
+          ref: ${{ inputs.ref || 'agent/obmen-20261102' }}
+          token: ${{ secrets.SI_MCP_TOKEN }}
           path: project
           persist-credentials: false
           fetch-depth: 1
