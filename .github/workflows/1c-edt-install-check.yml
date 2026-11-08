@@ -1,0 +1,67 @@
+# №16: установка дистрибутивов владельца в отдельном временном runner для тестов.
+# Никакие архивы и ссылки не публикуются в репозитории; источники задаются secrets.
+name: Проверка установки 1С и EDT
+on:
+  workflow_dispatch:
+  push:
+    branches: [agent/16-setup-1c-edt]
+permissions:
+  contents: read
+jobs:
+  install:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      EDT_FILE_ID: ${{ secrets.SI_CI_EDT_FILE_ID }}
+      PLATFORM_FILE_ID: ${{ secrets.SI_CI_PLATFORM_FILE_ID }}
+    steps:
+      - name: Проверка источников
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$EDT_FILE_ID" || { echo '::error::Не задан секрет SI_CI_EDT_FILE_ID'; exit 1; }
+          test -n "$PLATFORM_FILE_ID" || { echo '::error::Не задан секрет SI_CI_PLATFORM_FILE_ID'; exit 1; }
+          printf 'Ядер: %s\n' "$(nproc)"
+          free -h
+          df -h "$RUNNER_TEMP"
+      - name: Загрузка и проверка архивов
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/si-ci"
+          curl -fsSL --retry 3 --connect-timeout 20 --max-time 900 \
+            "https://drive.usercontent.google.com/download?id=${EDT_FILE_ID}&export=download&confirm=t" \
+            -o "$RUNNER_TEMP/si-ci/edt.tar.gz"
+          curl -fsSL --retry 3 --connect-timeout 20 --max-time 900 \
+            "https://drive.usercontent.google.com/download?id=${PLATFORM_FILE_ID}&export=download&confirm=t" \
+            -o "$RUNNER_TEMP/si-ci/platform.zip"
+          cd "$RUNNER_TEMP/si-ci"
+          echo 'b58a3d8aec0bbe5288ac10d37eb97b741bdb5f58eaacade3927f50e438a750d1  edt.tar.gz' | sha256sum -c -
+          echo '68313114d6daf454eff2920707360c6a5178c2aea041d043f53767118676c4fd  platform.zip' | sha256sum -c -
+      - name: Установка компонента запуска EDT
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/si-ci/edt"
+          tar -xzf "$RUNNER_TEMP/si-ci/edt.tar.gz" -C "$RUNNER_TEMP/si-ci/edt"
+          cd "$RUNNER_TEMP/si-ci/edt"
+          sudo ./1ce-installer-cli query
+          sudo ./1ce-installer-cli install --disable-service-creation
+          sudo ./1ce-installer-cli query installed
+      - name: Установка платформы 1С
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/si-ci/platform"
+          unzip -q "$RUNNER_TEMP/si-ci/platform.zip" 'setup-full-8.3.27.2342-x86_64.run' -d "$RUNNER_TEMP/si-ci/platform"
+          chmod +x "$RUNNER_TEMP/si-ci/platform/setup-full-8.3.27.2342-x86_64.run"
+          sudo "$RUNNER_TEMP/si-ci/platform/setup-full-8.3.27.2342-x86_64.run" \
+            --mode unattended --unattendedmodeui none --installer-language en \
+            --enable-components server,server_admin,client_full,ru
+          find /opt/1cv8 -maxdepth 5 -type f \( -name 1cv8 -o -name ragent \) -print
+      - name: Установленные файлы
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -d /opt/1cv8
+          echo 'Инсталляторы завершились без ошибки. Запуск EDT, лицензия и серверная ИБ не проверены.'
