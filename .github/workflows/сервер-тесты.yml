@@ -33,6 +33,22 @@ jobs:
     timeout-minutes: 60
 
     steps:
+      # Диагностика №13 (08.11.2026): если секрет пуст, checkout уходит на HTTPS и падает
+      # с «repository not found» — сообщение уводит в сторону (кажется, что репозиторий удалён).
+      # Проверяем заранее и говорим ровно то, что случилось: секрета нет в ЭТОМ репозитории.
+      - name: Задан ли ключ доступа к проекту
+        shell: bash
+        env:
+          DEPLOY_KEY: ${{ secrets.SI_MCP_DEPLOY_KEY }}
+        run: |
+          if [ -z "$DEPLOY_KEY" ]; then
+            echo "::error::Секрет SI_MCP_DEPLOY_KEY не задан в репозитории si-mcp-ci (или пуст)."
+            echo "Он должен лежать здесь: Settings -> Secrets and variables -> Actions -> этот репозиторий."
+            echo "Секрет в репозитории SI-MCP не виден: workflow выполняется в si-mcp-ci."
+            exit 1
+          fi
+          echo "Ключ доступа задан (длина ${#DEPLOY_KEY} символов)."
+
       - name: Исходники SI-MCP (приватный репозиторий, deploy key)
         uses: actions/checkout@v4
         with:
