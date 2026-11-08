@@ -16,6 +16,17 @@ on:
         description: 'Ветка или SHA в Lavren73/SI-MCP'
         required: true
         default: 'agent/obmen-20261102'
+      # Имя входа латиницей: идентификатор входа GitHub принимает только как
+      # [a-zA-Z_][a-zA-Z0-9_-]*, кириллица даёт «invalid workflow file» целиком.
+      access:
+        description: 'Доступ к проекту: auto (токен, если задан, иначе ключ), token или key'
+        required: false
+        default: 'auto'
+        type: choice
+        options:
+          - auto
+          - token
+          - key
   push:
     branches: [main]
 
@@ -35,9 +46,16 @@ jobs:
     # SI_MCP_DEPLOY_KEY (приватный SSH-ключ, к нему нужен deploy key в проекте) либо
     # SI_MCP_TOKEN (PAT с чтением проекта — проще: ничего больше настраивать не нужно).
     # Секреты нельзя сравнивать в if:, поэтому заранее считаем только признак «задан/нет».
+    #
+    # Вход access нужен, чтобы проверить запасной путь, не отзывая PAT:
+    #   auto  — токен, если он задан, иначе ключ (обычный режим);
+    #   key   — принудительно SSH-ключ (проверка запасного пути);
+    #   token — принудительно PAT.
     env:
       HAS_DEPLOY_KEY: ${{ secrets.SI_MCP_DEPLOY_KEY != '' }}
       HAS_TOKEN: ${{ secrets.SI_MCP_TOKEN != '' }}
+      USE_TOKEN: ${{ inputs.access != 'key' && secrets.SI_MCP_TOKEN != '' }}
+      USE_KEY: ${{ inputs.access != 'token' && secrets.SI_MCP_DEPLOY_KEY != '' && (inputs.access == 'key' || secrets.SI_MCP_TOKEN == '') }}
 
     steps:
       # Диагностика №13 (08.11.2026): если доступа нет, checkout уходит на HTTPS и падает
@@ -45,8 +63,9 @@ jobs:
       - name: Задан ли доступ к проекту
         shell: bash
         run: |
-          echo "deploy_key: $HAS_DEPLOY_KEY, token: $HAS_TOKEN"
-          if [ "$HAS_DEPLOY_KEY" != "true" ] && [ "$HAS_TOKEN" != "true" ]; then
+          echo "секрет с ключом: $HAS_DEPLOY_KEY, секрет с токеном: $HAS_TOKEN, вход access: ${{ inputs.access || 'auto' }}"
+          echo "выбран путь: токен=$USE_TOKEN, ключ=$USE_KEY"
+          if [ "$USE_TOKEN" != "true" ] && [ "$USE_KEY" != "true" ]; then
             echo "::error::Нет доступа к Lavren73/SI-MCP. Задайте в ЭТОМ репозитории (si-mcp-ci) один из секретов:"
             echo "  SI_MCP_DEPLOY_KEY — приватный SSH-ключ, публичная половина добавлена deploy key в проект;"
             echo "  SI_MCP_TOKEN      — PAT с чтением проекта (проще всего: одна строка, формат не ломается)."
@@ -56,7 +75,7 @@ jobs:
 
       # Токен идёт первым: одна строка, форматов не ломает. Ключ — запасной путь.
       - name: Исходники SI-MCP по токену (HTTPS)
-        if: env.HAS_TOKEN == 'true'
+        if: env.USE_TOKEN == 'true'
         uses: actions/checkout@v4
         with:
           repository: Lavren73/SI-MCP
@@ -66,16 +85,102 @@ jobs:
           persist-credentials: false
           fetch-depth: 1
 
+      # Починка №13 (08.11.2026): секрет-ключ повреждается при вставке в окно браузера —
+      # теряются переносы строк (ключ становится одной строкой), появляются буквальные \n
+      # или CRLF от Windows. Прогон 42530363657 упал с `Load key "…": error in libcrypto`:
+      # причина в содержимом секрета, а не в ключе — deploy key в проекте исправен.
+      # Теперь ключ проверяется и, если переносы потерялись, восстанавливается ДО checkout.
+      # Тело ключа в лог не печатается: только длины, отпечаток и вердикт ssh-keygen.
+      - name: Ключ доступа — проверка и восстановление переносов
+        if: env.USE_KEY == 'true'
+        shell: bash
+        env:
+          KEY: ${{ secrets.SI_MCP_DEPLOY_KEY }}
+        run: |
+          set -u
+          f=/tmp/deploy_key
+          printf '%s' "$KEY" > "$f"
+          chmod 600 "$f"
+          echo "секрет: $(wc -c < "$f") байт, переносов строк: $(wc -l < "$f")"
+          python3 - "$f" <<'PY'
+          import subprocess, sys, os
+          f = sys.argv[1]
+          def читается():
+              r = subprocess.run(["ssh-keygen", "-y", "-f", f], capture_output=True, text=True)
+              if r.returncode == 0 and r.stdout.strip():
+                  return True, ""
+              tail = (r.stderr or r.stdout).strip().splitlines()
+              return False, (tail[-1] if tail else "ssh-keygen отказал")
+          def починить(t):
+              правки = []
+              if "\r" in t:
+                  t = t.replace("\r\n", "\n").replace("\r", "\n"); правки.append("CRLF → LF")
+              if "\\n" in t and t.count("\n") < 3:
+                  t = t.replace("\\n", "\n"); правки.append("буквальные \\n → переносы")
+              if t.count("\n") < 2 and "-----BEGIN" in t:
+                  начало = t.index("-----BEGIN"); конец = t.index("-----END") if "-----END" in t else len(t)
+                  шапка = t[начало:t.index("-----", начало + 5) + 5]
+                  тело = "".join(t[начало + len(шапка):конец].split())
+                  хвост = t[конец:].strip() or "-----END OPENSSH PRIVATE KEY-----"
+                  t = "\n".join([шапка] + [тело[i:i+70] for i in range(0, len(тело), 70)] + [хвост])
+                  правки.append("одна строка → шапка, тело по 70, хвост")
+              if not t.endswith("\n"):
+                  t += "\n"; правки.append("перевод строки в конце")
+              return t, правки
+          data = open(f, "rb").read()
+          if not data.strip():
+              print("::error::Секрет SI_MCP_DEPLOY_KEY пуст — в него ничего не записалось. Кладите ключ файлом, не вставкой: gh secret set SI_MCP_DEPLOY_KEY --repo Lavren73/si-mcp-ci < ~/.ssh/si_mcp_deploy")
+              sys.exit(1)
+          ок, причина = читается()
+          if not ок:
+              print("ключ не читается: " + причина)
+              t, правки = починить(data.decode("utf-8", "replace"))
+              if not правки:
+                  print("::error::Переносы строк целы, повреждено тело ключа. Пересоздайте ключ локально: ssh-keygen -t ed25519 -N '' -f ~/.ssh/si_mcp_deploy, затем gh secret set SI_MCP_DEPLOY_KEY --repo Lavren73/si-mcp-ci < ~/.ssh/si_mcp_deploy")
+                  sys.exit(1)
+              open(f, "w").write(t); os.chmod(f, 0o600)
+              print("применены правки: " + ", ".join(правки))
+              ок, причина = читается()
+              if not ок:
+                  print("::error::После правок ключ не читается (" + причина + "). Значение секрета испорчено при вставке — пересоздайте ключ локально и залейте файлом.")
+                  sys.exit(1)
+          r = subprocess.run(["ssh-keygen", "-lf", f], capture_output=True, text=True)
+          print("ключ читается, отпечаток: " + r.stdout.strip())
+          open("/tmp/deploy_key_ok", "w").write("1")
+          PY
+
+      - name: Ключ принят проектом (проверка до checkout)
+        if: env.USE_KEY == 'true'
+        shell: bash
+        run: |
+          set -u
+          export GIT_SSH_COMMAND="ssh -i /tmp/deploy_key -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=accept-new"
+          if timeout 60 git ls-remote git@github.com:Lavren73/SI-MCP.git HEAD > /tmp/ls.txt 2>&1; then
+            echo "проект ответил: $(head -1 /tmp/ls.txt)"
+          else
+            echo "::error::Ключ читается, но проект его не принял. Проверьте, что эта половина ключа добавлена как deploy key в Lavren73/SI-MCP (Settings → Deploy keys), а не в si-mcp-ci."
+            sed -n '1,5p' /tmp/ls.txt
+            exit 1
+          fi
+
+      # checkout делается вручную: actions/checkout берёт ключ прямо из секрета и не знает
+      # о восстановленных переносах. Здесь используется проверенный файл /tmp/deploy_key.
       - name: Исходники SI-MCP по deploy key (SSH)
-        if: env.HAS_TOKEN != 'true' && env.HAS_DEPLOY_KEY == 'true'
-        uses: actions/checkout@v4
-        with:
-          repository: Lavren73/SI-MCP
-          ref: ${{ inputs.ref || 'agent/obmen-20261102' }}
-          ssh-key: ${{ secrets.SI_MCP_DEPLOY_KEY }}
-          path: project
-          persist-credentials: false
-          fetch-depth: 1
+        if: env.USE_KEY == 'true'
+        shell: bash
+        run: |
+          set -u
+          export GIT_SSH_COMMAND="ssh -i /tmp/deploy_key -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=accept-new"
+          REF="${{ inputs.ref || 'agent/obmen-20261102' }}"
+          git init -q project
+          cd project
+          git remote add origin git@github.com:Lavren73/SI-MCP.git
+          if ! timeout 300 git fetch -q --depth=1 origin "$REF"; then
+            echo "::error::Не удалось получить ветку $REF по ключу."
+            exit 1
+          fi
+          git checkout -q FETCH_HEAD
+          echo "получено: $(git log --oneline -1)"
 
       - name: Экран для SWT (Xvfb)
         run: |
