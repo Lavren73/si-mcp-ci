@@ -1,6 +1,4 @@
-# №16, 08.11.2026: установить предоставленные владельцем дистрибутивы и выполнить тесты.
-# Источники дистрибутивов и проект берутся из приватной ветки SI-MCP с deploy key;
-# архивы, идентификаторы источников, ключи и исходники не публикуются как артефакты.
+# №16: live diagnostics on a disposable GitHub-hosted VM, not ODIN.
 name: Проверка установки 1С и EDT
 on:
   workflow_dispatch:
@@ -9,114 +7,183 @@ on:
 permissions:
   contents: read
 jobs:
-  install-and-test:
+  live:
     runs-on: ubuntu-24.04
     timeout-minutes: 360
     steps:
-      - name: Исходники и приватные адреса SI-MCP
+      - name: Исходники SI-MCP из тестовой ветки
         uses: actions/checkout@v4
         with:
           repository: Lavren73/SI-MCP
-          ref: agent/16-ci-installer-sources
+          ref: agent/obmen-20261102
           ssh-key: ${{ secrets.SI_MCP_DEPLOY_KEY }}
           path: project
           persist-credentials: false
-      - name: Подготовка инструментов и адресов
-        shell: bash
+      - name: Зависимости
         run: |
           set -euo pipefail
-          mapfile -t ids < project/.ci/installer-source-ids.txt
-          test "${#ids[@]}" -eq 2
-          for id in "${ids[@]}"; do
-            [[ "$id" =~ ^[A-Za-z0-9_-]+$ ]] || exit 1
-            echo "::add-mask::$id"
-          done
-          printf 'EDT_FILE_ID=%s\nPLATFORM_FILE_ID=%s\n' "${ids[0]}" "${ids[1]}" >> "$GITHUB_ENV"
-          printf 'CPU: %s\n' "$(nproc)"
-          free -h
-          df -h "$RUNNER_TEMP"
           sudo apt-get update -qq
-          sudo apt-get install -y -qq xvfb xauth libgtk-3-0 unzip > /dev/null
-      - name: Скачать и проверить оба архива
+          sudo apt-get install -y -qq xvfb xauth libgtk-3-0 unzip x11-utils > /dev/null
+          echo "SI-MCP commit: $(git -C project rev-parse HEAD)"
+          echo "CPU: $(nproc)"; free -h; df -h "$RUNNER_TEMP"
+      - name: Скачать предоставленную платформу
         id: download
         continue-on-error: true
-        shell: bash
+        env:
+          PLATFORM_ID: ${{ secrets.SI_CI_PLATFORM_FILE_ID }}
         run: |
           set -euo pipefail
-          mkdir -p "$RUNNER_TEMP/si-ci"
+          test -n "$PLATFORM_ID"
+          mkdir -p "$RUNNER_TEMP/si-live/platform"
           curl -fsSL --retry 3 --connect-timeout 20 --max-time 900 \
-            "https://drive.usercontent.google.com/download?id=${EDT_FILE_ID}&export=download&confirm=t" \
-            -o "$RUNNER_TEMP/si-ci/edt.tar.gz"
-          curl -fsSL --retry 3 --connect-timeout 20 --max-time 900 \
-            "https://drive.usercontent.google.com/download?id=${PLATFORM_FILE_ID}&export=download&confirm=t" \
-            -o "$RUNNER_TEMP/si-ci/platform.zip"
-          cd "$RUNNER_TEMP/si-ci"
-          echo 'b58a3d8aec0bbe5288ac10d37eb97b741bdb5f58eaacade3927f50e438a750d1  edt.tar.gz' | sha256sum -c -
-          echo '68313114d6daf454eff2920707360c6a5178c2aea041d043f53767118676c4fd  platform.zip' | sha256sum -c -
-      - name: Установить компонент запуска EDT
-        id: edt
-        if: steps.download.outcome == 'success'
-        continue-on-error: true
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p "$RUNNER_TEMP/si-ci/edt"
-          tar -xzf "$RUNNER_TEMP/si-ci/edt.tar.gz" -C "$RUNNER_TEMP/si-ci/edt"
-          cd "$RUNNER_TEMP/si-ci/edt"
-          sudo ./1ce-installer-cli query
-          # №16, 08.11.2026: облачная VM не отдаёт частоту CPU; отдельно измерены 4 CPU и 15 ГиБ RAM.
-          # Обходим только аппаратную проверку установщика, подписи не отключаем.
-          sudo ./1ce-installer-cli install --disable-service-creation --ignore-hardware-checks
-          sudo ./1ce-installer-cli query installed
-      - name: Установить платформу 1С
+            "https://drive.usercontent.google.com/download?id=${PLATFORM_ID}&export=download&confirm=t" \
+            -o "$RUNNER_TEMP/si-live/platform.zip"
+          echo '68313114d6daf454eff2920707360c6a5178c2aea041d043f53767118676c4fd  '"$RUNNER_TEMP/si-live/platform.zip" | sha256sum -c -
+      - name: Установить 1С
         id: platform
         if: steps.download.outcome == 'success'
         continue-on-error: true
-        shell: bash
         run: |
           set -euo pipefail
-          mkdir -p "$RUNNER_TEMP/si-ci/platform"
-          unzip -q "$RUNNER_TEMP/si-ci/platform.zip" 'setup-full-8.3.27.2342-x86_64.run' -d "$RUNNER_TEMP/si-ci/platform"
-          chmod +x "$RUNNER_TEMP/si-ci/platform/setup-full-8.3.27.2342-x86_64.run"
-          sudo "$RUNNER_TEMP/si-ci/platform/setup-full-8.3.27.2342-x86_64.run" \
-            --mode unattended --unattendedmodeui none --installer-language en \
-            --enable-components server,server_admin,client_full,ru
-          test -d /opt/1cv8
-          find /opt/1cv8 -maxdepth 6 -type f \( -name 1cv8 -o -name ragent \) -print
-      - name: JDK 17 для сборки
+          unzip -q "$RUNNER_TEMP/si-live/platform.zip" 'setup-full-8.3.27.2342-x86_64.run' -d "$RUNNER_TEMP/si-live/platform"
+          chmod +x "$RUNNER_TEMP/si-live/platform/"*.run
+          sudo "$RUNNER_TEMP/si-live/platform/"*.run --mode unattended --unattendedmodeui none --installer-language en --enable-components server,server_admin,client_full,ru
+          test -x /opt/1cv8/x86_64/8.3.27.2342/1cv8
+      - name: Создать пустую файловую ИБ и проверить конфигуратор
+        id: infobase
+        if: steps.platform.outcome == 'success'
+        continue-on-error: true
+        run: |
+          set -u
+          BASE="$RUNNER_TEMP/si-live/empty-ib"
+          mkdir -p "$BASE"
+          LOG="$RUNNER_TEMP/si-live/create.log"
+          # Only a fresh path on this runner. No license activation or changes to existing databases.
+          timeout 150s xvfb-run -a /opt/1cv8/x86_64/8.3.27.2342/1cv8 CREATEINFOBASE "File=$BASE" /DisableStartupDialogs /Out "$LOG"
+          code=$?
+          echo "CREATEINFOBASE exit: $code"
+          [ ! -f "$LOG" ] || cat "$LOG"
+          find "$BASE" -maxdepth 1 -type f -printf '%f %s bytes\n'
+          if [ "$code" -ne 0 ] || [ ! -s "$BASE/1Cv8.1CD" ]; then exit 1; fi
+          LOG="$RUNNER_TEMP/si-live/designer.log"
+          timeout 150s xvfb-run -a /opt/1cv8/x86_64/8.3.27.2342/1cv8 DESIGNER "/F$BASE" /DumpCfg "$RUNNER_TEMP/si-live/empty.cf" /DisableStartupDialogs /Out "$LOG"
+          code=$?
+          echo "DESIGNER /DumpCfg exit: $code"
+          [ ! -f "$LOG" ] || cat "$LOG"
+          test "$code" -eq 0 && test -s "$RUNNER_TEMP/si-live/empty.cf"
+      - name: JDK 25 для EDT
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+      - name: Запомнить JDK 25
+        run: echo "EDT_JAVA=$JAVA_HOME" >> "$GITHUB_ENV"
+      - name: JDK 17 для сборки SI-MCP
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
       - name: Maven 3.9.9
-        shell: bash
         run: |
           set -euo pipefail
           curl -fsSL --retry 3 https://archive.apache.org/dist/maven/maven-3/3.9.9/binaries/apache-maven-3.9.9-bin.tar.gz -o "$RUNNER_TEMP/mvn.tgz"
-          sudo tar -xzf "$RUNNER_TEMP/mvn.tgz" -C /opt
-          echo '/opt/apache-maven-3.9.9/bin' >> "$GITHUB_PATH"
-          /opt/apache-maven-3.9.9/bin/mvn -version
-      - name: Тесты сервера mvn verify
-        id: server-tests
+          tar -xzf "$RUNNER_TEMP/mvn.tgz" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/apache-maven-3.9.9/bin" >> "$GITHUB_PATH"
+      - name: Собрать p2-репозиторий SI-MCP
+        id: build
         continue-on-error: true
         working-directory: project/server
-        shell: bash
         env:
-          LANG: C.UTF-8
-          LC_ALL: C.UTF-8
           MAVEN_OPTS: -Xmx3g
+          LANG: C.UTF-8
         run: |
           set -o pipefail
-          xvfb-run -a mvn -B -ntp -Dstyle.color=never verify 2>&1 | tee "$RUNNER_TEMP/mvn.log" | tail -120
-      - name: Вердикт
-        if: always()
-        shell: bash
-        env:
-          DOWNLOAD: ${{ steps.download.outcome }}
-          EDT: ${{ steps.edt.outcome }}
-          PLATFORM: ${{ steps.platform.outcome }}
-          TESTS: ${{ steps.server-tests.outcome }}
+          mvn -B -ntp -Dstyle.color=never -DskipTests package 2>&1 | tee "$RUNNER_TEMP/si-live/maven.log" | tail -120
+          test -f repositories/si.edt.mcp.server.repository/target/repository/content.jar || test -f repositories/si.edt.mcp.server.repository/target/repository/content.xml
+      - name: Получить Eclipse и установить компоненты EDT 2026.2
+        id: edt
+        continue-on-error: true
         run: |
-          echo "Загрузка: $DOWNLOAD; EDT Start: $EDT; платформа: $PLATFORM; mvn verify: $TESTS"
-          echo 'Лицензия, живая база и запуск полной EDT в этом workflow не проверяются.'
-          [[ "$DOWNLOAD" == success && "$EDT" == success && "$PLATFORM" == success && "$TESTS" == success ]]
+          set -euo pipefail
+          curl -fsSL --retry 3 --connect-timeout 20 --max-time 600 https://archive.eclipse.org/eclipse/downloads/drops4/R-4.38-202512010920/eclipse-platform-4.38-linux-gtk-x86_64.tar.gz -o "$RUNNER_TEMP/eclipse.tar.gz"
+          tar -xzf "$RUNNER_TEMP/eclipse.tar.gz" -C "$RUNNER_TEMP"
+          REPOS='https://edt.1c.ru/downloads/releases/ruby/2026.2/,https://download.eclipse.org/releases/2025-12/,https://download.eclipse.org/tools/orbit/downloads/drops/R20211213173813/repository/,https://download.eclipse.org/tools/orbit/simrel/orbit-aggregation/release/4.38.0/'
+          timeout 1800s xvfb-run -a "$RUNNER_TEMP/eclipse/eclipse" -vm "$EDT_JAVA/bin/java" -nosplash -application org.eclipse.equinox.p2.director \
+            -repository "$REPOS" -installIU com._1c.g5.v8.dt.feature.feature.group,com._1c.g5.v8.dt.bp.scheme.feature.feature.group \
+            -destination "$RUNNER_TEMP/eclipse" -p2.os linux -p2.ws gtk -p2.arch x86_64
+      - name: Установить собранный SI-MCP в EDT
+        id: install
+        if: steps.edt.outcome == 'success' && steps.build.outcome == 'success'
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          SITE="$GITHUB_WORKSPACE/project/server/repositories/si.edt.mcp.server.repository/target/repository"
+          timeout 900s xvfb-run -a "$RUNNER_TEMP/eclipse/eclipse" -vm "$EDT_JAVA/bin/java" -nosplash -application org.eclipse.equinox.p2.director \
+            -repository "file:$SITE,https://edt.1c.ru/downloads/releases/ruby/2026.2/,https://download.eclipse.org/releases/2025-12/,https://download.eclipse.org/tools/orbit/downloads/drops/R20211213173813/repository/,https://download.eclipse.org/tools/orbit/simrel/orbit-aggregation/release/4.38.0/" \
+            -installIU si.edt.mcp.server.feature.feature.group -destination "$RUNNER_TEMP/eclipse" -p2.os linux -p2.ws gtk -p2.arch x86_64
+      - name: Запустить workbench и проверить настоящий MCP
+        id: mcp
+        if: steps.install.outcome == 'success'
+        continue-on-error: true
+        env:
+          PYTHONPATH: ${{ github.workspace }}/project/client
+        run: |
+          set -euo pipefail
+          WS="$RUNNER_TEMP/si-live/edt-workspace"
+          mkdir -p "$WS/.metadata/.plugins/org.eclipse.core.runtime/.settings"
+          printf '%s\n' 'eclipse.preferences.version=1' 'mcpServerAutoStart=true' 'mcpServerPort=12260' 'mcpAuthEnabled=true' 'mcpAuthToken=ci-ephemeral-token' > "$WS/.metadata/.plugins/org.eclipse.core.runtime/.settings/si.edt.mcp.server.prefs"
+          Xvfb :88 -screen 0 1280x800x24 > "$RUNNER_TEMP/si-live/xvfb.log" 2>&1 & xpid=$!
+          export DISPLAY=:88
+          "$RUNNER_TEMP/eclipse/eclipse" -vm "$EDT_JAVA/bin/java" -nosplash -data "$WS" -consoleLog -vmargs -Xmx3g > "$RUNNER_TEMP/si-live/edt.log" 2>&1 & epid=$!
+          trap 'kill "$epid" "$xpid" 2>/dev/null || true; echo "--- EDT console tail ---"; tail -120 "$RUNNER_TEMP/si-live/edt.log" || true; echo "--- workspace log tail ---"; tail -120 "$WS/.metadata/.log" 2>/dev/null || true' EXIT
+          python3 - <<'PY'
+          import socket, time
+          for _ in range(150):
+              try:
+                  with socket.create_connection(('127.0.0.1',12260),timeout=2):
+                      print('MCP port opened on localhost')
+                      break
+              except OSError:
+                  time.sleep(2)
+          else:
+              raise SystemExit('No MCP listener within 300 seconds')
+          import urllib.request, urllib.error
+          req=urllib.request.Request('http://127.0.0.1:12260/mcp',data=b'{}',headers={'Content-Type':'application/json'})
+          try:
+              with urllib.request.urlopen(req,timeout=10) as response: status=response.status
+          except urllib.error.HTTPError as exc: status=exc.code
+          print('Unauthenticated HTTP status:',status)
+          if status != 401: raise SystemExit('Expected authentication refusal')
+          from siagent.mcp import McpClient
+          client=McpClient('http://127.0.0.1:12260/mcp',token='ci-ephemeral-token',timeout=30)
+          try:
+              s=client.initialize()
+              print('initialize:',s.protocol_version,s.server_info)
+              print('ping:',client.ping())
+              tools=client.list_tools()
+              print('tools/list count:',len(tools))
+              names={t.get('name') for t in tools}
+              print('get_edt_version listed:', 'get_edt_version' in names)
+              if 'get_edt_version' not in names: raise SystemExit('Version tool absent from catalog')
+              result=client.call_tool('get_edt_version',{})
+              print('get_edt_version:',result['text'], 'is_error:',result['is_error'])
+              if result['is_error']: raise SystemExit('Version tool returned an error')
+          finally:
+              client.close()
+          PY
+      - name: Честный вердикт
+        if: always()
+        env:
+          D: ${{ steps.download.outcome }}
+          P: ${{ steps.platform.outcome }}
+          I: ${{ steps.infobase.outcome }}
+          B: ${{ steps.build.outcome }}
+          E: ${{ steps.edt.outcome }}
+          S: ${{ steps.install.outcome }}
+          M: ${{ steps.mcp.outcome }}
+        run: |
+          echo "1C: download=$D platform=$P isolated-IB-and-designer=$I"
+          echo "EDT: p2-build=$B edt-features=$E plugin-install=$S live-MCP=$M"
+          echo 'Проверяется временная ИБ; ODIN и рабочие данные не используются.'
+          echo 'Eclipse с установленными EDT-фичами не следует автоматически считать полным продуктовым дистрибутивом EDT.'
+          [[ "$D" == success && "$P" == success && "$I" == success && "$B" == success && "$E" == success && "$S" == success && "$M" == success ]]
