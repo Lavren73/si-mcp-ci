@@ -1,0 +1,1 @@
+Git write access test for si-mcp-ci. This file is harmless.
