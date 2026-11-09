@@ -73,6 +73,38 @@ jobs:
             exit 1
           fi
 
+      # Ловушка, найденная №12 (блок O-119): auto-логика считает «секрет задан», а не
+      # «токен жив». После отзыва PAT секрет остаётся непустым и мёртвым — прогон молча
+      # идёт по мёртвому токену и падает «repository not found», хотя ключ рядом и цел.
+      # Здесь токен проверяется живым запросом, и при любом отказе путь переключается
+      # на ключ. Значение токена не печатается: только код ответа.
+      - name: Токен жив? Иначе — ключ
+        if: env.USE_TOKEN == 'true'
+        shell: bash
+        env:
+          TOKEN: ${{ secrets.SI_MCP_TOKEN }}
+        run: |
+          set -u
+          code=$(curl -s -o /dev/null -w '%{http_code}' \
+                 -H "Authorization: Bearer $TOKEN" \
+                 https://api.github.com/repos/Lavren73/SI-MCP || echo 000)
+          case "$code" in
+            200) echo "токен принят, проект виден" ;;
+            401) echo "::warning::Токен не принят (401): истёк или отозван." ;;
+            404) echo "::warning::Токен жив, но проект не виден (404): нет права Contents на SI-MCP." ;;
+            *)   echo "::warning::Проверка токена не удалась (код $code)." ;;
+          esac
+          if [ "$code" != "200" ]; then
+            if [ "$HAS_DEPLOY_KEY" = "true" ]; then
+              echo "USE_TOKEN=false" >> "$GITHUB_ENV"
+              echo "USE_KEY=true" >> "$GITHUB_ENV"
+              echo "переключаюсь на запасной путь: ключ из секрета"
+            else
+              echo "::error::Токен не работает, и секрета с ключом нет. Задайте SI_MCP_DEPLOY_KEY или свежий SI_MCP_TOKEN."
+              exit 1
+            fi
+          fi
+
       # Токен идёт первым: одна строка, форматов не ломает. Ключ — запасной путь.
       - name: Исходники SI-MCP по токену (HTTPS)
         if: env.USE_TOKEN == 'true'
