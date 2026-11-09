@@ -115,6 +115,38 @@ jobs:
           mvn -B -ntp -Dstyle.color=never -DskipTests package 2>&1 | tee "$RUNNER_TEMP/edt-offline/build.log" | tail -90
           test -f repositories/si.edt.mcp.server.repository/target/repository/content.jar || test -f repositories/si.edt.mcp.server.repository/target/repository/content.xml
           echo 'BUILD ONLY: tests were skipped; target version and this EDT may be incompatible.'
+      - name: Диагностика версии lifecycle и профиля p2
+        run: |
+          python3 - <<'PY'
+          import gzip, os, pathlib, re, zipfile
+          root=pathlib.Path(os.environ['EDT_ROOT'])
+          target=pathlib.Path(os.environ['GITHUB_WORKSPACE'])/'project/server/targets/default/default.target'
+          print('--- target repository locations ---')
+          if target.exists():
+              for line in target.read_text(errors='replace').splitlines():
+                  if 'location' in line.lower() or 'repository' in line.lower(): print(line[:500])
+          package='com._1c.g5.v8.dt.core.lifecycle'
+          print('--- installed bundle export metadata for',package,'---')
+          hits=0
+          for jar in (root/'plugins').glob('*.jar'):
+              try:
+                  with zipfile.ZipFile(jar) as z:
+                      m=z.read('META-INF/MANIFEST.MF').decode('utf-8','replace').replace('\r\n ','').replace('\n ','')
+                  for line in m.splitlines():
+                      if line.startswith('Export-Package:'):
+                          for entry in re.split(r',(?=[a-zA-Z_][\w.]*[;,])',line[len('Export-Package:'):]):
+                              if package in entry:
+                                  print('BUNDLE',jar.name,'EXPORT',entry[:1200]); hits+=1
+              except (KeyError, zipfile.BadZipFile, OSError): pass
+          print('EXPORT ENTRIES',hits)
+          profiles=list((root/'p2').rglob('*.profile.gz'))+list((root/'p2').rglob('*.profile'))
+          print('PROFILE FILES',len(profiles))
+          for f in profiles:
+              try:
+                  data=(gzip.open(f,'rt',encoding='utf8',errors='replace').read() if f.suffix=='.gz' else f.read_text(errors='replace'))
+                  print('PROFILE',f.relative_to(root),'mentions lifecycle:',package in data)
+              except OSError as e: print('PROFILE READ ERROR',e)
+          PY
       - name: Установить SI-MCP в реальную EDT 2024.2.6
         run: |
           set -euo pipefail
