@@ -1,0 +1,71 @@
+name: SI-MCP — диагностическая проверка границ сессии №16
+on:
+  push:
+    branches: [agent/16-session-probe-20261109164842]
+permissions:
+  contents: read
+jobs:
+  diagnostic:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Исходники SI-MCP
+        uses: actions/checkout@v4
+        with:
+          repository: Lavren73/SI-MCP
+          ref: 3b9f97cbb63e6861488483bbfa0fe83f379abce4
+          ssh-key: ${{ secrets.SI_MCP_DEPLOY_KEY }}
+          path: project
+          persist-credentials: false
+      - name: Среда
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq xvfb xauth libgtk-3-0 >/dev/null
+          git -C project rev-parse HEAD
+      - name: JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Maven 3.9.9
+        run: |
+          curl -fsSL --retry 3 https://archive.apache.org/dist/maven/maven-3/3.9.9/binaries/apache-maven-3.9.9-bin.tar.gz -o "$RUNNER_TEMP/mvn.tgz"
+          tar -xzf "$RUNNER_TEMP/mvn.tgz" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/apache-maven-3.9.9/bin" >> "$GITHUB_PATH"
+      - name: Два диагностических теста и XML-verdict
+        working-directory: project/server
+        env:
+          MAVEN_OPTS: -Xmx3g
+          LANG: C.UTF-8
+        shell: bash
+        run: |
+          set +e
+          xvfb-run -a mvn -B -ntp -Dstyle.color=never -Dtest=ASessionHeaderIsNotAClientIdentityTest -DfailIfNoTests=false verify 2>&1 | tee "$RUNNER_TEMP/probe.log" | tail -80
+          code="${PIPESTATUS[0]}"
+          echo "MAVEN_EXIT=$code"
+          grep -E 'ASessionHeaderIsNotAClientIdentityTest|Tests run:|No tests found' "$RUNNER_TEMP/probe.log" | tail -40 || true
+          python3 - <<'PYXML'
+          import pathlib,xml.etree.ElementTree as E,sys
+          files=list(pathlib.Path('.').rglob('TEST-*ASessionHeaderIsNotAClientIdentityTest*.xml'))
+          print('PROBE_TEST_XML_COUNT',len(files))
+          total=0
+          for p in files:
+              r=E.parse(p).getroot(); print('PROBE_SUITE',r.get('name'),'tests',r.get('tests'),'failures',r.get('failures'),'errors',r.get('errors'),'skipped',r.get('skipped'))
+              total+=int(r.get('tests','0'))
+              for c in r.iter('testcase'):
+                  status='failure' if c.find('failure') is not None else 'error' if c.find('error') is not None else 'skipped' if c.find('skipped') is not None else 'pass'
+                  print('CASE',status,c.get('name'))
+              if int(r.get('failures','0')) or int(r.get('errors','0')) or int(r.get('skipped','0')):sys.exit(1)
+          sys.exit(0 if total==2 else 1)
+          PYXML
+          xmlcode=$?
+          echo "PROBE_XML_ASSERT_EXIT=$xmlcode"
+          [ "$code" -eq 0 ] && [ "$xmlcode" -eq 0 ]
+      - name: Лог диагностики
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: session-probe-log
+          path: ${{ runner.temp }}/probe.log
+          retention-days: 1
+          if-no-files-found: ignore
