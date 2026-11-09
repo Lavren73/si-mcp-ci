@@ -87,10 +87,14 @@ jobs:
       - name: Проверить запуск EDT CLI
         run: |
           set -euo pipefail
-          timeout 180s xvfb-run -a "$EDT_CLI" -vm "$JAVA_HOME/bin/java" -help 2>&1 | tee "$RUNNER_TEMP/edt-offline/cli.log"
+          mkdir -p "$RUNNER_TEMP/edt-offline/cli-workspace"
+          timeout 240s xvfb-run -a "$EDT_CLI" -data "$RUNNER_TEMP/edt-offline/cli-workspace" -command version 2>&1 | tee "$RUNNER_TEMP/edt-offline/cli.log"
           test -s "$RUNNER_TEMP/edt-offline/cli.log"
           if grep -qiE 'could not launch|unable to launch|no such file|exception|error:' "$RUNNER_TEMP/edt-offline/cli.log"; then
             echo '::error::EDT CLI printed an error; exit code alone is insufficient.'; exit 1
+          fi
+          if ! grep -Eqi '2024[.]2[.]6' "$RUNNER_TEMP/edt-offline/cli.log"; then
+            echo '::error::EDT CLI output does not confirm 2024.2.6.'; exit 1
           fi
       - name: Maven 3.9.9
         run: |
