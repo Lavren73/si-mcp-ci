@@ -127,14 +127,17 @@ jobs:
         shell: bash
         run: |
           set -uo pipefail
-          LIBDIR=$(sudo find /opt/1cv8 -name 'libstdc++.so.6' -printf '%h\n' | head -1)
-          echo "каталог с встроенной библиотекой: $LIBDIR"
-          if [ -n "$LIBDIR" ]; then
-            sudo mv "$LIBDIR/libstdc++.so.6" "$LIBDIR/libstdc++.so.6.from-1c" 2>/dev/null || true
-            echo "встроенный libstdc++ переименован, теперь берётся системный:"
-            ls -l /lib/x86_64-linux-gnu/libstdc++.so.6
-            strings /lib/x86_64-linux-gnu/libstdc++.so.6 | grep -c GLIBCXX_3.4.30 || true
-          fi
+          echo "== копии libstdc++ внутри платформы:"
+          sudo find /opt/1cv8 -name 'libstdc++.so.6*' -printf '%p\n' | tee /tmp/liblist.txt
+          # Переименовываем ВСЕ копии: в прогоне 42627198997 переименовалась только первая,
+          # а загружалась та, что лежит рядом с бинарником, и ошибка осталась.
+          while read -r f; do
+            case "$f" in *.from-1c) continue;; esac
+            sudo mv "$f" "$f.from-1c" && echo "переименован: $f"
+          done < /tmp/liblist.txt
+          echo "== системная библиотека:"
+          ls -l /lib/x86_64-linux-gnu/libstdc++.so.6
+          strings /lib/x86_64-linux-gnu/libstdc++.so.6 | grep -c 'GLIBCXX_3.4.30' || true
 
       - name: Запуск платформы и пустая информационная база
         shell: bash
