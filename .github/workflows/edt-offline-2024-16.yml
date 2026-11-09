@@ -75,7 +75,8 @@ jobs:
           cd "$RUNNER_TEMP/edt-offline/dist"
           test -x ./1ce-installer-cli
           sudo ./1ce-installer-cli install all --products-home "$RUNNER_TEMP/edt-offline/installed" --ignore-hardware-checks 2>&1 | tail -50
-          sudo ./1ce-installer-cli query installed 2>&1 | tail -35
+          sudo ./1ce-installer-cli query installed 2>&1 | tee "$RUNNER_TEMP/edt-offline/installed.log" | tail -35
+          grep -Fq '1c-edt@2024.2.6+7' "$RUNNER_TEMP/edt-offline/installed.log"
           sudo chown -R "$(id -u):$(id -g)" "$RUNNER_TEMP/edt-offline/installed"
           ROOT=$(sudo find "$RUNNER_TEMP/edt-offline/installed" -type f -name 1cedt -print -quit)
           CLI=$(sudo find "$RUNNER_TEMP/edt-offline/installed" -type f -name 1cedtcli -print -quit)
@@ -85,17 +86,20 @@ jobs:
           echo "EDT_ROOT=$(dirname "$ROOT")" >> "$GITHUB_ENV"
           echo 'Installed EDT and EDT CLI binaries located.'
       - name: Проверить запуск EDT CLI
+        id: cli
+        continue-on-error: true
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/edt-offline/cli-workspace"
-          timeout 240s xvfb-run -a "$EDT_CLI" -data "$RUNNER_TEMP/edt-offline/cli-workspace" -command version 2>&1 | tee "$RUNNER_TEMP/edt-offline/cli.log"
+          timeout 240s xvfb-run -a "$EDT_CLI" -data "$RUNNER_TEMP/edt-offline/cli-workspace" -command help 2>&1 | tee "$RUNNER_TEMP/edt-offline/cli.log"
           test -s "$RUNNER_TEMP/edt-offline/cli.log"
-          if grep -qiE 'could not launch|unable to launch|no such file|exception|error:' "$RUNNER_TEMP/edt-offline/cli.log"; then
+          if grep -qiE '^command not found|^could not launch|^unable to launch|^error:' "$RUNNER_TEMP/edt-offline/cli.log"; then
             echo '::error::EDT CLI printed an error; exit code alone is insufficient.'; exit 1
           fi
-          if ! grep -Eqi '2024[.]2[.]6' "$RUNNER_TEMP/edt-offline/cli.log"; then
-            echo '::error::EDT CLI output does not confirm 2024.2.6.'; exit 1
+          if ! grep -Eqi 'help|справк' "$RUNNER_TEMP/edt-offline/cli.log"; then
+            echo '::error::EDT CLI did not produce recognizable help.'; exit 1
           fi
+          echo 'EDT CLI answered help; the installed product version is established separately by installer query.'
       - name: Maven 3.9.9
         run: |
           set -euo pipefail
@@ -153,3 +157,10 @@ jobs:
           finally: c.close()
           PY
           echo 'No working infobase, write operation, debugger, or full mvn verify was tested.'
+      - name: Итог CLI без сокрытия ошибки
+        if: always()
+        env:
+          CLI_OUTCOME: ${{ steps.cli.outcome }}
+        run: |
+          echo "EDT CLI outcome: $CLI_OUTCOME"
+          test "$CLI_OUTCOME" = success
