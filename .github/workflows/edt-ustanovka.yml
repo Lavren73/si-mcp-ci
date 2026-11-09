@@ -168,50 +168,22 @@ jobs:
           fi
           sudo pkill -9 -f Xvfb 2>/dev/null || true
 
-      - name: Связка — EDT запускается рядом с учебной платформой
-        shell: bash
-        timeout-minutes: 12
+      - name: Что на самом деле поставилось — размеры и поиск среды по всей машине
         run: |
           set -uo pipefail
-          Xvfb :93 -screen 0 1400x1000x24 > /tmp/xvfb-edt2.log 2>&1 &
-          sleep 3
-          export DISPLAY=:93
-          WS=/tmp/edt-ws; sudo rm -rf "$WS"; mkdir -p "$WS"
-          echo "== старт EDT 2024.2.6 (без стартера, прямо 1cedt):"
-          sudo -E /opt/1C/edt/1cedt -data "$WS" -nosplash -consoleLog > /tmp/edt-gui.log 2>&1 &
-          for i in $(seq 1 24); do
-            sleep 5
-            if sudo test -s "$WS/.metadata/.log"; then
-              echo "лог появился через $((i*5)) с"
-              break
-            fi
-          done
-          echo "== первая строка лога EDT (там версия и JVM):"
-          sudo head -5 "$WS/.metadata/.log" 2>/dev/null || echo "лог не создан"
-          echo "== ошибки в логе (первые 15):"
-          sudo grep -iE 'error|severe|exception' "$WS/.metadata/.log" 2>/dev/null | head -15 || echo "ошибок нет"
-          echo "== упоминания платформы 1С в логе:"
-          sudo grep -iE '8\.3\.27|1cv8|platform' "$WS/.metadata/.log" 2>/dev/null | head -10 || echo "не упоминается"
-          sudo pkill -9 -f '/opt/1C/edt/1cedt' 2>/dev/null || true
-          sudo pkill -9 -f Xvfb 2>/dev/null || true
-          echo "== console-вывод EDT (первые 40 строк):"
-          head -40 /tmp/edt-gui.log || true
-
-      - name: Связка — пробуем CLI-командой дотянуться до платформы
-        continue-on-error: true
-        timeout-minutes: 15
-        run: |
-          set -uo pipefail
-          CLI=/opt/1C/edt/1cedtcli
-          WS=/tmp/edt-cli-ws; sudo rm -rf "$WS"; mkdir -p "$WS"
-          for cmd in "-version" "-command version" "-command export" "-command import" \
-                     "-command create-project" "-command check"; do
-            echo "=== попытка: $CLI $cmd"
-            sudo timeout -s KILL 120 "$CLI" -data "$WS" $cmd 2>&1 | head -20 || echo "код $?"
-            echo
-          done
-          echo "== что CLI написал в лог:"
-          sudo tail -30 "$WS/.metadata/.log" 2>/dev/null || echo "лога нет"
+          echo "== архив EDT: $(stat -c%s "$RUNNER_TEMP/si/edt.tar.gz") байт"
+          echo "== полный дистрибутив EDT весит гигабайты; 90 МБ — это загрузчик"
+          echo "== установлено под /opt/1C:"
+          sudo du -sh /opt/1C/components/* /opt/1C/products/* 2>/dev/null | sort -h
+          echo "== ищем саму среду (1cedt) по всей машине, не только в /opt/1C:"
+          sudo find / -xdev -maxdepth 8 -name '1cedt' -type f 2>/dev/null | head -5 || true
+          sudo find / -xdev -maxdepth 8 -name '1cedtcli' -type f 2>/dev/null | head -5 || true
+          echo "== что есть из исполняемого:"
+          sudo find /opt/1C -maxdepth 5 -type f -perm -u+x -name '1ce*' 2>/dev/null | head -10
+          echo "== Ring CLI (это установщик p2, ему нужен репозиторий в сети):"
+          RING=$(sudo find /opt/1C -maxdepth 6 -name 'ring' -type f -perm -u+x | head -1)
+          echo "ring: $RING"
+          [ -n "$RING" ] && sudo timeout -s KILL 60 "$RING" --help 2>&1 | head -15 || echo "ring не найден"
 
       - name: Сводка
         if: always()
@@ -219,5 +191,9 @@ jobs:
           echo "== EDT (полный дистрибутив):"
           sudo cat /opt/1C/edt/.eclipseproduct 2>/dev/null || echo "нет .eclipseproduct"
           sudo du -sh /opt/1C/edt 2>/dev/null || true
+          echo "== вывод:"
+          if sudo test -x /opt/1C/edt/1cedt; then echo "   среда EDT найдена"; else echo "   среды EDT в установке НЕТ — это загрузчик 1C:EDT Start"; fi
           echo "== платформа:"
+          echo "== вывод:"
+          if sudo test -x /opt/1C/edt/1cedt; then echo "   среда EDT найдена"; else echo "   среды EDT в установке НЕТ — это загрузчик 1C:EDT Start"; fi
           echo "== платформа:"; sudo find "$PREFIX" -maxdepth 3 -type d 2>/dev/null | head -10 || echo "нет данных"
