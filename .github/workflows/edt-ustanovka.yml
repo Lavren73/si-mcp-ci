@@ -141,27 +141,31 @@ jobs:
 
       - name: Запуск платформы и пустая информационная база
         shell: bash
+        timeout-minutes: 10
         run: |
           set -uo pipefail
           BIN=$(sudo find /opt/1cv8 -maxdepth 5 -name '1cv8t' -type f -perm -u+x | head -1)
           echo "бинарник: $BIN"
+          echo "версия (из пути установки): $(echo "$BIN" | grep -oE '8\.[0-9.]+' | head -1)"
           echo "== чего не хватает:"
           ldd "$BIN" 2>/dev/null | grep 'not found' || echo "все библиотеки на месте"
           Xvfb :92 -screen 0 1280x900x24 > /tmp/xvfb-1c.log 2>&1 &
           sleep 3
           export DISPLAY=:92
           BASE="$RUNNER_TEMP/si/ib"; mkdir -p "$BASE"
-          echo "== версия платформы:"
-          timeout 90 sudo -E "$BIN" /? > /tmp/ver.log 2>&1; echo "код $?"
-          head -3 /tmp/ver.log || true
-          echo "== создание пустой ИБ:"
-          timeout 240 sudo -E "$BIN" CREATEINFOBASE "File=$BASE" > /tmp/ib.log 2>&1
+          echo "== создание пустой ИБ (жёсткий таймаут: клиент игнорирует SIGTERM, проверено прогоном 42627864149):"
+          timeout -s KILL 240 sudo -E "$BIN" CREATEINFOBASE "File=$BASE" > /tmp/ib.log 2>&1
           code=$?
           echo "CREATEINFOBASE код: $code"
+          sudo pkill -9 -f 1cv8 2>/dev/null || true
           tail -10 /tmp/ib.log || true
           sudo find "$BASE" -maxdepth 1 -type f -printf '%f %s байт\n' | head
-          if [ -s "$BASE/1Cv8.1CD" ]; then echo "ИТОГ: информационная база создана, платформа работает"; else echo "ИТОГ: база не создана"; fi
-          sudo pkill -f Xvfb 2>/dev/null || true
+          if sudo test -s "$BASE/1Cv8.1CD"; then
+            echo "ИТОГ: платформа работает, информационная база создана"
+          else
+            echo "ИТОГ: база не создана"
+          fi
+          sudo pkill -9 -f Xvfb 2>/dev/null || true
 
       - name: Сводка
         if: always()
