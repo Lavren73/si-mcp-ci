@@ -1,0 +1,118 @@
+# №13: установка ровно тех двух архивов, что владелец дал ссылками (09.11.2026),
+# и проверка, что они работают вместе. Раннер ubuntu-22.04 выбран осознанно:
+# на Debian 13, где я пробовал локально, нет libwebkit2gtk-4.0 и libsoup2.4 —
+# платформа 8.3.27 их требует, и склейка библиотек разных выпусков даёт ABI-кашу.
+# Здесь эти библиотеки родные.
+name: Установка EDT и платформы (проверка пары)
+on:
+  workflow_dispatch:
+  push:
+    branches: [agent/13-edt-install-check]
+permissions:
+  contents: read
+jobs:
+  install:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+    env:
+      EDT_ID: 1SWCzeEwAT7jm1yrSO4OWHHi5WbST_ltC
+      PLATFORM_ID: 18b_5EnQYlkPg-SW4cXK20s9MeHzEZBGJ
+      PREFIX: /opt/1cv8
+    steps:
+      - name: Железо раннера (для протокола)
+        run: |
+          echo "CPU: $(nproc)"; free -h; df -h / | tail -1; . /etc/os-release; echo "$PRETTY_NAME"
+
+      - name: Зависимости
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq xvfb x11-utils libglu1-mesa libwebkit2gtk-4.0-37 \
+              libgtk-3-0 libcups2 libnss3 libasound2 > /dev/null
+          echo "пакеты поставлены"
+
+      - name: Скачать архивы владельца с Google Drive
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/si"
+          get() {
+            id="$1"; out="$2"
+            curl -sL -c /tmp/ck -b /tmp/ck "https://drive.google.com/uc?export=download&id=$id" -o /tmp/w.html
+            uuid=$(grep -oE 'name="uuid" value="[^"]*"' /tmp/w.html | sed 's/.*value="//;s/"//')
+            curl -fsSL --retry 3 --connect-timeout 20 -b /tmp/ck \
+              "https://drive.usercontent.google.com/download?id=$id&export=download&confirm=t&uuid=$uuid" \
+              -o "$out"
+            echo "== $out: $(stat -c%s "$out") байт"
+            gzip -t "$out" && echo "   gzip ok"
+          }
+          get "$EDT_ID" "$RUNNER_TEMP/si/edt.tar.gz"
+          get "$PLATFORM_ID" "$RUNNER_TEMP/si/platform.tar.gz"
+          sha256sum "$RUNNER_TEMP/si/"*.tar.gz
+
+      - name: Распаковать
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/si/edt" "$RUNNER_TEMP/si/platform"
+          tar -xzf "$RUNNER_TEMP/si/edt.tar.gz" -C "$RUNNER_TEMP/si/edt"
+          tar -xzf "$RUNNER_TEMP/si/platform.tar.gz" -C "$RUNNER_TEMP/si/platform"
+          echo "== содержимое архива EDT:"; ls "$RUNNER_TEMP/si/edt"
+          echo "== содержимое архива платформы:"; ls "$RUNNER_TEMP/si/platform"
+
+      - name: Что предлагает установщик EDT (это и есть «выбор при начале установки»)
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/si/edt"
+          sudo ./1ce-installer-cli query 2>/dev/null | tee "$RUNNER_TEMP/si/edt-catalog.txt"
+
+      - name: Установить EDT
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/si/edt"
+          sudo ./1ce-installer-cli install all --products-home /opt/1C --ignore-hardware-checks 2>&1 | tail -25
+          echo "== установлено:"
+          sudo ./1ce-installer-cli query installed 2>/dev/null | tee "$RUNNER_TEMP/si/edt-installed.txt"
+          sudo du -sh /opt/1C/* 2>/dev/null || true
+
+      - name: EDT под виртуальным экраном — что за версия и запускается ли
+        continue-on-error: true
+        run: |
+          set -u
+          BIN=$(sudo find /opt/1C/components -maxdepth 2 -name '1cedtstart' -type f | head -1)
+          echo "исполняемый файл: $BIN"
+          Xvfb :91 -screen 0 1280x900x24 > /tmp/xvfb-edt.log 2>&1 & xpid=$!
+          export DISPLAY=:91
+          for _ in $(seq 1 20); do xdpyinfo >/dev/null 2>&1 && break; sleep 1; done
+          timeout 120 sudo -E "$BIN" -nosplash -consoleLog 2>&1 | tail -25 || true
+          kill "$xpid" 2>/dev/null || true
+
+      - name: Установить платформу 8.3.27.1508 (учебная)
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/si/platform"
+          chmod +x ./*.run
+          sudo ./*.run --mode unattended --unattendedmodeui none --installer-language en \
+            --enable-components client_full,ws,ru --prefix "$PREFIX" 2>&1 | tail -15
+          echo "== каталоги платформы:"; sudo ls "$PREFIX" || true
+          sudo find "$PREFIX" -maxdepth 4 -name '1cv8*' -type f 2>/dev/null | head -10
+
+      - name: Версия платформы и пустая информационная база
+        continue-on-error: true
+        run: |
+          set -u
+          BIN=$(sudo find "$PREFIX" -maxdepth 5 -name '1cv8*' -type f -perm -u+x | grep -E '/1cv8(t)?$' | head -1)
+          echo "бинарник: $BIN"
+          sudo ldd "$BIN" 2>/dev/null | grep 'not found' && echo "!! не хватает библиотек" || echo "все библиотеки на месте"
+          Xvfb :92 -screen 0 1280x900x24 > /tmp/xvfb-1c.log 2>&1 & xpid=$!
+          export DISPLAY=:92
+          for _ in $(seq 1 20); do xdpyinfo >/dev/null 2>&1 && break; sleep 1; done
+          BASE="$RUNNER_TEMP/si/ib"; mkdir -p "$BASE"
+          timeout 180 sudo -E "$BIN" CREATEINFOBASE "File=$BASE" > /tmp/ib.log 2>&1; echo "CREATEINFOBASE код: $?"
+          tail -5 /tmp/ib.log || true
+          sudo find "$BASE" -maxdepth 1 -type f -printf '%f %s байт\n' | head
+          kill "$xpid" 2>/dev/null || true
+
+      - name: Сводка
+        if: always()
+        run: |
+          echo "== EDT:"; cat "$RUNNER_TEMP/si/edt-installed.txt" 2>/dev/null || echo "нет данных"
+          echo "== платформа:"; sudo find "$PREFIX" -maxdepth 3 -type d 2>/dev/null | head -10 || echo "нет данных"
