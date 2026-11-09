@@ -58,57 +58,61 @@ jobs:
           echo "== содержимое архива EDT:"; ls "$RUNNER_TEMP/si/edt"
           echo "== содержимое архива платформы:"; ls "$RUNNER_TEMP/si/platform"
 
-      - name: Что внутри дистрибутива EDT (это полный дистрибутив, а не загрузчик)
+      - name: Что предлагает установщик (каталог продуктов)
         run: |
           set -euo pipefail
-          SRC=$(find "$RUNNER_TEMP/si/edt" -maxdepth 2 -name '1cedt' -type f | head -1)
-          echo "== исполняемый файл EDT: $SRC"
-          ROOT=$(dirname "$SRC")
-          echo "== каталог дистрибутива: $ROOT"
-          ls "$ROOT" | head -20
-          echo "== размеры верхнего уровня:"
-          du -sh "$ROOT"/* 2>/dev/null | sort -h | tail -8
-          echo "== файл версии/инициализации:"
-          cat "$ROOT/1cedt.ini" 2>/dev/null | head -20 || echo "1cedt.ini нет"
-          echo "== есть ли CLI и своя Java:"
-          find "$ROOT" -maxdepth 2 -name '1cedtcli*' -o -maxdepth 2 -name 'java' -type f | head -5
-          echo "== текст «Start»/«launcher» — не загрузчик ли это снова:"
-          grep -rilE 'cloud.launcher|useOAuth' "$ROOT"/*.ini "$ROOT/configuration" 2>/dev/null | head -3 || echo "признаков загрузчика нет"
+          cd "$RUNNER_TEMP/si/edt"
+          sudo ./1ce-installer-cli query 2>/dev/null | tee "$RUNNER_TEMP/si/edt-catalog.txt"
 
-      - name: Установить EDT 2024.2.6 (полный дистрибутив)
+      - name: Установить EDT 2024.2.6 целиком
+        timeout-minutes: 25
         run: |
           set -euo pipefail
-          SRC=$(find "$RUNNER_TEMP/si/edt" -maxdepth 2 -name '1cedt' -type f | head -1)
-          ROOT=$(dirname "$SRC")
-          sudo mkdir -p /opt/1C
-          sudo cp -a "$ROOT" /opt/1C/edt
-          sudo chmod +x /opt/1C/edt/1cedt /opt/1C/edt/1cedtcli 2>/dev/null || true
-          echo "== установлено в /opt/1C/edt:"; du -sh /opt/1C/edt
-          echo "== версия из имени каталога дистрибутива:"; basename "$ROOT"
-          echo "== версия из product-файла (если есть):"
-          sudo find /opt/1C/edt -maxdepth 2 -iname '*product*' -o -maxdepth 2 -iname '.eclipseproduct' | head -5
-          sudo cat /opt/1C/edt/.eclipseproduct 2>/dev/null || true
+          cd "$RUNNER_TEMP/si/edt"
+          sudo ./1ce-installer-cli install all --products-home /opt/1C --ignore-hardware-checks 2>&1 | tail -20
+          echo "== что установлено:"
+          sudo ./1ce-installer-cli query installed 2>/dev/null | tee "$RUNNER_TEMP/si/edt-installed.txt"
+          echo "== каталоги установки:"
+          sudo find /opt/1C -maxdepth 3 -mindepth 1 -type d -printf '%p\n' | head -20
+          sudo du -sh /opt/1C/* 2>/dev/null | sort -h | tail -6
+
+      - name: Найти настоящую среду EDT (не загрузчик) и её версию
+        continue-on-error: true
+        run: |
+          set -uo pipefail
+          echo "== исполняемые файлы 1cedt*:"
+          sudo find /opt/1C -maxdepth 5 -name '1cedt*' -type f 2>/dev/null | head -10
+          BIN=$(sudo find /opt/1C -maxdepth 5 -name '1cedt' -type f | head -1)
+          echo "== среда: $BIN"
+          if [ -n "$BIN" ]; then
+            ROOT=$(dirname "$BIN"); echo "== каталог: $ROOT"
+            sudo ls "$ROOT" | head -15
+            echo "== .eclipseproduct:"; sudo cat "$ROOT/.eclipseproduct" 2>/dev/null || echo "нет"
+            echo "== 1cedt.ini (первые строки):"; sudo head -12 "$ROOT/1cedt.ini" 2>/dev/null || echo "нет"
+            echo "== признак облачного запуска/OAuth (должно быть пусто):"
+            sudo grep -riE 'cloud.launcher|useOAuth' "$ROOT/1cedt.ini" 2>/dev/null || echo "признаков нет"
+            echo "== плагины платформы 1С в этой среде:"; sudo ls "$ROOT/plugins" 2>/dev/null | grep -i 'v8.dt' | head -6
+          fi
 
       - name: Разведка CLI — какие команды есть у 2024.2.6
         continue-on-error: true
         timeout-minutes: 10
         run: |
           set -uo pipefail
-          CLI=/opt/1C/edt/1cedtcli
-          echo "== версия системы и Java:"; sudo "$CLI" -version 2>&1 | head -20 || true
-          echo; echo "== справка CLI:"; sudo "$CLI" -help 2>&1 | head -60 || true
-          echo; echo "== справка по командам (если есть подкоманда help):"
-          sudo "$CLI" -command help 2>&1 | head -40 || true
+          CLI=$(sudo find /opt/1C -maxdepth 5 -name '1cedtcli' -type f | head -1)
+          echo "== CLI: $CLI"
+          [ -z "$CLI" ] && { echo "CLI не найден"; exit 0; }
+          echo "== -version:"; sudo timeout -s KILL 180 "$CLI" -version 2>&1 | head -15
+          echo; echo "== -help:"; sudo timeout -s KILL 180 "$CLI" -help 2>&1 | head -50
 
-      - name: Какую версию платформы 1С знает эта EDT
+      - name: Какую версию платформы 1С знает эта среда
         continue-on-error: true
         run: |
           set -uo pipefail
-          echo "== ищем требование к 8.3.27 в плагинах EDT (минимальная сборка):"
-          sudo grep -rao '8\.3\.27\.[0-9]\{3,4\}' /opt/1C/edt/plugins 2>/dev/null | sort -u | head -20 || true
-          echo "== и минимальные версии других линеек:"
-          sudo grep -rao '8\.3\.2[0-9]\.[0-9]\{3,4\}' /opt/1C/edt/plugins 2>/dev/null | sort -u | head -20 || true
-          echo "== плагин платформы в дистрибутиве:"; ls /opt/1C/edt/plugins 2>/dev/null | grep -i 'v8.dt' | head -10
+          ROOT=$(dirname "$(sudo find /opt/1C -maxdepth 5 -name '1cedt' -type f | head -1)")
+          echo "== каталог среды: $ROOT"
+          echo "== минимальные сборки 8.3.2x, найденные в плагинах:"
+          sudo grep -rao '8\.3\.2[0-9]\.[0-9]\{3,4\}' "$ROOT/plugins" 2>/dev/null | sort -u | head -20 || true
 
       - name: Установить платформу 8.3.27.1508 (учебная)
         run: |
