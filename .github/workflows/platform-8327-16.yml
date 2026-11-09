@@ -1,0 +1,73 @@
+# №16: disposable runner; no credentials, license activation, working infobases, or distribution artifacts.
+name: №16 — платформа 1С 8.3.27.2342
+on:
+  push:
+    branches: [agent/16-platform-8327-probe]
+permissions:
+  contents: read
+jobs:
+  platform:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 40
+    steps:
+      - name: Проверить защищённый источник
+        env:
+          PLATFORM_ID: ${{ secrets.SI_CI_PLATFORM_FILE_ID }}
+        run: |
+          set -euo pipefail
+          if [ -z "$PLATFORM_ID" ]; then
+            echo '::error::Нет секрета SI_CI_PLATFORM_FILE_ID'; exit 1
+          fi
+      - name: Подготовить disposable runner
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq xvfb xauth libgtk-3-0 libwebkit2gtk-4.0-37 libglu1-mesa unzip x11-utils > /dev/null
+          mkdir -p "$RUNNER_TEMP/si16-platform"
+          df -h "$RUNNER_TEMP"
+      - name: Скачать и сверить SHA платформы
+        env:
+          PLATFORM_ID: ${{ secrets.SI_CI_PLATFORM_FILE_ID }}
+        run: |
+          set -euo pipefail
+          curl -fsSL --retry 3 --connect-timeout 30 --max-time 1200 \
+            "https://drive.usercontent.google.com/download?id=${PLATFORM_ID}&export=download&confirm=t" \
+            -o "$RUNNER_TEMP/si16-platform/platform.zip"
+          printf '%s  %s\n' '68313114d6daf454eff2920707360c6a5178c2aea041d043f53767118676c4fd' "$RUNNER_TEMP/si16-platform/platform.zip" | sha256sum -c -
+      - name: Установить платформу 8.3.27.2342
+        run: |
+          set -euo pipefail
+          unzip -q "$RUNNER_TEMP/si16-platform/platform.zip" 'setup-full-8.3.27.2342-x86_64.run' -d "$RUNNER_TEMP/si16-platform"
+          chmod +x "$RUNNER_TEMP/si16-platform/setup-full-8.3.27.2342-x86_64.run"
+          sudo "$RUNNER_TEMP/si16-platform/setup-full-8.3.27.2342-x86_64.run" --mode unattended --unattendedmodeui none --installer-language en --enable-components server,server_admin,client_full,ru
+          BIN=/opt/1cv8/x86_64/8.3.27.2342/1cv8
+          test -x "$BIN"
+          echo '1C 8.3.27.2342 binary installed in disposable runner.'
+          ldd "$BIN" | grep 'not found' || true
+      - name: Создать пустую изолированную ИБ
+        run: |
+          set -euo pipefail
+          BASE="$RUNNER_TEMP/si16-platform/empty-ib"
+          BIN=/opt/1cv8/x86_64/8.3.27.2342/1cv8
+          mkdir -p "$BASE"
+          timeout 180s xvfb-run -a "$BIN" CREATEINFOBASE "File=$BASE" > "$RUNNER_TEMP/si16-platform/create.log" 2>&1 || { cat "$RUNNER_TEMP/si16-platform/create.log"; exit 1; }
+          cat "$RUNNER_TEMP/si16-platform/create.log"
+          test -s "$BASE/1Cv8.1CD"
+          stat -c 'Empty DB file bytes: %s' "$BASE/1Cv8.1CD"
+      - name: Проверить работу конфигуратора без активации лицензии
+        run: |
+          set -euo pipefail
+          BASE="$RUNNER_TEMP/si16-platform/empty-ib"
+          BIN=/opt/1cv8/x86_64/8.3.27.2342/1cv8
+          LOG="$RUNNER_TEMP/si16-platform/designer.log"
+          set +e
+          timeout 150s xvfb-run -a "$BIN" DESIGNER "/F$BASE" /DumpCfg "$RUNNER_TEMP/si16-platform/empty.cf" /DisableStartupDialogs /Out "$LOG"
+          code=$?
+          set -e
+          echo "DESIGNER exit: $code"
+          if [ -f "$LOG" ]; then cat "$LOG"; fi
+          if [ "$code" -ne 0 ] || [ ! -s "$RUNNER_TEMP/si16-platform/empty.cf" ]; then
+            echo '::error::Designer or license check failed; no license activation was attempted.'
+            exit 1
+          fi
+          echo 'Empty test infobase: Designer /DumpCfg succeeded. This is not an EDT integration test.'
