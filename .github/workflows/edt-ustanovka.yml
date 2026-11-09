@@ -15,7 +15,7 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 90
     env:
-      EDT_ID: 1SWCzeEwAT7jm1yrSO4OWHHi5WbST_ltC
+      EDT_ID: 1VoNAre0c3r7jRUtVlP4jUpXbNgur3GkI
       PLATFORM_ID: 18b_5EnQYlkPg-SW4cXK20s9MeHzEZBGJ
       PREFIX: /opt/1cv8
     steps:
@@ -58,74 +58,57 @@ jobs:
           echo "== содержимое архива EDT:"; ls "$RUNNER_TEMP/si/edt"
           echo "== содержимое архива платформы:"; ls "$RUNNER_TEMP/si/platform"
 
-      - name: Что предлагает установщик EDT (это и есть «выбор при начале установки»)
+      - name: Что внутри дистрибутива EDT (это полный дистрибутив, а не загрузчик)
         run: |
           set -euo pipefail
-          cd "$RUNNER_TEMP/si/edt"
-          sudo ./1ce-installer-cli query 2>/dev/null | tee "$RUNNER_TEMP/si/edt-catalog.txt"
+          SRC=$(find "$RUNNER_TEMP/si/edt" -maxdepth 2 -name '1cedt' -type f | head -1)
+          echo "== исполняемый файл EDT: $SRC"
+          ROOT=$(dirname "$SRC")
+          echo "== каталог дистрибутива: $ROOT"
+          ls "$ROOT" | head -20
+          echo "== размеры верхнего уровня:"
+          du -sh "$ROOT"/* 2>/dev/null | sort -h | tail -8
+          echo "== файл версии/инициализации:"
+          cat "$ROOT/1cedt.ini" 2>/dev/null | head -20 || echo "1cedt.ini нет"
+          echo "== есть ли CLI и своя Java:"
+          find "$ROOT" -maxdepth 2 -name '1cedtcli*' -o -maxdepth 2 -name 'java' -type f | head -5
+          echo "== текст «Start»/«launcher» — не загрузчик ли это снова:"
+          grep -rilE 'cloud.launcher|useOAuth' "$ROOT"/*.ini "$ROOT/configuration" 2>/dev/null | head -3 || echo "признаков загрузчика нет"
 
-      - name: Установить EDT
+      - name: Установить EDT 2024.2.6 (полный дистрибутив)
         run: |
           set -euo pipefail
-          cd "$RUNNER_TEMP/si/edt"
-          sudo ./1ce-installer-cli install all --products-home /opt/1C --ignore-hardware-checks 2>&1 | tail -25
-          echo "== установлено:"
-          sudo ./1ce-installer-cli query installed 2>/dev/null | tee "$RUNNER_TEMP/si/edt-installed.txt"
-          sudo du -sh /opt/1C/* 2>/dev/null || true
+          SRC=$(find "$RUNNER_TEMP/si/edt" -maxdepth 2 -name '1cedt' -type f | head -1)
+          ROOT=$(dirname "$SRC")
+          sudo mkdir -p /opt/1C
+          sudo cp -a "$ROOT" /opt/1C/edt
+          sudo chmod +x /opt/1C/edt/1cedt /opt/1C/edt/1cedtcli 2>/dev/null || true
+          echo "== установлено в /opt/1C/edt:"; du -sh /opt/1C/edt
+          echo "== версия из имени каталога дистрибутива:"; basename "$ROOT"
+          echo "== версия из product-файла (если есть):"
+          sudo find /opt/1C/edt -maxdepth 2 -iname '*product*' -o -maxdepth 2 -iname '.eclipseproduct' | head -5
+          sudo cat /opt/1C/edt/.eclipseproduct 2>/dev/null || true
 
-      - name: EDT — что установлено (метаданные, без запуска GUI)
-        run: |
-          set -euo pipefail
-          echo "== продукт и компоненты (из установки):"
-          cd "$RUNNER_TEMP/si/edt"
-          sudo ./1ce-installer-cli query installed 2>/dev/null
-          echo "== каталог установки:"
-          sudo find /opt/1C/components -maxdepth 1 -mindepth 1 -type d -printf '%f\n'
-          echo "== размеры:"
-          sudo du -sh /opt/1C/components/* 2>/dev/null | sort -h | tail -5
-          echo "== что это за штука (по внутренностям):"
-          D=$(sudo find /opt/1C/components -maxdepth 1 -mindepth 1 -type d -name '1c-edt-start*' | head -1)
-          sudo ls "$D" | head -10
-          sudo grep -c . "$D/1cedtstart.ini" 2>/dev/null || true
-          echo "== признак загрузчика (cloud launcher / OAuth):"
-          sudo ls "$D/plugins" 2>/dev/null | grep -iE 'cloud|launcher|oauth' | head -5 || echo "нет плагинов облачного запуска"
-
-      - name: Спрашивает ли установщик/стартер версию — смотрим на экран
+      - name: Разведка CLI — какие команды есть у 2024.2.6
         continue-on-error: true
-        timeout-minutes: 8
+        timeout-minutes: 10
         run: |
           set -uo pipefail
-          mkdir -p "$RUNNER_TEMP/si/shots"
-          Xvfb :91 -screen 0 1400x1000x24 > /tmp/xvfb-edt.log 2>&1 &
-          sleep 3
-          export DISPLAY=:91
+          CLI=/opt/1C/edt/1cedtcli
+          echo "== версия системы и Java:"; sudo "$CLI" -version 2>&1 | head -20 || true
+          echo; echo "== справка CLI:"; sudo "$CLI" -help 2>&1 | head -60 || true
+          echo; echo "== справка по командам (если есть подкоманда help):"
+          sudo "$CLI" -command help 2>&1 | head -40 || true
 
-          snap() {   # $1 — имя файла
-            scrot -o "$RUNNER_TEMP/si/shots/$1.png" 2>/dev/null || true
-            echo "--- распознанный текст экрана $1:"
-            tesseract "$RUNNER_TEMP/si/shots/$1.png" stdout -l rus+eng 2>/dev/null | grep -v '^$' | head -25 || true
-          }
-
-          echo "=== 1. ГРАФИЧЕСКИЙ УСТАНОВЩИК (1ce-installer): спрашивает ли версию?"
-          cd "$RUNNER_TEMP/si/edt"
-          sudo -E ./1ce-installer > /tmp/gui-installer.log 2>&1 &
-          sleep 25
-          snap "1-installer"
-          sudo pkill -f 1ce-installer 2>/dev/null || true
-
-          echo
-          echo "=== 2. СТАРТЕР EDT (1cedtstart): предлагает ли выбрать версию/вход?"
-          BIN=$(sudo find /opt/1C/components -maxdepth 2 -name '1cedtstart' -type f | head -1)
-          sudo -E "$BIN" -nosplash -consoleLog > /tmp/edt-start.log 2>&1 &
-          sleep 45
-          snap "2-start"
-          sudo pkill -9 -f 1cedtstart 2>/dev/null || true
-
-          echo
-          echo "=== 3. Есть ли в дистрибутиве несколько версий продукта?"
-          sudo ./1ce-installer-cli query 2>/dev/null
-          echo "=== файлы дистрибутива:"
-          ls -1 "$RUNNER_TEMP/si/edt"
+      - name: Какую версию платформы 1С знает эта EDT
+        continue-on-error: true
+        run: |
+          set -uo pipefail
+          echo "== ищем требование к 8.3.27 в плагинах EDT (минимальная сборка):"
+          sudo grep -rao '8\.3\.27\.[0-9]\{3,4\}' /opt/1C/edt/plugins 2>/dev/null | sort -u | head -20 || true
+          echo "== и минимальные версии других линеек:"
+          sudo grep -rao '8\.3\.2[0-9]\.[0-9]\{3,4\}' /opt/1C/edt/plugins 2>/dev/null | sort -u | head -20 || true
+          echo "== плагин платформы в дистрибутиве:"; ls /opt/1C/edt/plugins 2>/dev/null | grep -i 'v8.dt' | head -10
 
       - name: Установить платформу 8.3.27.1508 (учебная)
         run: |
@@ -181,8 +164,56 @@ jobs:
           fi
           sudo pkill -9 -f Xvfb 2>/dev/null || true
 
+      - name: Связка — EDT запускается рядом с учебной платформой
+        shell: bash
+        timeout-minutes: 12
+        run: |
+          set -uo pipefail
+          Xvfb :93 -screen 0 1400x1000x24 > /tmp/xvfb-edt2.log 2>&1 &
+          sleep 3
+          export DISPLAY=:93
+          WS=/tmp/edt-ws; sudo rm -rf "$WS"; mkdir -p "$WS"
+          echo "== старт EDT 2024.2.6 (без стартера, прямо 1cedt):"
+          sudo -E /opt/1C/edt/1cedt -data "$WS" -nosplash -consoleLog > /tmp/edt-gui.log 2>&1 &
+          for i in $(seq 1 24); do
+            sleep 5
+            if sudo test -s "$WS/.metadata/.log"; then
+              echo "лог появился через $((i*5)) с"
+              break
+            fi
+          done
+          echo "== первая строка лога EDT (там версия и JVM):"
+          sudo head -5 "$WS/.metadata/.log" 2>/dev/null || echo "лог не создан"
+          echo "== ошибки в логе (первые 15):"
+          sudo grep -iE 'error|severe|exception' "$WS/.metadata/.log" 2>/dev/null | head -15 || echo "ошибок нет"
+          echo "== упоминания платформы 1С в логе:"
+          sudo grep -iE '8\.3\.27|1cv8|platform' "$WS/.metadata/.log" 2>/dev/null | head -10 || echo "не упоминается"
+          sudo pkill -9 -f '/opt/1C/edt/1cedt' 2>/dev/null || true
+          sudo pkill -9 -f Xvfb 2>/dev/null || true
+          echo "== console-вывод EDT (первые 40 строк):"
+          head -40 /tmp/edt-gui.log || true
+
+      - name: Связка — пробуем CLI-командой дотянуться до платформы
+        continue-on-error: true
+        timeout-minutes: 15
+        run: |
+          set -uo pipefail
+          CLI=/opt/1C/edt/1cedtcli
+          WS=/tmp/edt-cli-ws; sudo rm -rf "$WS"; mkdir -p "$WS"
+          for cmd in "-version" "-command version" "-command export" "-command import" \
+                     "-command create-project" "-command check"; do
+            echo "=== попытка: $CLI $cmd"
+            sudo timeout -s KILL 120 "$CLI" -data "$WS" $cmd 2>&1 | head -20 || echo "код $?"
+            echo
+          done
+          echo "== что CLI написал в лог:"
+          sudo tail -30 "$WS/.metadata/.log" 2>/dev/null || echo "лога нет"
+
       - name: Сводка
         if: always()
         run: |
-          echo "== EDT:"; cat "$RUNNER_TEMP/si/edt-installed.txt" 2>/dev/null || echo "нет данных"
+          echo "== EDT (полный дистрибутив):"
+          sudo cat /opt/1C/edt/.eclipseproduct 2>/dev/null || echo "нет .eclipseproduct"
+          sudo du -sh /opt/1C/edt 2>/dev/null || true
+          echo "== платформа:"
           echo "== платформа:"; sudo find "$PREFIX" -maxdepth 3 -type d 2>/dev/null | head -10 || echo "нет данных"
