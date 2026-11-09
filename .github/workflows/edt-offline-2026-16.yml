@@ -16,8 +16,10 @@ jobs:
       - name: Проверить наличие защищённого источника
         env:
           EDT_FILE_ID: ${{ secrets.SI_EDT_2026_OFFLINE_FILE_ID }}
+          PLATFORM_ID: ${{ secrets.SI_CI_PLATFORM_FILE_ID }}
         run: |
           set -euo pipefail
+          if [ -z "$PLATFORM_ID" ]; then echo '::error::Нет секрета SI_CI_PLATFORM_FILE_ID'; exit 1; fi
           if [ -z "$EDT_FILE_ID" ]; then
             echo '::error::Нужен Actions secret SI_EDT_2026_OFFLINE_FILE_ID — ID файла offline EDT в Drive; значение не выводить в журнал.'
             exit 1
@@ -106,6 +108,39 @@ jobs:
             echo '::error::EDT CLI did not produce recognizable help.'; exit 1
           fi
           echo 'EDT CLI answered help; product version established separately by installer query.'
+      - name: Установить платформу 8.3.27.2342 на тот же runner
+        env:
+          PLATFORM_ID: ${{ secrets.SI_CI_PLATFORM_FILE_ID }}
+        run: |
+          set -euo pipefail
+          DIR="$RUNNER_TEMP/edt-offline/platform"
+          mkdir -p "$DIR"
+          curl -fsSL --retry 3 --connect-timeout 30 --max-time 1200 \
+            "https://drive.usercontent.google.com/download?id=${PLATFORM_ID}&export=download&confirm=t" -o "$DIR/platform.zip"
+          printf '%s  %s\n' '68313114d6daf454eff2920707360c6a5178c2aea041d043f53767118676c4fd' "$DIR/platform.zip" | sha256sum -c -
+          unzip -q "$DIR/platform.zip" 'setup-full-8.3.27.2342-x86_64.run' -d "$DIR"
+          chmod +x "$DIR/setup-full-8.3.27.2342-x86_64.run"
+          sudo "$DIR/setup-full-8.3.27.2342-x86_64.run" --mode unattended --unattendedmodeui none --installer-language en --enable-components server,server_admin,client_full,ru
+          test -x /opt/1cv8/x86_64/8.3.27.2342/1cv8
+          echo '1C 8.3.27.2342 and full EDT installed on the same disposable runner.'
+          rm -f "$DIR/platform.zip" "$DIR/setup-full-8.3.27.2342-x86_64.run"
+      - name: Создать пустую ИБ рядом с EDT
+        run: |
+          set -euo pipefail
+          BASE="$RUNNER_TEMP/edt-offline/empty-ib"
+          mkdir -p "$BASE"
+          timeout 180s xvfb-run -a /opt/1cv8/x86_64/8.3.27.2342/1cv8 CREATEINFOBASE "File=$BASE" > "$RUNNER_TEMP/edt-offline/create.log" 2>&1 || { cat "$RUNNER_TEMP/edt-offline/create.log"; exit 1; }
+          cat "$RUNNER_TEMP/edt-offline/create.log"
+          test -s "$BASE/1Cv8.1CD"
+          stat -c 'Empty test database bytes: %s' "$BASE/1Cv8.1CD"
+      - name: Проверить версии платформы, поддерживаемые EDT CLI
+        id: platform_versions
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          timeout 240s xvfb-run -a "$EDT_CLI" -data "$RUNNER_TEMP/edt-offline/cli-workspace" -command platform-versions 2>&1 | tee "$RUNNER_TEMP/edt-offline/platform-versions.log"
+          grep -E '(^|[^0-9])8[.]3[.]27([^0-9]|$)' "$RUNNER_TEMP/edt-offline/platform-versions.log" || { echo '::error::EDT CLI did not report support for 8.3.27'; exit 1; }
+          echo 'Platform support version reported; this alone does not connect or validate the test infobase.'
       - name: Maven 3.9.9
         run: |
           set -euo pipefail
@@ -194,7 +229,7 @@ jobs:
               if v['is_error']: raise SystemExit('EDT version tool failed')
           finally: c.close()
           PY
-          echo 'No working infobase, write operation, debugger, or full mvn verify was tested.'
+          echo 'The separately created empty infobase was not linked to EDT; no infobase operations, writes, debugger or full mvn verify were tested.'
       - name: Итог CLI без сокрытия ошибки
         if: always()
         env:
@@ -202,3 +237,10 @@ jobs:
         run: |
           echo "EDT CLI outcome: $CLI_OUTCOME"
           test "$CLI_OUTCOME" = success
+      - name: Итог проверки поддержки версии платформы
+        if: always() && steps.platform_versions.outcome != 'skipped'
+        env:
+          CHECK_OUTCOME: ${{ steps.platform_versions.outcome }}
+        run: |
+          echo "Platform versions CLI outcome: $CHECK_OUTCOME"
+          test "$CHECK_OUTCOME" = success
