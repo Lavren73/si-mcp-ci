@@ -28,7 +28,7 @@ jobs:
           set -euo pipefail
           sudo apt-get update -qq
           sudo apt-get install -y -qq xvfb x11-utils libglu1-mesa libwebkit2gtk-4.0-37 \
-              libgtk-3-0 libcups2 libnss3 libasound2 > /dev/null
+              libgtk-3-0 libcups2 libnss3 libasound2 scrot tesseract-ocr tesseract-ocr-rus > /dev/null
           echo "пакеты поставлены"
 
       - name: Скачать архивы владельца с Google Drive
@@ -90,28 +90,42 @@ jobs:
           echo "== признак загрузчика (cloud launcher / OAuth):"
           sudo ls "$D/plugins" 2>/dev/null | grep -iE 'cloud|launcher|oauth' | head -5 || echo "нет плагинов облачного запуска"
 
-      - name: EDT под виртуальным экраном — ограниченный запуск в файл
+      - name: Спрашивает ли установщик/стартер версию — смотрим на экран
         continue-on-error: true
-        timeout-minutes: 5
+        timeout-minutes: 8
         run: |
-          set -u
-          BIN=$(sudo find /opt/1C/components -maxdepth 2 -name '1cedtstart' -type f | head -1)
-          echo "исполняемый файл: $BIN"
-          Xvfb :91 -screen 0 1280x900x24 > /tmp/xvfb-edt.log 2>&1 &
+          set -uo pipefail
+          mkdir -p "$RUNNER_TEMP/si/shots"
+          Xvfb :91 -screen 0 1400x1000x24 > /tmp/xvfb-edt.log 2>&1 &
           sleep 3
           export DISPLAY=:91
-          # Запуск строго ограничен: пишем в файл, гасим по всей группе процессов,
-          # иначе потомки держат stdout и шаг висит (проверено прогоном 42623249064).
+
+          snap() {   # $1 — имя файла
+            scrot -o "$RUNNER_TEMP/si/shots/$1.png" 2>/dev/null || true
+            echo "--- распознанный текст экрана $1:"
+            tesseract "$RUNNER_TEMP/si/shots/$1.png" stdout -l rus+eng 2>/dev/null | grep -v '^$' | head -25 || true
+          }
+
+          echo "=== 1. ГРАФИЧЕСКИЙ УСТАНОВЩИК (1ce-installer): спрашивает ли версию?"
+          cd "$RUNNER_TEMP/si/edt"
+          sudo -E ./1ce-installer > /tmp/gui-installer.log 2>&1 &
+          sleep 25
+          snap "1-installer"
+          sudo pkill -f 1ce-installer 2>/dev/null || true
+
+          echo
+          echo "=== 2. СТАРТЕР EDT (1cedtstart): предлагает ли выбрать версию/вход?"
+          BIN=$(sudo find /opt/1C/components -maxdepth 2 -name '1cedtstart' -type f | head -1)
           sudo -E "$BIN" -nosplash -consoleLog > /tmp/edt-start.log 2>&1 &
-          pid=$!
-          for _ in $(seq 1 60); do kill -0 "$pid" 2>/dev/null || break; sleep 2; done
-          sudo pkill -f 1cedtstart 2>/dev/null || true
-          sudo pkill -f equinox 2>/dev/null || true
-          sleep 2
-          echo "== последние строки журнала запуска:"
-          tail -40 /tmp/edt-start.log || true
-          echo "== есть ли запрос на вход/экран:"
-          grep -iE 'oauth|login|browser|authoriz|cloud' /tmp/edt-start.log | head -10 || echo "нет строк про вход"
+          sleep 45
+          snap "2-start"
+          sudo pkill -9 -f 1cedtstart 2>/dev/null || true
+
+          echo
+          echo "=== 3. Есть ли в дистрибутиве несколько версий продукта?"
+          sudo ./1ce-installer-cli query 2>/dev/null
+          echo "=== файлы дистрибутива:"
+          ls -1 "$RUNNER_TEMP/si/edt"
 
       - name: Установить платформу 8.3.27.1508 (учебная)
         run: |
