@@ -123,21 +123,42 @@ jobs:
           echo "== каталоги платформы:"; sudo ls "$PREFIX" || true
           sudo find "$PREFIX" -maxdepth 4 -name '1cv8*' -type f 2>/dev/null | head -10
 
-      - name: Версия платформы и пустая информационная база
-        continue-on-error: true
+      - name: Починка библиотек: убрать встроенный libstdc++ (он старше системного)
+        shell: bash
         run: |
-          set -u
-          BIN=$(sudo find "$PREFIX" -maxdepth 5 -name '1cv8*' -type f -perm -u+x | grep -E '/1cv8(t)?$' | head -1)
+          set -uo pipefail
+          LIBDIR=$(sudo find /opt/1cv8 -name 'libstdc++.so.6' -printf '%h\n' | head -1)
+          echo "каталог с встроенной библиотекой: $LIBDIR"
+          if [ -n "$LIBDIR" ]; then
+            sudo mv "$LIBDIR/libstdc++.so.6" "$LIBDIR/libstdc++.so.6.from-1c" 2>/dev/null || true
+            echo "встроенный libstdc++ переименован, теперь берётся системный:"
+            ls -l /lib/x86_64-linux-gnu/libstdc++.so.6
+            strings /lib/x86_64-linux-gnu/libstdc++.so.6 | grep -c GLIBCXX_3.4.30 || true
+          fi
+
+      - name: Запуск платформы и пустая информационная база
+        shell: bash
+        run: |
+          set -uo pipefail
+          BIN=$(sudo find /opt/1cv8 -maxdepth 5 -name '1cv8t' -type f -perm -u+x | head -1)
           echo "бинарник: $BIN"
-          sudo ldd "$BIN" 2>/dev/null | grep 'not found' && echo "!! не хватает библиотек" || echo "все библиотеки на месте"
-          Xvfb :92 -screen 0 1280x900x24 > /tmp/xvfb-1c.log 2>&1 & xpid=$!
+          echo "== чего не хватает:"
+          ldd "$BIN" 2>/dev/null | grep 'not found' || echo "все библиотеки на месте"
+          Xvfb :92 -screen 0 1280x900x24 > /tmp/xvfb-1c.log 2>&1 &
+          sleep 3
           export DISPLAY=:92
-          for _ in $(seq 1 20); do xdpyinfo >/dev/null 2>&1 && break; sleep 1; done
           BASE="$RUNNER_TEMP/si/ib"; mkdir -p "$BASE"
-          timeout 180 sudo -E "$BIN" CREATEINFOBASE "File=$BASE" > /tmp/ib.log 2>&1; echo "CREATEINFOBASE код: $?"
-          tail -5 /tmp/ib.log || true
+          echo "== версия платформы:"
+          timeout 90 sudo -E "$BIN" /? > /tmp/ver.log 2>&1; echo "код $?"
+          head -3 /tmp/ver.log || true
+          echo "== создание пустой ИБ:"
+          timeout 240 sudo -E "$BIN" CREATEINFOBASE "File=$BASE" > /tmp/ib.log 2>&1
+          code=$?
+          echo "CREATEINFOBASE код: $code"
+          tail -10 /tmp/ib.log || true
           sudo find "$BASE" -maxdepth 1 -type f -printf '%f %s байт\n' | head
-          kill "$xpid" 2>/dev/null || true
+          if [ -s "$BASE/1Cv8.1CD" ]; then echo "ИТОГ: информационная база создана, платформа работает"; else echo "ИТОГ: база не создана"; fi
+          sudo pkill -f Xvfb 2>/dev/null || true
 
       - name: Сводка
         if: always()
