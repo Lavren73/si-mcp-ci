@@ -14,8 +14,9 @@ jobs:
       - name: JDK 17
         uses: actions/setup-java@v4
         with:
-          distribution: temurin
+          distribution: zulu
           java-version: '17'
+          java-package: jdk+fx
       - name: Скачать и проверить хеш архива
         run: |
           set -euo pipefail
@@ -74,6 +75,35 @@ jobs:
           test -x ./1ce-installer-cli
           sudo ./1ce-installer-cli install all --products-home "$RUNNER_TEMP/edt-installed" --ignore-hardware-checks 2>&1 | tail -30
           sudo ./1ce-installer-cli query installed 2>&1 | tail -25
+      - name: Зависимости графической проверки EDT Start
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq xvfb x11-utils xdotool scrot tesseract-ocr tesseract-ocr-rus libgtk-3-0 libwebkit2gtk-4.0-37 libglu1-mesa > /dev/null
+      - name: Запустить Start и исследовать возможность онлайн-установки
+        run: |
+          set -euo pipefail
+          BASE="$RUNNER_TEMP/edt-installed"
+          START=$(sudo find "$BASE" -type f -name '1cedtstart' -print -quit)
+          test -n "$START" && test -x "$START"
+          mkdir -p "$RUNNER_TEMP/edt-user" "$RUNNER_TEMP/edt-ui"
+          export HOME="$RUNNER_TEMP/edt-user" DISPLAY=:98
+          Xvfb :98 -screen 0 1440x900x24 > "$RUNNER_TEMP/edt-ui/xvfb.log" 2>&1 & xpid=$!
+          trap 'if [ -n "${epid:-}" ]; then kill "$epid" 2>/dev/null || true; fi; kill "$xpid" 2>/dev/null || true' EXIT
+          sleep 3
+          "$START" -vm "$JAVA_HOME/bin/java" -nosplash > "$RUNNER_TEMP/edt-ui/start.log" 2>&1 & epid=$!
+          sleep 30
+          echo '=== Видимые окна ==='
+          xwininfo -root -tree | tail -45 || true
+          echo '=== Снимок экрана и текст ==='
+          scrot "$RUNNER_TEMP/edt-ui/screen.png" || true
+          if test -s "$RUNNER_TEMP/edt-ui/screen.png"; then
+            tesseract "$RUNNER_TEMP/edt-ui/screen.png" stdout -l rus+eng 2>/dev/null || true
+          fi
+          echo '=== Вывод стартера ==='
+          tail -100 "$RUNNER_TEMP/edt-ui/start.log" || true
+          if kill -0 "$epid" 2>/dev/null; then echo 'Start process: running'; else echo 'Start process: stopped'; fi
+          echo 'Диагностика без автоподтверждения лицензий и без ввода учётных данных.'
       - name: Проверить настоящую EDT, а не только EDT Start
         run: |
           set -euo pipefail
@@ -86,3 +116,11 @@ jobs:
           fi
           printf '%s\n' "${binaries[@]}"
           echo 'Binary presence alone does not prove SI-MCP plugin or workbench works.'
+      - name: Сохранить снимок изолированного окна Start
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: edt-start-ui-diagnostic
+          path: ${{ runner.temp }}/edt-ui/screen.png
+          if-no-files-found: ignore
+          retention-days: 3
