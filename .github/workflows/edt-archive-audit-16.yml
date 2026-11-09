@@ -1,0 +1,88 @@
+# №16: проверка данного владельцем архива в отдельном disposable runner.
+# Архив 1С не записывается в git, артефакты Actions или общий workspace.
+name: №16 — архив владельца и наличие настоящей EDT
+on:
+  push:
+    branches: [agent/16-edt-archive-audit-20261109]
+permissions:
+  contents: read
+jobs:
+  inspect-edt:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    steps:
+      - name: JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Скачать и проверить хеш архива
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib, os, pathlib, re, urllib.request
+          # Берём идентификатор из ранее запущенного публичного workflow №13 на
+          # зафиксированном SHA, не копируя ссылку в новый workflow или логи.
+          src = ('https://raw.githubusercontent.com/Lavren73/si-mcp-ci/'
+                 'c62504882b39f40ac0b10cb86760b451bdfb70a2/'
+                 '.github/workflows/edt-ustanovka.yml')
+          text = urllib.request.urlopen(src, timeout=30).read().decode('utf-8')
+          ids = re.findall(r'^\s+EDT_ID:\s*([A-Za-z0-9_-]+)\s*$', text, re.M)
+          if len(ids) != 1: raise SystemExit('EDT archive reference unavailable')
+          url = 'https://drive.usercontent.google.com/download?id=' + ids[0] + '&export=download&confirm=t'
+          target = pathlib.Path(os.environ['RUNNER_TEMP']) / 'owner-edt-archive.tar.gz'
+          h = hashlib.sha256(); size = 0
+          with urllib.request.urlopen(url, timeout=120) as r, target.open('wb') as out:
+              while True:
+                  part = r.read(1024 * 1024)
+                  if not part: break
+                  size += len(part)
+                  if size > 300_000_000: raise SystemExit('archive unexpectedly large')
+                  h.update(part); out.write(part)
+          print('Archive bytes:', size, 'SHA-256:', h.hexdigest())
+          if size != 90334407 or h.hexdigest() != '47c3efdb545ffcc40b2ce94124a0f69484fa9328f0c20f299658f952df457bb9':
+              raise SystemExit('Archive does not match owner-provided file')
+          PY
+      - name: Проверить состав и изолированно распаковать
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os, pathlib, tarfile, zipfile, xml.etree.ElementTree as ET
+          root = pathlib.Path(os.environ['RUNNER_TEMP']) / 'edt-input'; root.mkdir()
+          archive = pathlib.Path(os.environ['RUNNER_TEMP']) / 'owner-edt-archive.tar.gz'
+          with tarfile.open(archive, 'r:gz') as t:
+              members = t.getmembers()
+              for m in members:
+                  p = pathlib.PurePosixPath(m.name)
+                  if p.is_absolute() or '..' in p.parts or not (m.isfile() or m.isdir()):
+                      raise SystemExit('Unsafe archive member')
+              if sum(m.size for m in members) > 300_000_000: raise SystemExit('archive exceeds extraction bound')
+              t.extractall(root, members=members)
+          products = list(root.glob('*.e1c.par'))
+          if len(products) != 1: raise SystemExit('Expected exactly one product manifest')
+          with zipfile.ZipFile(products[0]) as z:
+              x = ET.fromstring(z.read('product-manifest.xml'))
+          ns = {'p':'http://1c.ru/installer/product-manifest'}
+          print('Product:', x.findtext('p:id', namespaces=ns), 'version:', x.findtext('p:version', namespaces=ns))
+          print('Components:', ', '.join(c.get('id') for c in x.findall('p:components/p:component', ns)))
+          print('Files in input:', len(members))
+          PY
+      - name: Установить компоненты архива в disposable runner
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/edt-input"
+          test -x ./1ce-installer-cli
+          sudo ./1ce-installer-cli install all --products-home "$RUNNER_TEMP/edt-installed" --ignore-hardware-checks 2>&1 | tail -30
+          sudo ./1ce-installer-cli query installed 2>&1 | tail -25
+      - name: Проверить настоящую EDT, а не только EDT Start
+        run: |
+          set -euo pipefail
+          BASE="$RUNNER_TEMP/edt-installed"
+          mapfile -t binaries < <(sudo find "$BASE" -type f \( -name '1cedt' -o -name '1cedtcli' \) -print 2>/dev/null)
+          printf 'Real EDT binaries found: %s\n' "${#binaries[@]}"
+          if [ "${#binaries[@]}" -eq 0 ]; then
+            echo '::error::В предоставленном комплекте установлена EDT Start; настоящая EDT не найдена. Проверка плагина невозможна.'
+            exit 1
+          fi
+          printf '%s\n' "${binaries[@]}"
+          echo 'Binary presence alone does not prove SI-MCP plugin or workbench works.'
