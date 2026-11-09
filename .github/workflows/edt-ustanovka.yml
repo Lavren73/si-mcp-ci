@@ -73,17 +73,45 @@ jobs:
           sudo ./1ce-installer-cli query installed 2>/dev/null | tee "$RUNNER_TEMP/si/edt-installed.txt"
           sudo du -sh /opt/1C/* 2>/dev/null || true
 
-      - name: EDT под виртуальным экраном — что за версия и запускается ли
+      - name: EDT — что установлено (метаданные, без запуска GUI)
+        run: |
+          set -euo pipefail
+          echo "== продукт и компоненты (из установки):"
+          cd "$RUNNER_TEMP/si/edt"
+          sudo ./1ce-installer-cli query installed 2>/dev/null
+          echo "== каталог установки:"
+          sudo find /opt/1C/components -maxdepth 1 -mindepth 1 -type d -printf '%f\n'
+          echo "== размеры:"
+          sudo du -sh /opt/1C/components/* 2>/dev/null | sort -h | tail -5
+          echo "== что это за штука (по внутренностям):"
+          D=$(sudo find /opt/1C/components -maxdepth 1 -mindepth 1 -type d -name '1c-edt-start*' | head -1)
+          sudo ls "$D" | head -10
+          sudo grep -c . "$D/1cedtstart.ini" 2>/dev/null || true
+          echo "== признак загрузчика (cloud launcher / OAuth):"
+          sudo ls "$D/plugins" 2>/dev/null | grep -iE 'cloud|launcher|oauth' | head -5 || echo "нет плагинов облачного запуска"
+
+      - name: EDT под виртуальным экраном — ограниченный запуск в файл
         continue-on-error: true
+        timeout-minutes: 5
         run: |
           set -u
           BIN=$(sudo find /opt/1C/components -maxdepth 2 -name '1cedtstart' -type f | head -1)
           echo "исполняемый файл: $BIN"
-          Xvfb :91 -screen 0 1280x900x24 > /tmp/xvfb-edt.log 2>&1 & xpid=$!
+          Xvfb :91 -screen 0 1280x900x24 > /tmp/xvfb-edt.log 2>&1 &
+          sleep 3
           export DISPLAY=:91
-          for _ in $(seq 1 20); do xdpyinfo >/dev/null 2>&1 && break; sleep 1; done
-          timeout 120 sudo -E "$BIN" -nosplash -consoleLog 2>&1 | tail -25 || true
-          kill "$xpid" 2>/dev/null || true
+          # Запуск строго ограничен: пишем в файл, гасим по всей группе процессов,
+          # иначе потомки держат stdout и шаг висит (проверено прогоном 42623249064).
+          sudo -E "$BIN" -nosplash -consoleLog > /tmp/edt-start.log 2>&1 &
+          pid=$!
+          for _ in $(seq 1 60); do kill -0 "$pid" 2>/dev/null || break; sleep 2; done
+          sudo pkill -f 1cedtstart 2>/dev/null || true
+          sudo pkill -f equinox 2>/dev/null || true
+          sleep 2
+          echo "== последние строки журнала запуска:"
+          tail -40 /tmp/edt-start.log || true
+          echo "== есть ли запрос на вход/экран:"
+          grep -iE 'oauth|login|browser|authoriz|cloud' /tmp/edt-start.log | head -10 || echo "нет строк про вход"
 
       - name: Установить платформу 8.3.27.1508 (учебная)
         run: |
