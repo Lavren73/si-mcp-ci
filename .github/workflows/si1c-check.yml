@@ -4,82 +4,45 @@ on:
 permissions:
   contents: read
 jobs:
-  build:
+  check:
     runs-on: [self-hosted, Linux, X64, si1c]
-    timeout-minutes: 40
+    timeout-minutes: 6
     steps:
-      - name: Подготовить уникальные временные каталоги
+      - name: Проверить границы копии EDT только чтением
         shell: bash
         run: |
-          set -euo pipefail
-          test ! -e "$GITHUB_WORKSPACE/si16-src-$GITHUB_RUN_ID"
-          echo 'SI16_OWNED_SRC=1' >> "$GITHUB_ENV"
-          DIR=$(mktemp -d "${RUNNER_TEMP:?}/si16-build-${GITHUB_RUN_ID}-XXXXXX")
-          echo "SI16_BUILD_DIR=$DIR" >> "$GITHUB_ENV"
-      - name: Подготовить временный SSH-клиент без установки
-        shell: bash
-        run: |
-          set -euo pipefail
-          if command -v ssh >/dev/null; then ssh -V; exit 0; fi
-          command -v apt-get >/dev/null && command -v dpkg-deb >/dev/null
-          cd "$SI16_BUILD_DIR"
-          mkdir -p apt-lists/partial apt-cache/archives/partial
-          APT_OPTS=(-o "Dir::State::lists=$SI16_BUILD_DIR/apt-lists" -o "Dir::Cache::archives=$SI16_BUILD_DIR/apt-cache/archives" -o Acquire::Retries=1 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20)
-          apt-get "${APT_OPTS[@]}" update
-          apt-get "${APT_OPTS[@]}" download openssh-client
-          mkdir -p ssh-client
-          dpkg-deb -x ./openssh-client_*.deb ssh-client
-          "$SI16_BUILD_DIR/ssh-client/usr/bin/ssh" -V
-          echo "$SI16_BUILD_DIR/ssh-client/usr/bin" >> "$GITHUB_PATH"
-      - name: Исходники SI-MCP с точной ревизией
-        uses: actions/checkout@v4
-        with:
-          repository: Lavren73/SI-MCP
-          ref: d03eea5ea294b579f811afb412c081076baebc9b
-          ssh-key: ${{ secrets.SI_MCP_DEPLOY_KEY }}
-          path: si16-src-${{ github.run_id }}
-          persist-credentials: false
-      - name: Получить временные JDK 17 и Maven с проверкой хэшей
-        shell: bash
-        run: |
-          set -euo pipefail
-          cd "$SI16_BUILD_DIR"
-          curl -fL --retry 2 --connect-timeout 20 --max-time 600 -sS https://cdn.azul.com/zulu/bin/zulu17.54.21-ca-fx-jdk17.0.13-linux_x64.tar.gz -o java.tar.gz
-          echo 'b3d566934b49589346a304dabcab1faef84882aae445a080eae433355423a7f9  java.tar.gz' | sha256sum -c -
-          curl -fL --retry 2 --connect-timeout 20 --max-time 300 -sS https://archive.apache.org/dist/maven/maven-3/3.9.9/binaries/apache-maven-3.9.9-bin.tar.gz -o maven.tar.gz
-          echo 'a555254d6b53d267965a3404ecb14e53c3827c09c3b94b5678835887ab404556bfaf78dcfe03ba76fa2508649dca8531c74bca4d5846513522404d48e8c4ac8b  maven.tar.gz' | sha512sum -c -
-          mkdir jdk maven home
-          tar --no-same-owner -xzf java.tar.gz -C jdk --strip-components=1
-          tar --no-same-owner -xzf maven.tar.gz -C maven --strip-components=1
-          export JAVA_HOME="$SI16_BUILD_DIR/jdk" PATH="$SI16_BUILD_DIR/jdk/bin:$PATH"
-          ./jdk/bin/java -version 2>&1 | head -3
-          ./maven/bin/mvn -version 2>&1 | head -4
-      - name: Сборка p2 без тестов в отдельном каталоге
-        shell: bash
-        run: |
-          set -euo pipefail
-          ROOT="$GITHUB_WORKSPACE/si16-src-$GITHUB_RUN_ID"
-          test "$(git -C "$ROOT" rev-parse HEAD)" = d03eea5ea294b579f811afb412c081076baebc9b
-          export HOME="$SI16_BUILD_DIR/home" JAVA_HOME="$SI16_BUILD_DIR/jdk" PATH="$SI16_BUILD_DIR/jdk/bin:$PATH" MAVEN_OPTS='-Xmx3g'
-          cd "$ROOT/server"
-          "$SI16_BUILD_DIR/maven/bin/mvn" -B -ntp -Dstyle.color=never -Dmaven.repo.local="$SI16_BUILD_DIR/m2" -DskipTests package > "$SI16_BUILD_DIR/build.log" 2>&1 || { tail -80 "$SI16_BUILD_DIR/build.log"; exit 1; }
-          tail -25 "$SI16_BUILD_DIR/build.log"
-          SITE=repositories/si.edt.mcp.server.repository/target/repository
-          test -f "$SITE/content.jar" || test -f "$SITE/content.xml"
-          echo 'RESULT_BUILD_ONLY_TESTS_SKIPPED=true'
-      - name: Сохранить проверочный p2 сайт на один день
-        uses: actions/upload-artifact@v4
-        with:
-          name: si16-p2-d03eea5
-          path: si16-src-${{ github.run_id }}/server/repositories/si.edt.mcp.server.repository/target/repository/
-          if-no-files-found: error
-          retention-days: 1
-      - name: Удалить только созданные временные файлы
-        if: always()
-        shell: bash
-        run: |
-          set -u
-          case "${SI16_BUILD_DIR:-}" in "$RUNNER_TEMP"/si16-build-"$GITHUB_RUN_ID"-*) rm -rf -- "$SI16_BUILD_DIR";; esac
-          if [ "${SI16_OWNED_SRC:-0}" = 1 ]; then
-            rm -rf -- "$GITHUB_WORKSPACE/si16-src-$GITHUB_RUN_ID"
-          fi
+          python3 - <<'PY'
+          import gzip,os,pathlib,re
+          root=pathlib.Path('/opt/si-edt').resolve()
+          print('RESULT_EDT_ROOT_SYMLINK='+str(pathlib.Path('/opt/si-edt').is_symlink()).lower())
+          launchers=list(root.rglob('1cedt'))
+          launchers=[p for p in launchers if p.is_file()]
+          print('RESULT_EDT_LAUNCHER_COUNT='+str(len(launchers)))
+          external=0;broken=0;links=0
+          for here,dirs,files in os.walk(root,followlinks=False):
+              for name in dirs+files:
+                  p=pathlib.Path(here)/name
+                  if not p.is_symlink():continue
+                  links+=1
+                  try:
+                      target=p.resolve(strict=True)
+                      if not target.is_relative_to(root):external+=1
+                  except (OSError,RuntimeError):broken+=1
+          print('RESULT_SYMLINK_COUNT='+str(links))
+          print('RESULT_EXTERNAL_SYMLINK_COUNT='+str(external))
+          print('RESULT_BROKEN_SYMLINK_COUNT='+str(broken))
+          for exe in launchers:
+              home=exe.parent
+              print('RESULT_LAUNCHER_PARENT_HAS_P2='+str((home/'p2').is_dir()).lower())
+              print('RESULT_LAUNCHER_PARENT_HAS_PLUGINS='+str((home/'plugins').is_dir()).lower())
+              print('RESULT_LAUNCHER_PARENT_HAS_CONFIG='+str((home/'configuration').is_dir()).lower())
+          hits=0; profiles=0
+          for p in root.rglob('*.profile.gz'):
+              profiles+=1
+              try:
+                  with gzip.open(p,'rt',encoding='utf8',errors='replace') as f: text=f.read(10000000)
+                  if '/opt/si-edt' in text:hits+=1
+              except (OSError,EOFError):pass
+          print('RESULT_P2_PROFILE_COUNT='+str(profiles))
+          print('RESULT_P2_PROFILES_MENTION_INSTALL_PATH='+str(hits))
+          PY
