@@ -16,10 +16,10 @@ jobs:
       - name: Проверить наличие защищённого источника
         env:
           EDT_FILE_ID: ${{ secrets.SI_EDT_2026_OFFLINE_FILE_ID2 || secrets.SI_EDT_2026_OFFLINE_FILE_ID }}
-          PLATFORM_ID: ${{ secrets.SI_1C_TRAINING_FILE_ID2 }}
+          PLATFORM_ID: ${{ secrets.SI_1C_TRAINING_FILE_ID }}
         run: |
           set -euo pipefail
-          if [ -z "$PLATFORM_ID" ]; then echo '::error::Нет секрета SI_1C_TRAINING_FILE_ID2'; exit 1; fi
+          if [ -z "$PLATFORM_ID" ]; then echo '::error::Нет секрета SI_1C_TRAINING_FILE_ID'; exit 1; fi
           if [ -z "$EDT_FILE_ID" ]; then
             echo '::error::Нужен Actions secret SI_EDT_2026_OFFLINE_FILE_ID2 или SI_EDT_2026_OFFLINE_FILE_ID — ID файла offline EDT в Drive; значение не выводить в журнал.'
             exit 1
@@ -110,7 +110,7 @@ jobs:
           echo 'EDT CLI answered help; product version established separately by installer query.'
       - name: Скачать и проверить учебную платформу
         env:
-          FILE_ID: ${{ secrets.SI_1C_TRAINING_FILE_ID2 }}
+          FILE_ID: ${{ secrets.SI_1C_TRAINING_FILE_ID }}
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/si16-training/dist"
