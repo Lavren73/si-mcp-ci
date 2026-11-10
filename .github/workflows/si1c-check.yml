@@ -3,46 +3,136 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
+  actions: read
 jobs:
   check:
     runs-on: [self-hosted, Linux, X64, si1c]
-    timeout-minutes: 6
+    timeout-minutes: 30
     steps:
-      - name: Проверить границы копии EDT только чтением
+      - name: Выделить временную область
         shell: bash
         run: |
+          set -euo pipefail
+          DIR=$(mktemp -d "${RUNNER_TEMP:?}/si16-p2run-${GITHUB_RUN_ID}-XXXXXX")
+          mkdir -p "$DIR/site" "$DIR/home" "$DIR/workspace" "$DIR/p2config"
+          echo "SI16_ROOT=$DIR" >> "$GITHUB_ENV"
+      - name: Получить ранее собранный p2 артефакт
+        uses: actions/download-artifact@v4
+        with:
+          name: si16-p2-d03eea5
+          path: ${{ env.SI16_ROOT }}/site
+          run-id: 42918245962
+          github-token: ${{ github.token }}
+      - name: Скопировать EDT в отдельный каталог
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f "$SI16_ROOT/site/content.jar" || test -f "$SI16_ROOT/site/content.xml"
+          cp -a --reflink=auto /opt/si-edt "$SI16_ROOT/edt"
+          ROOT=$(dirname "$(find "$SI16_ROOT/edt" -type f -name 1cedt -print -quit)")
+          JAVA=$(find "$SI16_ROOT/edt" -type f -path '*/bin/java' -print -quit)
+          test -x "$ROOT/1cedt" && test -x "$ROOT/1cedtcli" && test -x "$JAVA"
+          test -d "$ROOT/p2" && test -d "$ROOT/plugins"
+          if find "$SI16_ROOT/edt" -type l -print -quit | grep -q .; then echo 'Unexpected symlink in copy; stopping'; exit 1; fi
+          if grep -rIlF '/opt/si-edt' "$ROOT/configuration" --include='*.ini' --include='*.info' --include='*.properties' | grep -q .; then echo 'Original install path in configuration; stopping'; exit 1; fi
+          echo "EDT_BIN=$ROOT/1cedt" >> "$GITHUB_ENV"
+          echo "EDT_CLI=$ROOT/1cedtcli" >> "$GITHUB_ENV"
+          echo "EDT_ROOT=$ROOT" >> "$GITHUB_ENV"
+          echo "EDT_JAVA=$JAVA" >> "$GITHUB_ENV"
+          echo 'RESULT_COPY_CREATED=true'
+      - name: Установить p2 только в копию EDT
+        shell: bash
+        run: |
+          set -euo pipefail
+          export HOME="$SI16_ROOT/home" XDG_CONFIG_HOME="$SI16_ROOT/home/.config" XDG_CACHE_HOME="$SI16_ROOT/home/.cache" XDG_DATA_HOME="$SI16_ROOT/home/.local/share"
+          timeout -s KILL 600s xvfb-run -a "$EDT_BIN" -vm "$EDT_JAVA" -nosplash -configuration "$SI16_ROOT/p2config" -application org.eclipse.equinox.p2.director -repository "file:$SI16_ROOT/site" -installIU si.edt.mcp.server.feature.feature.group -destination "$EDT_ROOT" -bundlepool "$EDT_ROOT" -p2.os linux -p2.ws gtk -p2.arch x86_64 -consoleLog > "$SI16_ROOT/p2.log" 2>&1 || { tail -60 "$SI16_ROOT/p2.log"; exit 1; }
+          tail -20 "$SI16_ROOT/p2.log"
+          echo 'RESULT_P2_INSTALL_SUCCESS=true'
+      - name: Создать из EDT отдельную пустую ИБ
+        shell: bash
+        run: |
+          set -euo pipefail
+          export HOME="$SI16_ROOT/home" XDG_CONFIG_HOME="$SI16_ROOT/home/.config" XDG_CACHE_HOME="$SI16_ROOT/home/.cache" XDG_DATA_HOME="$SI16_ROOT/home/.local/share"
+          timeout -s KILL 180s xvfb-run -a "$EDT_CLI" -data "$SI16_ROOT/workspace" -command infobase-create --name SI16McpIsolated --version 8.3.27 --path "$SI16_ROOT/ib" > "$SI16_ROOT/create.log" 2>&1 || { tail -30 "$SI16_ROOT/create.log"; exit 1; }
+          test -s "$SI16_ROOT/ib/1Cv8.1CD"
+          timeout -s KILL 90s xvfb-run -a "$EDT_CLI" -data "$SI16_ROOT/workspace" -command infobase --details > "$SI16_ROOT/list.log" 2>&1
+          grep -q SI16McpIsolated "$SI16_ROOT/list.log"
+          echo 'RESULT_COPIED_EDT_IB_CREATED_AND_LISTED=true'
+      - name: Проверить MCP на новой рабочей области
+        shell: bash
+        run: |
+          set -euo pipefail
+          export HOME="$SI16_ROOT/home" XDG_CONFIG_HOME="$SI16_ROOT/home/.config" XDG_CACHE_HOME="$SI16_ROOT/home/.cache" XDG_DATA_HOME="$SI16_ROOT/home/.local/share"
           python3 - <<'PY'
-          import gzip,os,pathlib,re
-          root=pathlib.Path('/opt/si-edt').resolve()
-          print('RESULT_EDT_ROOT_SYMLINK='+str(pathlib.Path('/opt/si-edt').is_symlink()).lower())
-          launchers=list(root.rglob('1cedt'))
-          launchers=[p for p in launchers if p.is_file()]
-          print('RESULT_EDT_LAUNCHER_COUNT='+str(len(launchers)))
-          external=0;broken=0;links=0
-          for here,dirs,files in os.walk(root,followlinks=False):
-              for name in dirs+files:
-                  p=pathlib.Path(here)/name
-                  if not p.is_symlink():continue
-                  links+=1
+          import json,os,pathlib,secrets,signal,socket,subprocess,time,urllib.request,urllib.error
+          root=pathlib.Path(os.environ['SI16_ROOT']); ws=root/'workspace'
+          with socket.socket() as s:
+              s.bind(('127.0.0.1',0));port=s.getsockname()[1]
+          token=secrets.token_urlsafe(32)
+          prefs=ws/'.metadata/.plugins/org.eclipse.core.runtime/.settings/si.edt.mcp.server.prefs';prefs.parent.mkdir(parents=True,exist_ok=True)
+          prefs.write_text('eclipse.preferences.version=1\nmcpServerAutoStart=true\nmcpServerPort='+str(port)+'\nmcpAuthEnabled=true\nmcpAuthToken='+token+'\n',encoding='utf8')
+          log=open(root/'edt.log','wb')
+          cmd=['xvfb-run','-a',os.environ['EDT_BIN'],'-vm',os.environ['EDT_JAVA'],'-nosplash','-data',str(ws),'-consoleLog','-vmargs','-Xmx3g']
+          proc=subprocess.Popen(cmd,stdout=log,stderr=subprocess.STDOUT,start_new_session=True)
+          try:
+              deadline=time.monotonic()+300
+              while time.monotonic()<deadline:
+                  if proc.poll() is not None:raise RuntimeError('EDT exited before MCP start')
                   try:
-                      target=p.resolve(strict=True)
-                      if not target.is_relative_to(root):external+=1
-                  except (OSError,RuntimeError):broken+=1
-          print('RESULT_SYMLINK_COUNT='+str(links))
-          print('RESULT_EXTERNAL_SYMLINK_COUNT='+str(external))
-          print('RESULT_BROKEN_SYMLINK_COUNT='+str(broken))
-          for exe in launchers:
-              home=exe.parent
-              print('RESULT_LAUNCHER_PARENT_HAS_P2='+str((home/'p2').is_dir()).lower())
-              print('RESULT_LAUNCHER_PARENT_HAS_PLUGINS='+str((home/'plugins').is_dir()).lower())
-              print('RESULT_LAUNCHER_PARENT_HAS_CONFIG='+str((home/'configuration').is_dir()).lower())
-          hits=0; profiles=0
-          for p in root.rglob('*.profile.gz'):
-              profiles+=1
-              try:
-                  with gzip.open(p,'rt',encoding='utf8',errors='replace') as f: text=f.read(10000000)
-                  if '/opt/si-edt' in text:hits+=1
-              except (OSError,EOFError):pass
-          print('RESULT_P2_PROFILE_COUNT='+str(profiles))
-          print('RESULT_P2_PROFILES_MENTION_INSTALL_PATH='+str(hits))
+                      with socket.create_connection(('127.0.0.1',port),timeout=1):break
+                  except OSError:time.sleep(2)
+              else:raise RuntimeError('MCP port did not open in 300 seconds')
+              print('RESULT_MCP_PORT_OPEN=true',flush=True)
+              url=f'http://127.0.0.1:{port}/mcp'
+              def post(payload,bearer=None,sid=None):
+                  headers={'Content-Type':'application/json','Accept':'application/json, text/event-stream'}
+                  if bearer:headers['Authorization']='Bearer '+bearer
+                  if sid:headers['Mcp-Session-Id']=sid
+                  req=urllib.request.Request(url,data=json.dumps(payload).encode(),headers=headers,method='POST')
+                  try:
+                      with urllib.request.urlopen(req,timeout=30) as r:return r.status,r.headers,r.read().decode('utf8','replace')
+                  except urllib.error.HTTPError as e:return e.code,e.headers,e.read().decode('utf8','replace')
+              ping={'jsonrpc':'2.0','id':1,'method':'ping','params':{}}
+              code,_,_=post(ping)
+              print('RESULT_UNAUTHENTICATED_HTTP='+str(code),flush=True)
+              if code!=401:raise RuntimeError('Expected HTTP 401 without token')
+              init={'jsonrpc':'2.0','id':2,'method':'initialize','params':{'protocolVersion':'2025-11-25','capabilities':{},'clientInfo':{'name':'si16-isolated','version':'1'}}}
+              code,h,b=post(init,token)
+              print('RESULT_INITIALIZE_HTTP='+str(code),flush=True)
+              if code!=200:raise RuntimeError('MCP initialize failed')
+              def parse(body):
+                  if body.lstrip().startswith('data:') or '\ndata:' in body:
+                      body='\n'.join(x[5:].lstrip() for x in body.splitlines() if x.startswith('data:'))
+                  return json.loads(body)
+              data=parse(b)
+              if data.get('jsonrpc')!='2.0' or data.get('id')!=2 or not isinstance(data.get('result'),dict):raise RuntimeError('Invalid initialize result')
+              sid=h.get('Mcp-Session-Id');print('RESULT_SESSION_ID_PRESENT='+str(bool(sid)).lower(),flush=True)
+              if not sid:raise RuntimeError('Missing session id')
+              code,_,_=post({'jsonrpc':'2.0','method':'notifications/initialized'},token,sid)
+              print('RESULT_INITIALIZED_NOTIFICATION_HTTP='+str(code),flush=True)
+              if code not in (200,202,204):raise RuntimeError('Notification refused')
+              code,_,b=post({'jsonrpc':'2.0','id':3,'method':'tools/list','params':{}},token,sid)
+              if code!=200:raise RuntimeError('tools/list failed')
+              data=parse(b);result=data.get('result',{})
+              if data.get('id')!=3 or not isinstance(result.get('tools'),list):raise RuntimeError('Invalid tools/list')
+              names={x.get('name') for x in result['tools'] if isinstance(x,dict)}
+              print('RESULT_TOOLS_FIRST_PAGE_COUNT='+str(len(names)),flush=True)
+              print('RESULT_CREATE_PROJECT_PRESENT='+str('create_project' in names).lower(),flush=True)
+              print('RESULT_SECURITY_AUDIT_PRESENT='+str('security_audit' in names).lower(),flush=True)
+              print('RESULT_TOOLS_MORE_PAGES='+str(bool(result.get('nextCursor'))).lower(),flush=True)
+          finally:
+              try:os.killpg(proc.pid,signal.SIGTERM)
+              except ProcessLookupError:pass
+              try:proc.wait(timeout=15)
+              except subprocess.TimeoutExpired:
+                  try:os.killpg(proc.pid,signal.SIGKILL)
+                  except ProcessLookupError:pass
+                  proc.wait(timeout=10)
+              log.close()
           PY
+      - name: Удалить только созданный временный стенд
+        if: always()
+        shell: bash
+        run: |
+          set -u
+          case "${SI16_ROOT:-}" in "$RUNNER_TEMP"/si16-p2run-"$GITHUB_RUN_ID"-*) rm -rf -- "$SI16_ROOT";; esac
