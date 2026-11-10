@@ -23,7 +23,10 @@ jobs:
           if command -v ssh >/dev/null; then ssh -V; exit 0; fi
           command -v apt-get >/dev/null && command -v dpkg-deb >/dev/null
           cd "$SI16_BUILD_DIR"
-          apt-get download openssh-client
+          mkdir -p apt-lists/partial apt-cache/archives/partial
+          APT_OPTS=(-o "Dir::State::lists=$SI16_BUILD_DIR/apt-lists" -o "Dir::Cache::archives=$SI16_BUILD_DIR/apt-cache/archives" -o Acquire::Retries=1 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20)
+          apt-get "${APT_OPTS[@]}" update
+          apt-get "${APT_OPTS[@]}" download openssh-client
           mkdir -p ssh-client
           dpkg-deb -x ./openssh-client_*.deb ssh-client
           "$SI16_BUILD_DIR/ssh-client/usr/bin/ssh" -V
