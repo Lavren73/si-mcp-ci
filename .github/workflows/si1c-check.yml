@@ -110,7 +110,7 @@ jobs:
                   if sid:headers['Mcp-Session-Id']=sid
                   req=urllib.request.Request(url,data=json.dumps(payload).encode(),headers=headers,method='POST')
                   try:
-                      with urllib.request.urlopen(req,timeout=30) as r:return r.status,r.headers,r.read().decode('utf8','replace')
+                      with urllib.request.urlopen(req,timeout=120) as r:return r.status,r.headers,r.read().decode('utf8','replace')
                   except urllib.error.HTTPError as e:return e.code,e.headers,e.read().decode('utf8','replace')
               ping={'jsonrpc':'2.0','id':1,'method':'ping','params':{}}
               code,_,_=post(ping)
@@ -141,6 +141,53 @@ jobs:
               print('RESULT_PROJECT_ADMIN_PRESENT='+str('project_admin' in names).lower(),flush=True)
               print('RESULT_SECURITY_AUDIT_PRESENT='+str('security_audit' in names).lower(),flush=True)
               print('RESULT_TOOLS_MORE_PAGES='+str(bool(result.get('nextCursor'))).lower(),flush=True)
+              print('RESULT_INFOBASE_ADMIN_PRESENT='+str('infobase_admin' in names).lower(),flush=True)
+              if 'project_admin' not in names or 'infobase_admin' not in names:
+                  raise RuntimeError('Required project or infobase facade missing')
+              def call_tool(reqid,name,args,mutating=False):
+                  marker=root/'PENDING_MUTATION_DO_NOT_CLEAN'
+                  if mutating:marker.write_text('Mutation outcome not yet proven complete\n')
+                  payload={'jsonrpc':'2.0','id':reqid,'method':'tools/call','params':{'name':name,'arguments':args}}
+                  code,_,body=post(payload,token,sid)
+                  if code!=200:raise RuntimeError('tools/call HTTP '+str(code))
+                  rpc=parse(body)
+                  if rpc.get('jsonrpc')!='2.0' or rpc.get('id')!=reqid or 'error' in rpc:raise RuntimeError('Invalid tools/call JSON-RPC')
+                  out=rpc.get('result')
+                  if not isinstance(out,dict):raise RuntimeError('Malformed tool result')
+                  value=out.get('structuredContent')
+                  if not isinstance(value,dict):
+                      texts=[x.get('text','') for x in out.get('content',[]) if isinstance(x,dict) and x.get('type')=='text']
+                      if len(texts)==1:
+                          try:value=json.loads(texts[0])
+                          except (ValueError,TypeError):value=None
+                  if out.get('isError') is True:
+                      if mutating and isinstance(value,dict) and value.get('success') is False and str(value.get('status','')).casefold()!='pending': marker.unlink()
+                      raise RuntimeError(name+' refused or errored')
+                  if not isinstance(value,dict):raise RuntimeError(name+' did not return JSON ToolResult')
+                  if str(value.get('status','')).casefold()=='pending':raise RuntimeError(name+' pending: no blind repeat')
+                  if value.get('success') is not True:
+                      if mutating and value.get('success') is False:marker.unlink()
+                      raise RuntimeError(name+' did not confirm success')
+                  if mutating:marker.unlink()
+                  return value
+              if not (root/'ib'/'1Cv8.1CD').is_file():raise RuntimeError('Expected isolated IB file missing')
+              registered=call_tool(4,'infobase_admin',{'operation':'list_registered_infobases'})
+              rows=registered.get('infobases')
+              if not isinstance(rows,list):raise RuntimeError('IB list has unexpected shape')
+              matches=[x for x in rows if isinstance(x,dict) and x.get('name')=='SI16McpIsolated']
+              print('RESULT_ISOLATED_IB_MATCH_COUNT='+str(len(matches)),flush=True)
+              if len(matches)!=1 or str(root/'ib') not in str(matches[0].get('connectionString','')):raise RuntimeError('IB identity or path not proven; association skipped')
+              print('RESULT_ISOLATED_IB_PATH_CONFIRMED=true',flush=True)
+              name='SI16Check'+os.environ['GITHUB_RUN_ID']
+              if (ws/name).exists():raise RuntimeError('Project path occupied; refusing create')
+              created=call_tool(5,'project_admin',{'operation':'create_project','projectName':name,'version':'8.3.27'},mutating=True)
+              print('RESULT_PROJECT_CREATE_CONFIRMED='+str(created.get('created') is True and created.get('projectName')==name).lower(),flush=True)
+              if created.get('created') is not True or created.get('projectName')!=name:raise RuntimeError('Project creation not confirmed')
+              print('RESULT_PROJECT_FILE_PRESENT='+str((ws/name/'.project').is_file()).lower(),flush=True)
+              linked=call_tool(6,'infobase_admin',{'operation':'create_launch_config','projectName':name,'infobaseName':'SI16McpIsolated'},mutating=True)
+              if linked.get('projectName')!=name or linked.get('infobaseName')!='SI16McpIsolated':raise RuntimeError('Association identity mismatch')
+              print('RESULT_ASSOCIATION_CONFIRMED=true',flush=True)
+              print('RESULT_ASSOCIATION_APPLICATION_ID_PRESENT='+str(bool(linked.get('applicationId'))).lower(),flush=True)
           finally:
               try:os.killpg(proc.pid,signal.SIGTERM)
               except ProcessLookupError:pass
@@ -156,4 +203,6 @@ jobs:
         shell: bash
         run: |
           set -u
-          case "${SI16_ROOT:-}" in "$RUNNER_TEMP"/si16-p2run-"$GITHUB_RUN_ID"-*) rm -rf -- "$SI16_ROOT";; esac
+          case "${SI16_ROOT:-}" in "$RUNNER_TEMP"/si16-p2run-"$GITHUB_RUN_ID"-*)
+            if [ -f "$SI16_ROOT/PENDING_MUTATION_DO_NOT_CLEAN" ]; then echo 'RESULT_TEMP_RETAINED_AMBIGUOUS=true'; else rm -rf -- "$SI16_ROOT"; echo 'RESULT_TEMP_CLEANED=true'; fi;;
+          esac
