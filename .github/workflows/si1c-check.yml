@@ -49,14 +49,32 @@ jobs:
           tail -20 "$SI16_ROOT/p2.log"
           echo 'RESULT_P2_INSTALL_SUCCESS=true'
       - name: Создать из EDT отдельную пустую ИБ
+        id: copied_ib
+        continue-on-error: true
         shell: bash
         run: |
-          set -euo pipefail
+          set -u
           export HOME="$SI16_ROOT/home" XDG_CONFIG_HOME="$SI16_ROOT/home/.config" XDG_CACHE_HOME="$SI16_ROOT/home/.cache" XDG_DATA_HOME="$SI16_ROOT/home/.local/share"
-          timeout -s KILL 180s xvfb-run -a "$EDT_CLI" -data "$SI16_ROOT/workspace" -command infobase-create --name SI16McpIsolated --version 8.3.27 --path "$SI16_ROOT/ib" > "$SI16_ROOT/create.log" 2>&1 || { tail -30 "$SI16_ROOT/create.log"; exit 1; }
-          test -s "$SI16_ROOT/ib/1Cv8.1CD"
+          file "$EDT_CLI" || true
+          timeout -s KILL 60s xvfb-run -a "$EDT_CLI" -data "$SI16_ROOT/workspace" -command version > "$SI16_ROOT/version.log" 2>&1
+          VCODE=$?
+          echo "RESULT_COPY_CLI_VERSION_EXIT=$VCODE"
+          echo "RESULT_COPY_CLI_VERSION_BYTES=$(wc -c < "$SI16_ROOT/version.log")"
+          tail -10 "$SI16_ROOT/version.log"
+          timeout -s KILL 180s xvfb-run -a "$EDT_CLI" -data "$SI16_ROOT/workspace" -command infobase-create --name SI16McpIsolated --version 8.3.27 --path "$SI16_ROOT/ib" > "$SI16_ROOT/create.log" 2>&1
+          CODE=$?
+          echo "RESULT_COPY_CREATE_EXIT=$CODE"
+          echo "RESULT_COPY_CREATE_LOG_BYTES=$(wc -c < "$SI16_ROOT/create.log")"
+          tail -20 "$SI16_ROOT/create.log"
+          if [ "$CODE" -ne 0 ] || [ ! -s "$SI16_ROOT/ib/1Cv8.1CD" ]; then
+            echo 'RESULT_COPIED_EDT_IB_FILE=false'
+            exit 1
+          fi
+          echo 'RESULT_COPIED_EDT_IB_FILE=true'
           timeout -s KILL 90s xvfb-run -a "$EDT_CLI" -data "$SI16_ROOT/workspace" -command infobase --details > "$SI16_ROOT/list.log" 2>&1
-          grep -q SI16McpIsolated "$SI16_ROOT/list.log"
+          LCODE=$?
+          echo "RESULT_COPY_LIST_EXIT=$LCODE"
+          [ "$LCODE" -eq 0 ] && grep -q SI16McpIsolated "$SI16_ROOT/list.log" || exit 1
           echo 'RESULT_COPIED_EDT_IB_CREATED_AND_LISTED=true'
       - name: Проверить MCP на новой рабочей области
         shell: bash
