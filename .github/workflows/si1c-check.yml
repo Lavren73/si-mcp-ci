@@ -1,4 +1,4 @@
-name: Проверить сохранённый тестовый стенд
+name: Проверить место для сохранения тестов
 on:
   workflow_dispatch:
 permissions:
@@ -8,38 +8,30 @@ jobs:
     runs-on: [self-hosted, Linux, X64, si1c]
     timeout-minutes: 5
     steps:
-      - name: Без изменений прочитать признаки состояния
+      - name: Проверить временные каталоги и рабочее место
         shell: bash
         run: |
           set -euo pipefail
           python3 - <<'PY'
-          import pathlib,os,re
-          parent=pathlib.Path(os.environ['RUNNER_TEMP']).resolve()
-          matches=list(parent.glob('si16-cliimport-42923336536-*'))
-          print('RESULT_RETAINED_MATCH_COUNT='+str(len(matches)))
-          if len(matches)!=1:raise RuntimeError('expected exactly one retained test directory')
-          r=matches[0]
-          if r.is_symlink() or r.resolve().parent!=parent or not (r/'PENDING_MUTATION_DO_NOT_CLEAN').is_file():raise RuntimeError('ownership or marker not confirmed')
-          print('RESULT_PENDING_MARKER_PRESENT=true')
-          print('RESULT_TEST_IB_FILE_PRESENT='+str((r/'ib'/'1Cv8.1CD').is_file()).lower())
-          projects=[p for p in (r/'workspace').glob('*/.project') if p.is_file()]
-          print('RESULT_PROJECT_FILES_COUNT='+str(len(projects)))
-          candidates=[]
-          for sub in ('workspace','home'):
-              for f in (r/sub).rglob('*'):
-                  if f.is_symlink() or not f.is_file() or f.stat().st_size>10000000:continue
-                  if f.name.endswith('.log') or f.name=='.log':candidates.append(f)
-          print('RESULT_LOGS_INSPECTED='+str(len(candidates)))
-          data='\n'.join(f.read_text(encoding='utf8',errors='replace') for f in candidates).casefold()
-          for key,pattern in {'LICENSE_NOT_FOUND':r'license not found|лицензия не обнаружена|лицензия не найдена','LICENSE_ERROR':r'license.{0,30}(not found|error|failed)|ошибк.{0,30}лицензи','IMPORT_ERROR':r'infobase.import.{0,80}(error|failed)|ошибк.{0,80}импорт','CONFIGURATION_MISSING':r'configuration.{0,30}(empty|not found)|конфигурац.{0,30}(пуст|не найд)'}.items():print('RESULT_'+key+'='+str(bool(re.search(pattern,data))).lower())
+          import os,pathlib,shutil
+          home=pathlib.Path.home().resolve(); temp=pathlib.Path(os.environ['RUNNER_TEMP']).resolve();ws=pathlib.Path(os.environ['GITHUB_WORKSPACE']).resolve(); rws=pathlib.Path(os.environ['RUNNER_WORKSPACE']).resolve()
+          print('RESULT_HOME_EXISTS='+str(home.is_dir()).lower())
+          print('RESULT_HOME_WRITABLE='+str(os.access(home,os.W_OK)).lower())
+          print('RESULT_HOME_IN_RUNNER_TEMP='+str(home==temp or temp in home.parents).lower())
+          print('RESULT_HOME_IN_WORKSPACE='+str(home==rws or rws in home.parents).lower())
+          print('RESULT_RUNNER_WORKSPACE_WRITABLE='+str(os.access(rws,os.W_OK)).lower())
+          print('RESULT_HOME_AVAILABLE_MIB='+str(shutil.disk_usage(home).free//(1024*1024)))
+          for root,label in [(temp,'TEMP'),(home,'HOME'),(rws,'RUNNER_WORKSPACE')]:
+              if not root.is_dir():continue
+              paths=list(root.glob('si16-cliimport-42923336536-*'))
+              print('RESULT_'+label+'_PREVIOUS_STAND_COUNT='+str(len(paths)))
           count=0;unreadable=0
           for p in pathlib.Path('/proc').iterdir():
               if not p.name.isdigit():continue
               try:
-                  cmd=(p/'cmdline').read_bytes();env=(p/'environ').read_bytes()
-                  if str(r).encode() in cmd or str(r).encode() in env:count+=1
-              except (OSError,PermissionError):unreadable+=1
-          print('RESULT_VISIBLE_PROCESSES_REFERENCING_STAND='+str(count))
-          print('RESULT_PROCESS_ENV_UNREADABLE_COUNT='+str(unreadable))
-          print('RESULT_STAND_LEFT_UNCHANGED=true')
+                  d=(p/'cmdline').read_bytes()+b'\n'+(p/'environ').read_bytes()
+                  if b'si16-cliimport-42923336536-' in d:count+=1
+              except OSError:unreadable+=1
+          print('RESULT_VISIBLE_PREVIOUS_STAND_PROCESSES='+str(count))
+          print('RESULT_UNREADABLE_PROCESS_COUNT='+str(unreadable))
           PY
