@@ -1,4 +1,4 @@
-name: Проверка неопределённой привязки тестовой ИБ
+name: Проверить параметры штатной JVM и журнал привязки
 on:
   workflow_dispatch:
 permissions:
@@ -8,35 +8,36 @@ jobs:
     runs-on: [self-hosted, Linux, X64, si1c]
     timeout-minutes: 5
     steps:
-      - name: Без запуска EDT проверить состояние сохранённого стенда
+      - name: Без запуска EDT сопоставить параметры и исключения
         shell: bash
         run: |
           set -euo pipefail
           python3 - <<'PY'
-          import pathlib,os,re
+          import pathlib,os,re,subprocess
           base=pathlib.Path.home()/'.si-mcp-agent16-test-staging';r=base/'si16-p2run-42926257777-ihTomZ'
           if base.is_symlink() or r.is_symlink() or not r.is_dir() or r.resolve().parent!=base.resolve():raise RuntimeError('stand identity not confirmed')
-          ws=r/'workspace';name='SI16Check42926257777'
-          print('RESULT_STAND_FOUND=true');print('RESULT_PENDING_MARKER_PRESENT='+str((r/'PENDING_MUTATION_DO_NOT_CLEAN').is_file()).lower())
-          print('RESULT_PROJECT_FILE_PRESENT='+str((ws/name/'.project').is_file()).lower());print('RESULT_IB_FILE_PRESENT='+str((r/'ib/1Cv8.1CD').is_file()).lower())
-          launches=[p for p in ws.rglob('*.launch') if p.is_file() and not p.is_symlink()]
-          print('RESULT_LAUNCH_FILES_COUNT='+str(len(launches)))
-          hit=0
-          for p in launches:
-              if p.stat().st_size>2000000:continue
-              t=p.read_text(encoding='utf8',errors='replace')
-              if name in t and 'SI16McpIsolated' in t:hit+=1
-          print('RESULT_LAUNCH_FILES_MATCHING_BOTH_NAMES='+str(hit))
+          inis=list((r/'edt').rglob('1cedt.ini'));print('RESULT_INI_COUNT='+str(len(inis)))
+          for f in inis:
+              if f.is_symlink() or f.stat().st_size>100000:continue
+              t=f.read_text(encoding='utf8',errors='replace')
+              print('RESULT_INI_VMARGS_PRESENT='+str('-vmargs' in t).lower());print('RESULT_INI_APPEND_VMARGS='+str('--launcher.appendVmargs' in t).lower())
+              for k,p in {'OPEN_JAVA_NIO':r'--add-opens(?:=|\s+)java\.base/java\.nio=ALL-UNNAMED','EXPORT_SUN_NIO':r'--add-exports(?:=|\s+)java\.base/sun\.nio\.ch=ALL-UNNAMED','OPEN_SUN_NIO':r'--add-opens(?:=|\s+)java\.base/sun\.nio\.ch=ALL-UNNAMED'}.items():print('RESULT_INI_'+k+'='+str(bool(re.search(p,t))).lower())
+          java=[p for p in (r/'edt').rglob('java') if p.name=='java' and p.parent.name=='bin' and p.is_file() and os.access(p,os.X_OK)]
+          print('RESULT_JAVA_EXECUTABLE_COUNT='+str(len(java)))
+          if java:
+              try:
+                  cp=subprocess.run([str(java[0]),'-version'],capture_output=True,text=True,timeout=15);match=re.search(r'version "([^"\s]+)"',cp.stderr+cp.stdout);print('RESULT_SELECTED_JAVA_VERSION='+(match.group(1) if match else 'unknown'));print('RESULT_SELECTED_JAVA_VERSION_EXIT='+str(cp.returncode))
+              except Exception:print('RESULT_SELECTED_JAVA_VERSION_ERROR=true')
           f=r/'edt.log'
           if f.is_file() and not f.is_symlink() and f.stat().st_size<20000000:
-              t=f.read_text(encoding='utf8',errors='replace')
-              for key,pat in {'LICENSE_NOT_FOUND':r'license not found','LAUNCH_CONFIG_OPERATION':r'create_launch_config|LaunchConfigCreator','INFObASE_ASSOCIATION':r'associat.{0,50}infobase|infobase.{0,50}associat','CONNECTION_TIMEOUT':r'timed out|timeout','ERROR':r'!ENTRY.+\s4\s|\berror\b'} .items():print('RESULT_LOG_'+key.upper()+'='+str(bool(re.search(pat,t,re.I))).lower())
-          count=0;unreadable=0
-          for p in pathlib.Path('/proc').iterdir():
-              if not p.name.isdigit():continue
-              try:
-                  d=(p/'cmdline').read_bytes()+b'\n'+(p/'environ').read_bytes()
-                  if str(r).encode() in d:count+=1
-              except OSError:unreadable+=1
-          print('RESULT_VISIBLE_STAND_PROCESSES='+str(count));print('RESULT_UNREADABLE_PROCESS_COUNT='+str(unreadable));print('RESULT_STAND_UNCHANGED=true')
+              lines=f.read_text(encoding='utf8',errors='replace').splitlines();print('RESULT_LOG_LINES='+str(len(lines)))
+              for key,pattern in [('AUTH',r'AuthenticationException|JSchException'),('ASSOCIATION',r'create_launch_config|LaunchConfigCreator|InfobaseAssociationManager'),('ERROR',r'!ENTRY\s+\S+\s+4\s')]:
+                  indexes=[i for i,l in enumerate(lines) if re.search(pattern,l,re.I)];print('RESULT_'+key+'_EVENT_COUNT='+str(len(indexes)))
+                  if not indexes:continue
+                  for i in indexes[-3:]:
+                      print('RESULT_'+key+'_EVENT_LINE='+str(i+1));snippet='\n'.join(lines[max(0,i-5):min(len(lines),i+40)])
+                      for typ in re.findall(r'\b((?:com\._1c|org\.eclipse|com\.jcraft|java)\.[\w.$]+(?:Exception|Error))\b',snippet)[:8]:print('RESULT_'+key+'_EXCEPTION_TYPE='+typ)
+                      for method in re.findall(r'(?m)^\s*at\s+((?:com\._1c|org\.eclipse|com\.jcraft|si\.edt\.mcp|java)\.[\w.$]+)\(',snippet)[:16]:print('RESULT_'+key+'_STACK_METHOD='+method)
+                      for tag,pat in {'AUTH_FAIL':r'auth fail|authentication failed|authentication is required','CONNECT_REFUSED':r'connection refused','SSH_NOT_FOUND':r'no such file.{0,50}ssh|cannot run program.{0,30}ssh','TIMEOUT':r'timed out|timeout','LICENSE':r'license not found'}.items():print('RESULT_'+key+'_'+tag+'='+str(bool(re.search(pat,snippet,re.I))).lower())
+          print('RESULT_STAND_UNCHANGED=true')
           PY
