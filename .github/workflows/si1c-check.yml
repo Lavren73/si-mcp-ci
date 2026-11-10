@@ -84,7 +84,7 @@ jobs:
           set -euo pipefail
           export HOME="$SI16_ROOT/home" XDG_CONFIG_HOME="$SI16_ROOT/home/.config" XDG_CACHE_HOME="$SI16_ROOT/home/.cache" XDG_DATA_HOME="$SI16_ROOT/home/.local/share"
           python3 - <<'PY'
-          import json,os,pathlib,secrets,signal,socket,subprocess,time,urllib.request,urllib.error
+          import json,os,pathlib,re,secrets,signal,socket,subprocess,time,urllib.request,urllib.error
           root=pathlib.Path(os.environ['SI16_ROOT']); ws=root/'workspace'
           with socket.socket() as s:
               s.bind(('127.0.0.1',0));port=s.getsockname()[1]
@@ -156,7 +156,11 @@ jobs:
                   if not isinstance(out,dict):raise RuntimeError('Malformed tool result')
                   value=out.get('structuredContent')
                   if not isinstance(value,dict):
-                      texts=[x.get('text','') for x in out.get('content',[]) if isinstance(x,dict) and x.get('type')=='text']
+                      texts=[]
+                      for x in out.get('content',[]):
+                          if not isinstance(x,dict):continue
+                          if x.get('type')=='text' and isinstance(x.get('text'),str):texts.append(x['text'])
+                          if x.get('type')=='resource' and isinstance(x.get('resource'),dict) and isinstance(x['resource'].get('text'),str):texts.append(x['resource']['text'])
                       if len(texts)==1:
                           try:value=json.loads(texts[0])
                           except (ValueError,TypeError):value=None
@@ -176,7 +180,11 @@ jobs:
               if not isinstance(rows,list):raise RuntimeError('IB list has unexpected shape')
               matches=[x for x in rows if isinstance(x,dict) and x.get('name')=='SI16McpIsolated']
               print('RESULT_ISOLATED_IB_MATCH_COUNT='+str(len(matches)),flush=True)
-              if len(matches)!=1 or str(root/'ib') not in str(matches[0].get('connectionString','')):raise RuntimeError('IB identity or path not proven; association skipped')
+              if len(matches)!=1:raise RuntimeError('IB identity not unique; association skipped')
+              conn=matches[0].get('connectionString')
+              match=re.search(r"(?:^|;)\s*File\s*=\s*(?:\"([^\"]*)\"|'([^']*)'|([^;]*))",conn,re.I) if isinstance(conn,str) else None
+              path=(next((x for x in match.groups() if x is not None),None) if match else None)
+              if not path or pathlib.Path(path.strip()).resolve()!= (root/'ib').resolve():raise RuntimeError('IB path not proven; association skipped')
               print('RESULT_ISOLATED_IB_PATH_CONFIRMED=true',flush=True)
               name='SI16Check'+os.environ['GITHUB_RUN_ID']
               if (ws/name).exists():raise RuntimeError('Project path occupied; refusing create')
