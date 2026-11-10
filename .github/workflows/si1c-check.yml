@@ -172,6 +172,12 @@ jobs:
                       for label,pattern in classifiers.items():
                           print('RESULT_TOOL_ERROR_'+label+'='+str(bool(re.search(pattern,low))).lower(),flush=True)
                       print('RESULT_TOOL_ERROR_JSON='+str(isinstance(value,dict)).lower(),flush=True)
+                      if isinstance(value,dict) and isinstance(value.get('error'),str):
+                          msg=value['error'].replace(token,'<redacted>').replace(str(root),'<temporary>')
+                          msg=re.sub(r'(?i)(password|pwd|token|secret)\s*[=:]\s*[^\s;]+',r'\1=<redacted>',msg)
+                          msg=re.sub(r'(?:[A-Za-z]:[\\/]|/)[^\s;:]+','<path>',msg)
+                          msg=' '.join(msg.split())[:350]
+                          print('RESULT_TOOL_ERROR_SUMMARY='+msg,flush=True)
                       if isinstance(value,dict):print('RESULT_TOOL_SERVICE_NOT_FOUND='+str(value.get('serviceNotFound') is True).lower(),flush=True)
                       if mutating and isinstance(value,dict) and value.get('success') is False and str(value.get('status','')).casefold()!='pending': marker.unlink()
                       raise RuntimeError(name+' refused or errored')
