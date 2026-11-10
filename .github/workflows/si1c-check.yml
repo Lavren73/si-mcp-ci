@@ -6,46 +6,24 @@ permissions:
 jobs:
   check:
     runs-on: [self-hosted, Linux, X64, si1c]
-    timeout-minutes: 8
+    timeout-minutes: 5
     steps:
-      - name: EDT обнаружение платформ в отдельной временной области
+      - name: Ресурсы и инструменты для отдельного стенда
         shell: bash
         run: |
           set -u
-          DIR=$(mktemp -d "${RUNNER_TEMP:?}/si16-discovery-${GITHUB_RUN_ID}-XXXXXX")
-          trap 'rm -rf -- "$DIR"' EXIT
-          CLI=$(find /opt/si-edt -type f -name 1cedtcli -print -quit)
-          if [ -z "$CLI" ]; then echo 'RESULT_CLI_MISSING'; exit 0; fi
-          mkdir "$DIR/workspace"
-          set +e
-          timeout -s KILL 150s xvfb-run -a "$CLI" -data "$DIR/workspace" -command platform-versions > "$DIR/platforms.txt" 2>&1
-          CODE=$?
-          set -e
-          export CODE
-          python3 - "$DIR/platforms.txt" <<'PY'
-          import os,re,sys
-          text=open(sys.argv[1],encoding='utf-8',errors='replace').read()
-          print('RESULT_EDT_PLATFORM_VERSIONS_EXIT='+os.environ['CODE'])
-          print('RESULT_PLATFORM_8327_2342_LISTED='+str(bool(re.search(r'(?<!\d)8\.3\.27\.2342(?!\d)',text))).lower())
-          print('RESULT_ANY_PLATFORM_VERSION_LISTED='+str(bool(re.search(r'(?<!\d)8\.\d+\.\d+\.\d+(?!\d)',text))).lower())
-          for line in text.splitlines():
-              if re.search(r'none are supported|no supported|не поддержива|не найдены|not found',line,re.I):
-                  print('RESULT_UNSUPPORTED_OR_NOT_FOUND_INDICATOR=true')
-                  break
-          PY
-      - name: SI-MCP признаки установки и локальный порт
-        shell: bash
-        run: |
           python3 - <<'PY'
-          import os,socket
-          matches=[]
-          for root,dirs,files in os.walk('/opt/si-edt',followlinks=False):
-              matches.extend(n for n in files+dirs if n.startswith('si.edt.mcp.server'))
-          print('RESULT_MCP_INSTALL_ARTIFACTS_PRESENT='+str(bool(matches)).lower())
-          print('RESULT_MCP_INSTALL_ARTIFACTS_COUNT='+str(len(matches)))
-          try:
-              with socket.create_connection(('127.0.0.1',12260),timeout=2): pass
-              print('RESULT_LOCAL_PORT_12260_LISTENING=true')
-          except OSError:
-              print('RESULT_LOCAL_PORT_12260_LISTENING=false')
+          import os,shutil,glob,re
+          free=shutil.disk_usage(os.environ['RUNNER_TEMP']).free
+          print('RESULT_FREE_MIB='+str(free//(1024*1024)))
+          for tool in ['mvn','java','git','curl','python3','xvfb-run']:
+              print('RESULT_TOOL_'+tool.upper().replace('-','_')+'='+str(bool(shutil.which(tool))).lower())
+          versions=set()
+          for p in glob.glob('/opt/1cv8/x86_64/*/1cv8'):
+              s=p.split('/')[-2]
+              if re.fullmatch(r'\d+\.\d+\.\d+\.\d+',s):versions.add(s)
+          print('RESULT_PLATFORM_BIN_VERSIONS='+(','.join(sorted(versions)) or 'none'))
           PY
+          printf 'RESULT_EDT_SIZE_KIB='
+          du -sk /opt/si-edt 2>/dev/null | awk '{print $1}'
+          if command -v java >/dev/null; then java -version 2>&1 | head -1; fi
