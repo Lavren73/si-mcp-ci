@@ -39,11 +39,12 @@ jobs:
           java-version: '17'
           java-package: jdk+fx
       - name: Системные зависимости
+        timeout-minutes: 6
         run: |
           set -euo pipefail
           df -h "$RUNNER_TEMP"
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq xvfb xauth libgtk-3-0 libwebkit2gtk-4.0-37 libglu1-mesa unzip > /dev/null
+          sudo apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 update -qq
+          sudo apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 install -y -qq xvfb xauth libgtk-3-0 libwebkit2gtk-4.0-37 libglu1-mesa unzip > /dev/null
           echo "SI-MCP SHA: $(git -C project rev-parse HEAD)"
           test "$(git -C project rev-parse HEAD)" = "$SRC_SHA"
       - name: Скачать, проверить SHA и безопасно распаковать EDT
