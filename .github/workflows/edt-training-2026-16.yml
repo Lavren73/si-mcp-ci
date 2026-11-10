@@ -3,7 +3,7 @@
 name: №16 — EDT 2026.2.2 и учебная 1С 8.3.27.1508
 on:
   push:
-    branches: [agent/16-edt-training-2026-probe]
+    branches: [agent/16-edt-training-standard-location]
 permissions:
   contents: read
 jobs:
@@ -15,13 +15,13 @@ jobs:
     steps:
       - name: Проверить наличие защищённого источника
         env:
-          EDT_FILE_ID: ${{ secrets.SI_EDT_2026_OFFLINE_FILE_ID }}
-          PLATFORM_ID: ${{ secrets.SI_1C_TRAINING_FILE_ID }}
+          EDT_FILE_ID: ${{ secrets.SI_EDT_2026_OFFLINE_FILE_ID2 }}
+          PLATFORM_ID: ${{ secrets.SI_1C_TRAINING_FILE_ID2 }}
         run: |
           set -euo pipefail
-          if [ -z "$PLATFORM_ID" ]; then echo '::error::Нет секрета SI_1C_TRAINING_FILE_ID'; exit 1; fi
+          if [ -z "$PLATFORM_ID" ]; then echo '::error::Нет секрета SI_1C_TRAINING_FILE_ID2'; exit 1; fi
           if [ -z "$EDT_FILE_ID" ]; then
-            echo '::error::Нужен Actions secret SI_EDT_2026_OFFLINE_FILE_ID — ID файла offline EDT в Drive; значение не выводить в журнал.'
+            echo '::error::Нужен Actions secret SI_EDT_2026_OFFLINE_FILE_ID2 — ID файла offline EDT в Drive; значение не выводить в журнал.'
             exit 1
           fi
       - name: Исходники SI-MCP, фиксированный SHA
@@ -48,7 +48,7 @@ jobs:
           test "$(git -C project rev-parse HEAD)" = "$SRC_SHA"
       - name: Скачать, проверить SHA и безопасно распаковать EDT
         env:
-          EDT_FILE_ID: ${{ secrets.SI_EDT_2026_OFFLINE_FILE_ID }}
+          EDT_FILE_ID: ${{ secrets.SI_EDT_2026_OFFLINE_FILE_ID2 }}
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/edt-offline/dist"
@@ -110,7 +110,7 @@ jobs:
           echo 'EDT CLI answered help; product version established separately by installer query.'
       - name: Скачать и проверить учебную платформу
         env:
-          FILE_ID: ${{ secrets.SI_1C_TRAINING_FILE_ID }}
+          FILE_ID: ${{ secrets.SI_1C_TRAINING_FILE_ID2 }}
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/si16-training/dist"
@@ -138,8 +138,8 @@ jobs:
           SETUP=$(find "$DIST" -type f -name 'setup-training-8.3.27.1508-x86_64.run' -print -quit)
           test -n "$SETUP"
           chmod +x "$SETUP"
-          sudo "$SETUP" --mode unattended --unattendedmodeui none --installer-language en --enable-components client_full,ws,ru --prefix /opt/si16-training
-          BIN=$(sudo find /opt/si16-training -type f -name 1cv8t -print -quit)
+          sudo "$SETUP" --mode unattended --unattendedmodeui none --installer-language en --enable-components client_full,ws,ru --prefix /
+          BIN=$(sudo find /opt/1cv8t -type f -name 1cv8t -print -quit)
           test -n "$BIN" && test -x "$BIN"
           echo "TRAINING_BIN=$BIN" >> "$GITHUB_ENV"
           echo 'Учебная платформа 8.3.27.1508 установлена в disposable runner.'
@@ -148,7 +148,7 @@ jobs:
           set -euo pipefail
           # В прежнем изолированном прогоне №13 библиотека комплекта мешала запуску.
           # Меняем только файлы этой установки на одноразовом runner, не системные библиотеки.
-          while IFS= read -r -d '' f; do sudo mv "$f" "$f.si16-disabled"; done < <(find /opt/si16-training -type f -name 'libstdc++.so.6*' -print0)
+          while IFS= read -r -d '' f; do sudo mv "$f" "$f.si16-disabled"; done < <(find /opt/1cv8t -type f -name 'libstdc++.so.6*' -print0)
           echo 'Missing libraries, if any:'
           ldd "$TRAINING_BIN" | grep 'not found' || true
       - name: Создать пустую тестовую ИБ
@@ -175,6 +175,15 @@ jobs:
           test "$code" -eq 0 && test -s "$OUT"
           echo 'Отдельный конфигуратор учебной платформы работает с пустой ИБ.'
           echo 'EDT 2026.2.2 не проверена вместе с этой учебной платформой; 8.3.27.1508 ниже указанного 1С минимума 8.3.27.2202.'
+      - name: Экспериментальная настройка поиска и свежая рабочая область EDT
+        run: |
+          set -euo pipefail
+          # Для чистого runner: гипотеза о поиске платформы, не утверждение, что EDT читает cfg.
+          mkdir -p "$HOME/.1C/1cestart" "$RUNNER_TEMP/edt-offline/fresh-workspace"
+          printf 'InstalledLocation=/opt/1cv8t\nInstalledLocation=/opt/1cv8t/x86_64\n' > "$HOME/.1C/1cestart/1cestart.cfg"
+          echo "Учебная платформа: $TRAINING_BIN"
+          echo 'CLI platform-versions:'
+          timeout 120s xvfb-run -a "$EDT_CLI" -data "$RUNNER_TEMP/edt-offline/fresh-workspace" -command platform-versions 2>&1 || true
       - name: Попробовать создать пустую ИБ из EDT через учебную платформу
         id: edt_create
         continue-on-error: true
@@ -183,9 +192,9 @@ jobs:
           BASE="$RUNNER_TEMP/edt-offline/edt-created-training-ib"
           LOG="$RUNNER_TEMP/edt-offline/edt-create-training.log"
           echo 'Эксперимент вне заявленного 1С диапазона версий; требуется реальный файл базы и запись в списке EDT.'
-          timeout -s KILL 240s xvfb-run -a "$EDT_CLI" -data "$RUNNER_TEMP/edt-offline/cli-workspace" -command infobase-create --name SI16Training --version 8.3.27 --path "$BASE" 2>&1 | tee "$LOG"
+          timeout -s KILL 240s xvfb-run -a "$EDT_CLI" -data "$RUNNER_TEMP/edt-offline/fresh-workspace" -command infobase-create --name SI16Training --version 8.3.27 --path "$BASE" 2>&1 | tee "$LOG"
           test -s "$BASE/1Cv8.1CD" || { echo '::error::EDT не создала файл ИБ через учебную платформу'; exit 1; }
-          timeout 180s xvfb-run -a "$EDT_CLI" -data "$RUNNER_TEMP/edt-offline/cli-workspace" -command infobase --details 2>&1 | tee "$RUNNER_TEMP/edt-offline/edt-infobase-list.log"
+          timeout 180s xvfb-run -a "$EDT_CLI" -data "$RUNNER_TEMP/edt-offline/fresh-workspace" -command infobase --details 2>&1 | tee "$RUNNER_TEMP/edt-offline/edt-infobase-list.log"
           grep -Fq SI16Training "$RUNNER_TEMP/edt-offline/edt-infobase-list.log" || { echo '::error::ИБ не обнаружена в списке EDT'; exit 1; }
           echo 'EDT создала тестовую ИБ, но это не проверка SI-MCP с подключённым проектом.'
       - name: Maven 3.9.9
