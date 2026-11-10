@@ -155,6 +155,7 @@ jobs:
                   out=rpc.get('result')
                   if not isinstance(out,dict):raise RuntimeError('Malformed tool result')
                   value=out.get('structuredContent')
+                  texts=[]
                   if not isinstance(value,dict):
                       texts=[]
                       for x in out.get('content',[]):
@@ -165,6 +166,13 @@ jobs:
                           try:value=json.loads(texts[0])
                           except (ValueError,TypeError):value=None
                   if out.get('isError') is True:
+                      detail=(str(value.get('error',''))+' '+str(value.get('hint',''))) if isinstance(value,dict) else ' '.join(texts)
+                      low=detail.casefold()
+                      classifiers={'PRESET_DISABLED':r'disabled|switched off|preset', 'SERVICE_UNAVAILABLE':r'iconfigurationprojectmanager|service.*not.*(reachable|found)|service.*unavailable', 'VERSION_ERROR':r'version.*not.*valid|unsupported|платформ.*не.*', 'LICENSE_ERROR':r'licen[cs]|лиценз', 'CREATE_FAILED':r'create configuration project failed', 'PERMISSION_ERROR':r'permission denied|access denied', 'TIMEOUT':r'timeout|timed out', 'COLLISION':r'already exists|already.*exist'}
+                      for label,pattern in classifiers.items():
+                          print('RESULT_TOOL_ERROR_'+label+'='+str(bool(re.search(pattern,low))).lower(),flush=True)
+                      print('RESULT_TOOL_ERROR_JSON='+str(isinstance(value,dict)).lower(),flush=True)
+                      if isinstance(value,dict):print('RESULT_TOOL_SERVICE_NOT_FOUND='+str(value.get('serviceNotFound') is True).lower(),flush=True)
                       if mutating and isinstance(value,dict) and value.get('success') is False and str(value.get('status','')).casefold()!='pending': marker.unlink()
                       raise RuntimeError(name+' refused or errored')
                   if not isinstance(value,dict):raise RuntimeError(name+' did not return JSON ToolResult')
