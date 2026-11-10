@@ -1,0 +1,293 @@
+# №16: изолированная проверка полного EDT-архива и плагина на GitHub-hosted runner.
+# Файлы владельца, лицензии, проекты, ИБ и снимки дистрибутива НЕ публикуются.
+name: №16 — EDT 2026.2.2 и учебная 1С 8.3.27.1508
+on:
+  push:
+    branches: [agent/16-edt-training-2026-probe]
+permissions:
+  contents: read
+jobs:
+  edt:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 100
+    env:
+      SRC_SHA: 8ba3e440c0c9ff2bef0ee42e27e2f115a5fd0c33
+    steps:
+      - name: Проверить наличие защищённого источника
+        env:
+          EDT_FILE_ID: ${{ secrets.SI_EDT_2026_OFFLINE_FILE_ID }}
+          PLATFORM_ID: ${{ secrets.SI_1C_TRAINING_FILE_ID }}
+        run: |
+          set -euo pipefail
+          if [ -z "$PLATFORM_ID" ]; then echo '::error::Нет секрета SI_1C_TRAINING_FILE_ID'; exit 1; fi
+          if [ -z "$EDT_FILE_ID" ]; then
+            echo '::error::Нужен Actions secret SI_EDT_2026_OFFLINE_FILE_ID — ID файла offline EDT в Drive; значение не выводить в журнал.'
+            exit 1
+          fi
+      - name: Исходники SI-MCP, фиксированный SHA
+        uses: actions/checkout@v4
+        with:
+          repository: Lavren73/SI-MCP
+          ref: 8ba3e440c0c9ff2bef0ee42e27e2f115a5fd0c33
+          ssh-key: ${{ secrets.SI_MCP_DEPLOY_KEY }}
+          path: project
+          persist-credentials: false
+      - name: JDK 17 с JavaFX
+        uses: actions/setup-java@v4
+        with:
+          distribution: zulu
+          java-version: '17'
+          java-package: jdk+fx
+      - name: Системные зависимости
+        run: |
+          set -euo pipefail
+          df -h "$RUNNER_TEMP"
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq xvfb xauth libgtk-3-0 libwebkit2gtk-4.0-37 libglu1-mesa unzip > /dev/null
+          echo "SI-MCP SHA: $(git -C project rev-parse HEAD)"
+          test "$(git -C project rev-parse HEAD)" = "$SRC_SHA"
+      - name: Скачать, проверить SHA и безопасно распаковать EDT
+        env:
+          EDT_FILE_ID: ${{ secrets.SI_EDT_2026_OFFLINE_FILE_ID }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/edt-offline/dist"
+          curl -fLsS --retry 3 --connect-timeout 30 --max-time 1500 \
+            "https://drive.usercontent.google.com/download?id=${EDT_FILE_ID}&export=download&confirm=t" \
+            -o "$RUNNER_TEMP/edt-offline/distribution.tar.gz"
+          printf '%s  %s\n' 'd7aad0b8793958f58787d3e52d1dcdd249bfb64856cbc1950abb0c8acd5b1884' "$RUNNER_TEMP/edt-offline/distribution.tar.gz" | sha256sum -c -
+          python3 - <<'PY'
+          import os, pathlib, tarfile
+          root = pathlib.Path(os.environ['RUNNER_TEMP']) / 'edt-offline'
+          with tarfile.open(root / 'distribution.tar.gz', 'r:gz') as t:
+              m = t.getmembers()
+              for x in m:
+                  p = pathlib.PurePosixPath(x.name)
+                  if p.is_absolute() or '..' in p.parts or not (x.isfile() or x.isdir()):
+                      raise SystemExit('Unsafe archive member')
+              if sum(x.size for x in m) > 5_000_000_000: raise SystemExit('Archive expansion exceeds bound')
+              print('Offline archive members:',len(m),'unpacked bytes:',sum(x.size for x in m))
+              t.extractall(root / 'dist', members=m)
+          PY
+          rm "$RUNNER_TEMP/edt-offline/distribution.tar.gz"
+          df -h "$RUNNER_TEMP"
+      - name: Установить полную EDT в disposable runner
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/edt-offline/dist"
+          test -x ./1ce-installer-cli
+          sudo ./1ce-installer-cli install all --products-home "$RUNNER_TEMP/edt-offline/installed" --ignore-hardware-checks 2>&1 | tail -50
+          sudo ./1ce-installer-cli query installed 2>&1 | tee "$RUNNER_TEMP/edt-offline/installed.log" | tail -35
+          grep -Fq '1c-edt@2026.2.2+21' "$RUNNER_TEMP/edt-offline/installed.log"
+          sudo chown -R "$(id -u):$(id -g)" "$RUNNER_TEMP/edt-offline/installed"
+          ROOT=$(sudo find "$RUNNER_TEMP/edt-offline/installed" -type f -name 1cedt -print -quit)
+          CLI=$(sudo find "$RUNNER_TEMP/edt-offline/installed" -type f -name 1cedtcli -print -quit)
+          test -n "$ROOT" && test -n "$CLI"
+          echo "EDT_BIN=$ROOT" >> "$GITHUB_ENV"
+          echo "EDT_CLI=$CLI" >> "$GITHUB_ENV"
+          echo "EDT_ROOT=$(dirname "$ROOT")" >> "$GITHUB_ENV"
+          # EDT 2026.2 ships its own Axiom JDK 25; keep JDK 17 for the Maven build.
+          JAVA25=$(find "$RUNNER_TEMP/edt-offline/installed" -type f -path '*axiom-jdk-full*/bin/java' -print -quit)
+          if [ -z "$JAVA25" ]; then JAVA25=$(find "$RUNNER_TEMP/edt-offline/dist" -type f -path '*axiom-jdk-full*/data/bin/java' -print -quit); fi
+          if [ -z "$JAVA25" ]; then echo '::error::EDT bundled JDK 25 was not found'; exit 1; fi
+          "$JAVA25" -version
+          echo "EDT_JAVA=$JAVA25" >> "$GITHUB_ENV"
+          echo 'Installed EDT and EDT CLI binaries located.'
+      - name: Проверить запуск EDT CLI
+        id: cli
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/edt-offline/cli-workspace"
+          timeout 240s xvfb-run -a "$EDT_CLI" -data "$RUNNER_TEMP/edt-offline/cli-workspace" -command help 2>&1 | tee "$RUNNER_TEMP/edt-offline/cli.log"
+          test -s "$RUNNER_TEMP/edt-offline/cli.log"
+          if grep -qiE '^command not found|^could not launch|^unable to launch|^error:' "$RUNNER_TEMP/edt-offline/cli.log"; then
+            echo '::error::EDT CLI printed an error; exit code alone is insufficient.'; exit 1
+          fi
+          if ! grep -Eqi 'help|справк' "$RUNNER_TEMP/edt-offline/cli.log"; then
+            echo '::error::EDT CLI did not produce recognizable help.'; exit 1
+          fi
+          echo 'EDT CLI answered help; product version established separately by installer query.'
+      - name: Скачать и проверить учебную платформу
+        env:
+          FILE_ID: ${{ secrets.SI_1C_TRAINING_FILE_ID }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/si16-training/dist"
+          curl -fsSL --retry 3 --connect-timeout 30 --max-time 1200 \
+            "https://drive.usercontent.google.com/download?id=${FILE_ID}&export=download&confirm=t" \
+            -o "$RUNNER_TEMP/si16-training/training.tar.gz"
+          printf '%s  %s\n' '71400098eff51a39736fe8ec6077c9818cfbb682548346ccb1d58364e3b9b403' "$RUNNER_TEMP/si16-training/training.tar.gz" | sha256sum -c -
+          python3 - <<'PY'
+          import os, pathlib, tarfile
+          root=pathlib.Path(os.environ['RUNNER_TEMP'])/'si16-training'
+          with tarfile.open(root/'training.tar.gz','r:gz') as t:
+              members=t.getmembers()
+              for m in members:
+                  p=pathlib.PurePosixPath(m.name)
+                  if p.is_absolute() or '..' in p.parts or not (m.isfile() or m.isdir()):
+                      raise SystemExit('Unsafe archive member')
+              if sum(m.size for m in members)>5_000_000_000:
+                  raise SystemExit('Archive expansion exceeds bound')
+              t.extractall(root/'dist',members=members)
+          PY
+      - name: Установить учебную платформу 8.3.27.1508
+        run: |
+          set -euo pipefail
+          DIST="$RUNNER_TEMP/si16-training/dist"
+          SETUP=$(find "$DIST" -type f -name 'setup-training-8.3.27.1508-x86_64.run' -print -quit)
+          test -n "$SETUP"
+          chmod +x "$SETUP"
+          sudo "$SETUP" --mode unattended --unattendedmodeui none --installer-language en --enable-components client_full,ws,ru --prefix /opt/si16-training
+          BIN=$(sudo find /opt/si16-training -type f -name 1cv8t -print -quit)
+          test -n "$BIN" && test -x "$BIN"
+          echo "TRAINING_BIN=$BIN" >> "$GITHUB_ENV"
+          echo 'Учебная платформа 8.3.27.1508 установлена в disposable runner.'
+      - name: Учесть ограничение библиотеки учебной платформы на Ubuntu 22.04
+        run: |
+          set -euo pipefail
+          # В прежнем изолированном прогоне №13 библиотека комплекта мешала запуску.
+          # Меняем только файлы этой установки на одноразовом runner, не системные библиотеки.
+          while IFS= read -r -d '' f; do sudo mv "$f" "$f.si16-disabled"; done < <(find /opt/si16-training -type f -name 'libstdc++.so.6*' -print0)
+          echo 'Missing libraries, if any:'
+          ldd "$TRAINING_BIN" | grep 'not found' || true
+      - name: Создать пустую тестовую ИБ
+        run: |
+          set -euo pipefail
+          BASE="$RUNNER_TEMP/si16-training/empty-ib"
+          mkdir -p "$BASE"
+          timeout -s KILL 180s xvfb-run -a "$TRAINING_BIN" CREATEINFOBASE "File=$BASE" > "$RUNNER_TEMP/si16-training/create.log" 2>&1 || { cat "$RUNNER_TEMP/si16-training/create.log"; exit 1; }
+          cat "$RUNNER_TEMP/si16-training/create.log"
+          test -s "$BASE/1Cv8.1CD"
+          stat -c 'Empty database bytes: %s' "$BASE/1Cv8.1CD"
+      - name: Проверить конфигуратор учебной платформы
+        run: |
+          set -euo pipefail
+          BASE="$RUNNER_TEMP/si16-training/empty-ib"
+          LOG="$RUNNER_TEMP/si16-training/designer.log"
+          OUT="$RUNNER_TEMP/si16-training/empty.cf"
+          set +e
+          timeout -s KILL 150s xvfb-run -a "$TRAINING_BIN" DESIGNER "/F$BASE" /DumpCfg "$OUT" /DisableStartupDialogs /Out "$LOG"
+          code=$?
+          set -e
+          echo "DESIGNER exit: $code"
+          if [ -f "$LOG" ]; then cat "$LOG"; fi
+          test "$code" -eq 0 && test -s "$OUT"
+          echo 'Отдельный конфигуратор учебной платформы работает с пустой ИБ.'
+          echo 'EDT 2026.2.2 не проверена вместе с этой учебной платформой; 8.3.27.1508 ниже указанного 1С минимума 8.3.27.2202.'
+      - name: Попробовать создать пустую ИБ из EDT через учебную платформу
+        id: edt_create
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          BASE="$RUNNER_TEMP/edt-offline/edt-created-training-ib"
+          LOG="$RUNNER_TEMP/edt-offline/edt-create-training.log"
+          echo 'Эксперимент вне заявленного 1С диапазона версий; требуется реальный файл базы и запись в списке EDT.'
+          timeout -s KILL 240s xvfb-run -a "$EDT_CLI" -data "$RUNNER_TEMP/edt-offline/cli-workspace" -command infobase-create --name SI16Training --version 8.3.27 --path "$BASE" 2>&1 | tee "$LOG"
+          test -s "$BASE/1Cv8.1CD" || { echo '::error::EDT не создала файл ИБ через учебную платформу'; exit 1; }
+          timeout 180s xvfb-run -a "$EDT_CLI" -data "$RUNNER_TEMP/edt-offline/cli-workspace" -command infobase --details 2>&1 | tee "$RUNNER_TEMP/edt-offline/edt-infobase-list.log"
+          grep -Fq SI16Training "$RUNNER_TEMP/edt-offline/edt-infobase-list.log" || { echo '::error::ИБ не обнаружена в списке EDT'; exit 1; }
+          echo 'EDT создала тестовую ИБ, но это не проверка SI-MCP с подключённым проектом.'
+      - name: Maven 3.9.9
+        run: |
+          set -euo pipefail
+          curl -fsSL --retry 3 https://archive.apache.org/dist/maven/maven-3/3.9.9/binaries/apache-maven-3.9.9-bin.tar.gz -o "$RUNNER_TEMP/maven.tgz"
+          tar -xzf "$RUNNER_TEMP/maven.tgz" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/apache-maven-3.9.9/bin" >> "$GITHUB_PATH"
+      - name: Собрать p2-сайт SI-MCP без тестов
+        working-directory: project/server
+        env:
+          MAVEN_OPTS: -Xmx3g
+        run: |
+          set -euo pipefail
+          mvn -B -ntp -Dstyle.color=never -DskipTests package 2>&1 | tee "$RUNNER_TEMP/edt-offline/build.log" | tail -90
+          test -f repositories/si.edt.mcp.server.repository/target/repository/content.jar || test -f repositories/si.edt.mcp.server.repository/target/repository/content.xml
+          echo 'BUILD ONLY: tests were skipped; target version and this EDT may be incompatible.'
+      - name: Диагностика версии lifecycle и профиля p2
+        run: |
+          python3 - <<'PY'
+          import gzip, os, pathlib, re, zipfile
+          root=pathlib.Path(os.environ['EDT_ROOT'])
+          target=pathlib.Path(os.environ['GITHUB_WORKSPACE'])/'project/server/targets/default/default.target'
+          print('--- target repository locations ---')
+          if target.exists():
+              for line in target.read_text(errors='replace').splitlines():
+                  if 'location' in line.lower() or 'repository' in line.lower(): print(line[:500])
+          package='com._1c.g5.v8.dt.core.lifecycle'
+          print('--- installed bundle export metadata for',package,'---')
+          hits=0
+          for jar in (root/'plugins').glob('*.jar'):
+              try:
+                  with zipfile.ZipFile(jar) as z:
+                      m=z.read('META-INF/MANIFEST.MF').decode('utf-8','replace').replace('\r\n ','').replace('\n ','')
+                  for line in m.splitlines():
+                      if line.startswith('Export-Package:'):
+                          for entry in re.split(r',(?=[a-zA-Z_][\w.]*[;,])',line[len('Export-Package:'):]):
+                              if package in entry:
+                                  print('BUNDLE',jar.name,'EXPORT',entry[:1200]); hits+=1
+              except (KeyError, zipfile.BadZipFile, OSError): pass
+          print('EXPORT ENTRIES',hits)
+          profiles=list((root/'p2').rglob('*.profile.gz'))+list((root/'p2').rglob('*.profile'))
+          print('PROFILE FILES',len(profiles))
+          for f in profiles:
+              try:
+                  data=(gzip.open(f,'rt',encoding='utf8',errors='replace').read() if f.suffix=='.gz' else f.read_text(errors='replace'))
+                  print('PROFILE',f.relative_to(root),'mentions lifecycle:',package in data)
+              except OSError as e: print('PROFILE READ ERROR',e)
+          PY
+      - name: Установить SI-MCP в реальную EDT 2026.2.2
+        run: |
+          set -euo pipefail
+          SITE="$GITHUB_WORKSPACE/project/server/repositories/si.edt.mcp.server.repository/target/repository"
+          timeout 900s xvfb-run -a "$EDT_BIN" -vm "$EDT_JAVA" -nosplash -application org.eclipse.equinox.p2.director \
+            -repository "file:$SITE" -installIU si.edt.mcp.server.feature.feature.group -destination "$EDT_ROOT" -p2.os linux -p2.ws gtk -p2.arch x86_64 -consoleLog
+      - name: Проверить старт плагина и MCP без рабочей ИБ
+        env:
+          PYTHONPATH: ${{ github.workspace }}/project/client
+        run: |
+          set -euo pipefail
+          WS="$RUNNER_TEMP/edt-offline/workspace"
+          mkdir -p "$WS/.metadata/.plugins/org.eclipse.core.runtime/.settings"
+          printf '%s\n' 'eclipse.preferences.version=1' 'mcpServerAutoStart=true' 'mcpServerPort=12260' 'mcpAuthEnabled=true' 'mcpAuthToken=ci-ephemeral-token' > "$WS/.metadata/.plugins/org.eclipse.core.runtime/.settings/si.edt.mcp.server.prefs"
+          Xvfb :88 -screen 0 1280x800x24 > "$RUNNER_TEMP/edt-offline/xvfb.log" 2>&1 & xpid=$!
+          export DISPLAY=:88
+          "$EDT_BIN" -vm "$EDT_JAVA" -nosplash -data "$WS" -consoleLog -vmargs -Xmx3g > "$RUNNER_TEMP/edt-offline/edt.log" 2>&1 & epid=$!
+          trap 'kill "$epid" "$xpid" 2>/dev/null || true; echo "--- EDT tail ---"; tail -80 "$RUNNER_TEMP/edt-offline/edt.log" || true; tail -80 "$WS/.metadata/.log" 2>/dev/null || true' EXIT
+          python3 - <<'PY'
+          import socket, time, urllib.error, urllib.request
+          for _ in range(150):
+              try:
+                  with socket.create_connection(('127.0.0.1', 12260),timeout=2): break
+              except OSError: time.sleep(2)
+          else: raise SystemExit('MCP did not start within 300s')
+          req = urllib.request.Request('http://127.0.0.1:12260/mcp',data=b'{}',headers={'Content-Type':'application/json'})
+          try:
+              with urllib.request.urlopen(req, timeout=10) as r: code=r.status
+          except urllib.error.HTTPError as e: code=e.code
+          print('Unauthenticated status:',code)
+          if code != 401: raise SystemExit('Expected 401')
+          from siagent.mcp import McpClient
+          c=McpClient('http://127.0.0.1:12260/mcp',token='ci-ephemeral-token',timeout=30)
+          try:
+              s=c.initialize(); print('initialize:',s.protocol_version,s.server_info)
+              print('ping:',c.ping()); tools=c.list_tools(); print('tools/list:',len(tools))
+              if 'get_edt_version' not in {t.get('name') for t in tools}: raise SystemExit('Missing get_edt_version')
+              v=c.call_tool('get_edt_version',{}); print('get_edt_version:',v['text'],'is_error:',v['is_error'])
+              if v['is_error']: raise SystemExit('EDT version tool failed')
+          finally: c.close()
+          PY
+          echo 'MCP was tested without opening the training IB in a project; no MCP infobase operations, production writes, debugger or full verify were tested.'
+      - name: Итог CLI без сокрытия ошибки
+        if: always()
+        env:
+          CLI_OUTCOME: ${{ steps.cli.outcome }}
+        run: |
+          echo "EDT CLI outcome: $CLI_OUTCOME"
+          test "$CLI_OUTCOME" = success
+      - name: Итог экспериментальной связи EDT и учебной платформы
+        if: always() && steps.edt_create.outcome != 'skipped'
+        env:
+          CHECK_OUTCOME: ${{ steps.edt_create.outcome }}
+        run: |
+          echo "EDT training infobase outcome: $CHECK_OUTCOME"
+          test "$CHECK_OUTCOME" = success
