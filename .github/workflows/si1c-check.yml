@@ -219,6 +219,18 @@ jobs:
                   except ProcessLookupError:pass
                   proc.wait(timeout=10)
               log.close()
+              for f in [root/'edt.log',ws/'.metadata/.log']:
+                  if not f.is_file():continue
+                  text=f.read_text(encoding='utf8',errors='replace')
+                  needle="The 'project' argument cannot be 'null'"
+                  index=text.rfind(needle)
+                  if index>=0:
+                      fragment=text[index:index+12000]
+                      frames=re.findall(r'(?m)^\s*at\s+((?:si\.edt\.mcp|com\._1c|org\.eclipse)[A-Za-z0-9_.$]+)\(([^)]*)\)',fragment)
+                      for cls,loc in frames[:14]:
+                          if re.fullmatch(r'[A-Za-z0-9_.$]+:(?:[0-9]+)',loc):print('RESULT_CREATE_STACK_FRAME='+cls+'('+loc+')',flush=True)
+                      print('RESULT_CREATE_STACK_FOUND='+str(bool(frames)).lower(),flush=True)
+                      break
           PY
       - name: Удалить только созданный временный стенд
         if: always()
