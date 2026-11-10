@@ -1,63 +1,45 @@
-name: Проверка импорта временной ИБ в проект
+name: Проверить сохранённый тестовый стенд
 on:
   workflow_dispatch:
 permissions:
   contents: read
 jobs:
-  check:
+  audit:
     runs-on: [self-hosted, Linux, X64, si1c]
-    timeout-minutes: 18
+    timeout-minutes: 5
     steps:
-      - name: Подготовить отдельную рабочую область
+      - name: Без изменений прочитать признаки состояния
         shell: bash
         run: |
           set -euo pipefail
-          ROOT=$(mktemp -d "${RUNNER_TEMP:?}/si16-cliimport-${GITHUB_RUN_ID}-XXXXXX")
-          mkdir -p "$ROOT/home" "$ROOT/workspace"
-          echo "SI16_ROOT=$ROOT" >> "$GITHUB_ENV"
-          CLI=$(find /opt/si-edt -type f -name 1cedtcli -print -quit)
-          test -x "$CLI"
-          echo "EDT_CLI=$CLI" >> "$GITHUB_ENV"
-      - name: Создать и импортировать только временную ИБ
-        shell: bash
-        run: |
-          set -euo pipefail
-          export HOME="$SI16_ROOT/home" XDG_CONFIG_HOME="$SI16_ROOT/home/.config" XDG_CACHE_HOME="$SI16_ROOT/home/.cache" XDG_DATA_HOME="$SI16_ROOT/home/.local/share"
           python3 - <<'PY'
-          import os,pathlib,subprocess,signal,re
-          r=pathlib.Path(os.environ['SI16_ROOT']);w=r/'workspace';cli=os.environ['EDT_CLI'];marker=r/'PENDING_MUTATION_DO_NOT_CLEAN'
-          name='SI16Import'+os.environ['GITHUB_RUN_ID']
-          def run(label,args,timeout,mutation=False):
-              if mutation:marker.write_text(label+' outcome not confirmed\n')
-              p=subprocess.Popen(['xvfb-run','-a',cli,'-data',str(w),'-timeout',str(timeout-10),'-command']+args,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,start_new_session=True)
-              try:out,_=p.communicate(timeout=timeout)
-              except subprocess.TimeoutExpired:
-                  os.killpg(p.pid,signal.SIGKILL);out,_=p.communicate();print('RESULT_'+label+'_TIMEOUT=true',flush=True);raise RuntimeError('timed out; retained')
-              print('RESULT_'+label+'_EXIT='+str(p.returncode),flush=True)
-              if p.returncode!=0:
-                  text=out.decode('utf8','replace').casefold()
-                  for k,pat in {'LICENSE':'licen[cs]|лиценз','EMPTY_CONFIGURATION':'empty configuration|пуст.*конфигурац','PLATFORM':'platform|платформ','ERROR':'error|ошибк'}.items():print('RESULT_'+label+'_'+k+'='+str(bool(re.search(pat,text))).lower(),flush=True)
-                  raise RuntimeError(label+' failed; retained for review')
-              if mutation:marker.unlink()
-              return out.decode('utf8','replace')
-          run('IB_CREATE',['infobase-create','--name','SI16ImportIB','--version','8.3.27','--path',str(r/'ib')],180,True)
-          if not (r/'ib'/'1Cv8.1CD').is_file() or (r/'ib'/'1Cv8.1CD').stat().st_size==0:raise RuntimeError('IB file absent')
-          print('RESULT_IB_FILE_PRESENT=true',flush=True)
-          out=run('IB_LIST',['infobase','--details'],90)
-          if 'SI16ImportIB' not in out or str(r/'ib') not in out:raise RuntimeError('IB identity unconfirmed')
-          print('RESULT_IB_NAME_AND_PATH_LISTED=true',flush=True)
-          if (w/name).exists():raise RuntimeError('project collision')
-          run('IB_IMPORT',['infobase-import','--name','SI16ImportIB','--project',name,'--build','false'],360,True)
-          result=run('PROJECT_LIST',['project','--details'],90)
-          print('RESULT_PROJECT_NAME_LISTED='+str(name in result).lower(),flush=True)
-          print('RESULT_PROJECT_FILE_PRESENT='+str((w/name/'.project').is_file()).lower(),flush=True)
-          if name not in result or not (w/name/'.project').is_file():raise RuntimeError('project location/name not confirmed')
+          import pathlib,os,re
+          parent=pathlib.Path(os.environ['RUNNER_TEMP']).resolve()
+          matches=list(parent.glob('si16-cliimport-42923336536-*'))
+          print('RESULT_RETAINED_MATCH_COUNT='+str(len(matches)))
+          if len(matches)!=1:raise RuntimeError('expected exactly one retained test directory')
+          r=matches[0]
+          if r.is_symlink() or r.resolve().parent!=parent or not (r/'PENDING_MUTATION_DO_NOT_CLEAN').is_file():raise RuntimeError('ownership or marker not confirmed')
+          print('RESULT_PENDING_MARKER_PRESENT=true')
+          print('RESULT_TEST_IB_FILE_PRESENT='+str((r/'ib'/'1Cv8.1CD').is_file()).lower())
+          projects=[p for p in (r/'workspace').glob('*/.project') if p.is_file()]
+          print('RESULT_PROJECT_FILES_COUNT='+str(len(projects)))
+          candidates=[]
+          for sub in ('workspace','home'):
+              for f in (r/sub).rglob('*'):
+                  if f.is_symlink() or not f.is_file() or f.stat().st_size>10000000:continue
+                  if f.name.endswith('.log') or f.name=='.log':candidates.append(f)
+          print('RESULT_LOGS_INSPECTED='+str(len(candidates)))
+          data='\n'.join(f.read_text(encoding='utf8',errors='replace') for f in candidates).casefold()
+          for key,pattern in {'LICENSE_NOT_FOUND':r'license not found|лицензия не обнаружена|лицензия не найдена','LICENSE_ERROR':r'license.{0,30}(not found|error|failed)|ошибк.{0,30}лицензи','IMPORT_ERROR':r'infobase.import.{0,80}(error|failed)|ошибк.{0,80}импорт','CONFIGURATION_MISSING':r'configuration.{0,30}(empty|not found)|конфигурац.{0,30}(пуст|не найд)'}.items():print('RESULT_'+key+'='+str(bool(re.search(pattern,data))).lower())
+          count=0;unreadable=0
+          for p in pathlib.Path('/proc').iterdir():
+              if not p.name.isdigit():continue
+              try:
+                  cmd=(p/'cmdline').read_bytes();env=(p/'environ').read_bytes()
+                  if str(r).encode() in cmd or str(r).encode() in env:count+=1
+              except (OSError,PermissionError):unreadable+=1
+          print('RESULT_VISIBLE_PROCESSES_REFERENCING_STAND='+str(count))
+          print('RESULT_PROCESS_ENV_UNREADABLE_COUNT='+str(unreadable))
+          print('RESULT_STAND_LEFT_UNCHANGED=true')
           PY
-      - name: Удалить только временный стенд после определённого завершения
-        if: always()
-        shell: bash
-        run: |
-          set -u
-          case "${SI16_ROOT:-}" in "$RUNNER_TEMP"/si16-cliimport-"$GITHUB_RUN_ID"-*)
-            if [ -f "$SI16_ROOT/PENDING_MUTATION_DO_NOT_CLEAN" ]; then echo 'RESULT_TEMP_RETAINED_AMBIGUOUS=true'; else rm -rf -- "$SI16_ROOT"; echo 'RESULT_TEMP_CLEANED=true'; fi;;
-          esac
