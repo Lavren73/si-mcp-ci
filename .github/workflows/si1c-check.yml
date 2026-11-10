@@ -55,7 +55,7 @@ jobs:
         run: |
           set -u
           export HOME="$SI16_ROOT/home" XDG_CONFIG_HOME="$SI16_ROOT/home/.config" XDG_CACHE_HOME="$SI16_ROOT/home/.cache" XDG_DATA_HOME="$SI16_ROOT/home/.local/share"
-          file "$EDT_CLI" || true
+          set +e
           timeout -s KILL 60s xvfb-run -a "$EDT_CLI" -data "$SI16_ROOT/workspace" -command version > "$SI16_ROOT/version.log" 2>&1
           VCODE=$?
           echo "RESULT_COPY_CLI_VERSION_EXIT=$VCODE"
@@ -136,6 +136,7 @@ jobs:
               names={x.get('name') for x in result['tools'] if isinstance(x,dict)}
               print('RESULT_TOOLS_FIRST_PAGE_COUNT='+str(len(names)),flush=True)
               print('RESULT_CREATE_PROJECT_PRESENT='+str('create_project' in names).lower(),flush=True)
+              print('RESULT_PROJECT_ADMIN_PRESENT='+str('project_admin' in names).lower(),flush=True)
               print('RESULT_SECURITY_AUDIT_PRESENT='+str('security_audit' in names).lower(),flush=True)
               print('RESULT_TOOLS_MORE_PAGES='+str(bool(result.get('nextCursor'))).lower(),flush=True)
           finally:
