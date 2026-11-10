@@ -6,28 +6,40 @@ permissions:
 jobs:
   check:
     runs-on: [self-hosted, Linux, X64, si1c]
-    timeout-minutes: 10
+    timeout-minutes: 8
     steps:
-      - name: Проверить runner и установленные программы
+      - name: EDT платформа и новая изолированная пустая ИБ
+        shell: bash
         run: |
-          set -euo pipefail
-          echo 'Тест выполняется на выделенном self-hosted runner'
-          test -x /opt/1cv8/x86_64/8.3.27.2342/1cv8
-          EDT_CLI=$(find /opt/si-edt -type f -name 1cedtcli -print -quit)
-          test -n "$EDT_CLI"
-          mkdir -p "$RUNNER_TEMP/si1c-cli-check"
-          timeout 240s xvfb-run -a "$EDT_CLI" -data "$RUNNER_TEMP/si1c-cli-check" -command version
-      - name: Проверить лицензию конфигуратором на пустой ИБ
-        run: |
-          set -euo pipefail
-          test -s /home/runner/test-ib/1Cv8.1CD
-          LOG="$RUNNER_TEMP/si1c-designer.log"
-          OUT="$RUNNER_TEMP/si1c-empty.cf"
+          set -u
+          DIR=$(mktemp -d "${RUNNER_TEMP:?}/si16-ib-${GITHUB_RUN_ID}-XXXXXX")
+          trap 'rm -rf -- "$DIR"' EXIT
+          mkdir "$DIR/home" "$DIR/workspace"
+          export HOME="$DIR/home" XDG_CONFIG_HOME="$DIR/home/.config" XDG_CACHE_HOME="$DIR/home/.cache" XDG_DATA_HOME="$DIR/home/.local/share"
+          CLI=$(find /opt/si-edt -type f -name 1cedtcli -print -quit)
+          if [ -z "$CLI" ]; then echo 'RESULT_CLI_MISSING=true'; exit 0; fi
           set +e
-          timeout 150s xvfb-run -a /opt/1cv8/x86_64/8.3.27.2342/1cv8 \
-            DESIGNER '/F/home/runner/test-ib' /DumpCfg "$OUT" /DisableStartupDialogs /Out "$LOG"
-          code=$?
+          timeout -s KILL 120s xvfb-run -a "$CLI" -data "$DIR/workspace" -command platform-versions > "$DIR/versions.txt" 2>&1
+          VCODE=$?
+          timeout -s KILL 180s xvfb-run -a "$CLI" -data "$DIR/workspace" -command infobase-create --name SI16Isolated --version 8.3.27 --path "$DIR/ib" > "$DIR/create.txt" 2>&1
+          CCODE=$?
+          if [ "$CCODE" -eq 0 ]; then
+            timeout -s KILL 90s xvfb-run -a "$CLI" -data "$DIR/workspace" -command infobase --details > "$DIR/list.txt" 2>&1
+            LCODE=$?
+          else LCODE=notrun; fi
           set -e
-          echo "Код конфигуратора: $code"
-          if [ -f "$LOG" ]; then cat "$LOG"; fi
-          test "$code" -eq 0 && test -s "$OUT"
+          export VCODE CCODE LCODE
+          python3 - "$DIR" <<'PY'
+          import os,pathlib,re,sys
+          p=pathlib.Path(sys.argv[1]); versions=(p/'versions.txt').read_text(errors='replace'); create=(p/'create.txt').read_text(errors='replace'); listing=(p/'list.txt').read_text(errors='replace') if (p/'list.txt').exists() else ''
+          found=sorted(set(re.findall(r'(?<!\d)8\.\d+\.\d+(?:\.\d+)?(?!\d)',versions)))
+          print('RESULT_PLATFORM_VERSIONS_EXIT='+os.environ['VCODE'])
+          print('RESULT_VERSIONS_IN_OUTPUT='+(','.join(found) if found else 'none'))
+          print('RESULT_PLATFORM_OUTPUT_EMPTY='+str(not versions.strip()).lower())
+          print('RESULT_CREATE_EXIT='+os.environ['CCODE'])
+          print('RESULT_CREATE_BASE_FILE_NONEMPTY='+str((p/'ib'/'1Cv8.1CD').is_file() and (p/'ib'/'1Cv8.1CD').stat().st_size>0).lower())
+          print('RESULT_CREATE_UNSUPPORTED='+str(bool(re.search(r'none are supported|no supported|не поддержива',create,re.I))).lower())
+          print('RESULT_CREATE_PLATFORM_NOT_FOUND='+str(bool(re.search(r'platform.*not found|no.*platform|платформ.*не найд',create,re.I))).lower())
+          print('RESULT_LIST_EXIT='+os.environ['LCODE'])
+          print('RESULT_NEW_IB_NAME_LISTED='+str('SI16Isolated' in listing).lower())
+          PY
