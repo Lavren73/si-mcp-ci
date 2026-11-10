@@ -1,4 +1,4 @@
-name: Диагностика лицензии по сохранённым журналам
+name: Инвентаризация доступности лицензии без изменения
 on:
   workflow_dispatch:
 permissions:
@@ -8,30 +8,22 @@ jobs:
     runs-on: [self-hosted, Linux, X64, si1c]
     timeout-minutes: 5
     steps:
-      - name: Прочитать только признаки в журнале и состояние процессов
+      - name: Проверить наличие лицензий без чтения их содержимого
         shell: bash
         run: |
           set -euo pipefail
           python3 - <<'PY'
-          import pathlib,os,re
-          base=pathlib.Path.home()/'.si-mcp-agent16-test-staging';r=base/'si16-cliimport-42924163619-N8B9et'
-          if base.is_symlink() or r.is_symlink() or not r.is_dir() or r.resolve().parent!=base.resolve():raise RuntimeError('stand identity not confirmed')
-          f=r/'ib_import.log'
-          if not f.is_file() or f.is_symlink() or f.stat().st_size>10000000:raise RuntimeError('bad saved log')
-          text=f.read_text(encoding='utf8',errors='replace')
-          print('RESULT_IMPORT_LOG_LINES='+str(len(text.splitlines())))
-          for key,pat in {'LICENSE_NOT_FOUND':r'License not found','NO_LICENSE':r'no (?:available |valid )?licen[cs]e','PLATFORM_EXECUTION':r'platform execution|platform.*process|процесс.*платформ','PLATFORM_START_FAILED':r'(?:cannot|failed to|could not|не удалось).{0,80}(?:start|launch|запус).{0,80}(?:platform|платформ)','DESIGNER_START':r'\bDESIGNER\b|конфигуратор','DUMP_CONFIG':r'DumpConfigToFiles|выгрузк.{0,20}конфигурац','OSGI_EXCEPTION':r'!ENTRY|!STACK|java\.lang\.[A-Za-z]+Exception'}.items():
-              print('RESULT_IMPORT_'+key+'='+str(bool(re.search(pat,text,re.I))).lower())
-          methods=[]
-          for m in re.findall(r'(?m)^\s*at\s+((?:com\._1c|org\.eclipse|java)\.[\w.$]+)\((?:[\w.$]+:\d+|Unknown Source)\)',text):
-              if m not in methods:methods.append(m)
-          for m in methods[:15]:print('RESULT_STACK_METHOD='+m)
-          count=0;unreadable=0
-          for p in pathlib.Path('/proc').iterdir():
-              if not p.name.isdigit():continue
-              try:
-                  d=(p/'cmdline').read_bytes()+b'\n'+(p/'environ').read_bytes()
-                  if str(r).encode() in d:count+=1
-              except OSError:unreadable+=1
-          print('RESULT_STAND_PROCESSES='+str(count));print('RESULT_UNREADABLE_PROCESS_COUNT='+str(unreadable));print('RESULT_STAND_UNCHANGED=true')
+          import pathlib,os
+          home=pathlib.Path.home();stand=home/'.si-mcp-agent16-test-staging/si16-cliimport-42924163619-N8B9et'
+          if not stand.is_dir() or stand.is_symlink():raise RuntimeError('stand missing')
+          dirs={'VERSION_CONF':pathlib.Path('/opt/1cv8/x86_64/8.3.27.2342/conf'),'ROOT_CONF':pathlib.Path('/opt/1cv8/conf'),'SHARED':pathlib.Path('/var/1C/licenses'),'RUNNER_HOME_CONF':home/'.1cv8/conf','RUNNER_HOME_ALT':home/'.1cv8/1C/1cv8','ISOLATED_HOME_CONF':stand/'home/.1cv8/conf','ISOLATED_HOME_ALT':stand/'home/.1cv8/1C/1cv8'}
+          for label,p in dirs.items():
+              print('RESULT_'+label+'_EXISTS='+str(p.is_dir()).lower())
+              if not p.is_dir():continue
+              try:files=[x for x in p.iterdir() if x.name.lower().endswith('.lic') and x.is_file()]; readable=sum(os.access(x,os.R_OK) for x in files)
+              except OSError:print('RESULT_'+label+'_LISTABLE=false');continue
+              print('RESULT_'+label+'_LISTABLE=true');print('RESULT_'+label+'_LICENSE_FILE_COUNT='+str(len(files)));print('RESULT_'+label+'_READABLE_LICENSE_COUNT='+str(readable))
+          for label,p in [('VERSION',dirs['VERSION_CONF']/'conf.cfg'),('ROOT',dirs['ROOT_CONF']/'conf.cfg'),('RUNNER_HOME',dirs['RUNNER_HOME_ALT']/'location.cfg'),('ISOLATED_HOME',dirs['ISOLATED_HOME_ALT']/'location.cfg')]:
+              print('RESULT_'+label+'_CONFIG_EXISTS='+str(p.is_file()).lower())
+          print('RESULT_NO_LICENSE_CONTENT_READ=true');print('RESULT_NOTHING_CHANGED=true')
           PY
