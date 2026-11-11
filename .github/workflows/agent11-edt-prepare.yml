@@ -61,6 +61,10 @@ jobs:
         echo ''No previous source or report modified; no infobase accessed.''
 
         '
+    - name: Python 3.12 in the team tool cache
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
     - name: Resolve the previously false-green catalog check with explicit source path
       id: catalog
       continue-on-error: true
@@ -71,7 +75,7 @@ jobs:
         export SI_EDT_SRC="$TEAM_SOURCE/server/bundles"
         cd "$TEAM_SOURCE/client"
         set +e
-        "$TEAM_BASE/tools/python-tests/bin/python" tests/extract_edt_catalog.py 2>&1 | tee "$TEAM_RUN/reports/catalog-check.log"
+        python tests/extract_edt_catalog.py --check 2>&1 | tee "$TEAM_RUN/reports/catalog-check.log"
         CODE=${PIPESTATUS[0]}
         set -e
         printf '%s\n' "$CODE" > "$TEAM_RUN/reports/catalog-check.exit"
