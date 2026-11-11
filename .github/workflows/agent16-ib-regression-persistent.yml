@@ -7,6 +7,9 @@ jobs:
   build:
     runs-on: [self-hosted, Linux, X64, si1c]
     timeout-minutes: 40
+    env:
+      LANG: C.UTF-8
+      LC_ALL: C.UTF-8
     steps:
       - name: Создать личный постоянный каталог регрессии
         shell: bash
@@ -73,6 +76,8 @@ jobs:
         run: |
           set -euo pipefail
           ROOT="$SI16_BUILD_DIR/source"
+          test "$(locale charmap)" = UTF-8
+          echo "RESULT_LOCALE_CHARMAP=$(locale charmap)"
           test "$(git -C "$ROOT" rev-parse HEAD)" = 99d6dd52f72f856f8b2d5471a89c4474db0b7384
           export HOME="$SI16_BUILD_DIR/home" JAVA_HOME="$SI16_BUILD_DIR/jdk" PATH="$SI16_BUILD_DIR/jdk/bin:$PATH" MAVEN_OPTS='-Xmx3g'
           cd "$ROOT/server"
@@ -105,6 +110,13 @@ jobs:
               ok=len(selected)==1 and selected[0][0]>0 and selected[0][1:]==[0,0,0]
               print('RESULT_REQUIRED_'+name+'='+str(ok).lower())
               if not ok:raise SystemExit('required report missing, failed or skipped')
+          target=[p for p in reports if p.name.endswith('RegisteredInfobasesReaderTest.xml')]
+          if len(target)!=1:raise SystemExit('target encoding report missing')
+          props={p.get('name'):p.get('value') for p in ET.parse(target[0]).getroot().findall('./properties/property')}
+          for key in ('file.encoding','sun.jnu.encoding','native.encoding'):
+              value=props.get(key,'<missing>')
+              print('RESULT_TEST_JVM_'+key+'='+value)
+              if value.upper().replace('-','')!='UTF8':raise SystemExit('test JVM is not UTF-8')
           if os.environ['CODE']!='0':raise SystemExit('Maven command failed')
           PYTEST
           if [ "$CODE" -ne 0 ]; then tail -70 "$SI16_BUILD_DIR/verify.log"; exit "$CODE"; fi
