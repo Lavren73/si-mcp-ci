@@ -1,0 +1,224 @@
+name: SI-MCP — EDT 2026.2 target, benchmarks and isolated preparation (11)
+'on':
+  workflow_dispatch: {}
+permissions:
+  contents: read
+concurrency:
+  group: si1c-team-test-stand
+  cancel-in-progress: false
+jobs:
+  extended:
+    runs-on:
+    - self-hosted
+    - Linux
+    - X64
+    - si1c
+    timeout-minutes: 65
+    env:
+      LANG: C.UTF-8
+      LC_ALL: C.UTF-8
+      RUNNER_TOOL_CACHE: /home/runner/si1c-team-tests/toolcache
+      AGENT_TOOLSDIRECTORY: /home/runner/si1c-team-tests/toolcache
+    steps:
+    - name: Create a new isolated run from the exact already-tested source
+      shell: bash
+      run: |
+        set -euo pipefail
+        umask 077
+        BASE="$HOME/si1c-team-tests"
+        test -d "$BASE" && test ! -L "$BASE" && test -O "$BASE"
+        test "$(cat "$BASE/OWNER.txt")" = 'SI-MCP team test stand; provisioned by agent 11'
+        RUN="$BASE/runs/$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+        test ! -e "$RUN"
+        mkdir -m 700 "$RUN"
+        mkdir "$RUN/reports" "$RUN/home"
+        SOURCE="$BASE/runs/43066093547-1/source"
+        SHA=b029b9e0566310aea3b02242bb23a568b71771f1
+        test "$(git -C "$SOURCE" rev-parse HEAD)" = "$SHA"
+        git clone --no-hardlinks --single-branch --branch agent/obmen-20261102 "$SOURCE" "$RUN/source"
+        git -C "$RUN/source" remote set-url origin git@github.com:Lavren73/SI-MCP.git
+        test "$(git -C "$RUN/source" rev-parse HEAD)" = "$SHA"
+        printf '%s\n' "$SHA" > "$RUN/reports/source-sha.txt"
+        printf 'TEAM_BASE=%s\nTEAM_RUN=%s\nTEAM_SOURCE=%s\n' "$BASE" "$RUN" "$RUN/source" >> "$GITHUB_ENV"
+        test "$(df -Pk "$BASE" | awk 'NR==2 {print $4}')" -gt 31457280
+        echo 'No previous source or report modified; no infobase accessed.'
+    - name: JDK 17 in the team tool cache
+      uses: actions/setup-java@v4
+      with:
+        distribution: temurin
+        java-version: '17'
+    - name: Python 3.12 in the team tool cache
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+    - name: Node.js 22 in the team tool cache
+      uses: actions/setup-node@v4
+      with:
+        node-version: '22'
+    - name: Use already installed isolated Maven, Python packages, PowerShell and jsdom
+      shell: bash
+      run: |
+        set -euo pipefail
+        for p in "$TEAM_BASE/tools/apache-maven-3.9.9/bin" "$TEAM_BASE/tools/python-tests/bin" "$TEAM_BASE/tools/powershell-7.4.13"; do
+          test -d "$p"
+          echo "$p" >> "$GITHUB_PATH"
+        done
+        echo "NODE_PATH=$TEAM_BASE/tools/node-tests/node_modules" >> "$GITHUB_ENV"
+    - name: Extended offline client/index/BSL checks and optional benchmarks
+      shell: bash
+      run: |
+        set -euo pipefail
+        cd "$TEAM_SOURCE/client"
+        export HOME="$TEAM_RUN/home"
+        set +e
+        python прогнать-тесты.py --benchmarks 2>&1 | tee "$TEAM_RUN/reports/client-extended.log"
+        CODE=${PIPESTATUS[0]}
+        set -e
+        printf '%s\n' "$CODE" > "$TEAM_RUN/reports/client-extended.exit"
+        exit "$CODE"
+      id: client
+      continue-on-error: true
+    - name: Full Maven/Tycho verify on the ACTIVE EDT 2026.2 target
+      shell: bash
+      run: |
+        set -euo pipefail
+        cd "$TEAM_SOURCE/server"
+        export HOME="$TEAM_RUN/home"
+        export MAVEN_OPTS="-Xmx3g -Dfile.encoding=UTF-8 -Duser.home=$TEAM_RUN/home"
+        echo 'Full mvn verify started; heartbeat every 20 seconds. Tests are NOT skipped.'
+        set +e
+        nice -n 10 ionice -c 2 -n 7 timeout --signal=TERM --kill-after=60s 2400s xvfb-run -a mvn -B -fae -Pedt-2026.2 -ntp -Dstyle.color=never -Dmaven.repo.local="$TEAM_BASE/cache/m2" verify > "$TEAM_RUN/reports/maven.log" 2>&1 &
+        PID=$!
+        while kill -0 "$PID" 2>/dev/null; do
+          printf '[%s] Maven is running; ' "$(date -u +%T)"
+          tail -1 "$TEAM_RUN/reports/maven.log"
+          sleep 20
+        done
+        wait "$PID"
+        CODE=$?
+        set -e
+        printf '%s\n' "$CODE" > "$TEAM_RUN/reports/maven.exit"
+        tail -100 "$TEAM_RUN/reports/maven.log"
+        python - <<'PY'
+        import os,pathlib,xml.etree.ElementTree as ET,json
+        src=pathlib.Path(os.environ['TEAM_SOURCE'])
+        reports=list(src.glob('server/**/surefire-reports/TEST-*.xml'))
+        total=[0,0,0,0];failed=[]
+        for p in reports:
+            x=ET.parse(p).getroot()
+            total=[a+int(x.get(k,'0')) for a,k in zip(total,('tests','failures','errors','skipped'))]
+            for case in x.findall('testcase'):
+                if case.find('failure') is not None or case.find('error') is not None:
+                    failed.append(case.get('classname','')+'#'+case.get('name',''))
+        out={'reports':len(reports),'tests':total[0],'failures':total[1],'errors':total[2],'skipped':total[3],'failed_tests':failed}
+        pathlib.Path(os.environ['TEAM_RUN'],'reports','maven-summary.json').write_text(json.dumps(out,ensure_ascii=False,indent=2))
+        print(json.dumps(out,ensure_ascii=False))
+        if not reports or total[0]==0:raise SystemExit('No non-empty test reports: NOT a green test run')
+        PY
+        exit "$CODE"
+      id: maven_tests
+      continue-on-error: true
+    - name: Prepare a separate EDT copy and install p2 offline; do not start MCP
+      shell: bash
+      run: |
+        set -euo pipefail
+        exec 9>"$TEAM_BASE/locks/live-tests.lock"
+        flock -w 600 9
+        python3 - <<'PY'
+        import pathlib,os
+        busy=[]
+        for p in pathlib.Path('/proc').iterdir():
+            if not p.name.isdecimal():continue
+            try:
+                name=(p/'comm').read_text().strip()
+                if name in ('java','javaw','1cedt','1cedtcli','1cv8','1cv8c','rphost','rmngr','ras'):busy.append(name)
+            except OSError:pass
+        print('EDT_PLATFORM_JAVA_PROCESS_COUNT='+str(len(busy)),flush=True)
+        if busy:raise SystemExit('Other EDT/platform/Java process present: do not touch or kill it; preparation deferred')
+        PY
+        SITE="$TEAM_SOURCE/server/repositories/si.edt.mcp.server.repository/target/repository"
+        test -f "$SITE/content.jar" || test -f "$SITE/content.xml"
+        test -d "$SITE/plugins"
+        ROOT_ORIGINAL=/opt/si-edt
+        TOTAL=$(du -sk "$ROOT_ORIGINAL" | awk '{print $1}')
+        AVAILABLE=$(df -Pk "$TEAM_RUN" | awk 'NR==2 {print $4}')
+        test "$AVAILABLE" -gt "$((TOTAL + 20971520))"
+        echo "Copying EDT ($TOTAL KiB), preserving original installation; no license reads/copies."
+        nice -n 10 ionice -c2 -n7 cp -a --reflink=auto "$ROOT_ORIGINAL" "$TEAM_RUN/edt" &
+        PID=$!
+        while kill -0 "$PID" 2>/dev/null; do echo 'EDT isolation copy in progress...'; sleep 15; done
+        wait "$PID"
+        ROOT=$(dirname "$(find "$TEAM_RUN/edt" -type f -name 1cedt -print -quit)")
+        JAVA=$(find "$TEAM_RUN/edt" -type f -path '*/bin/java' -print -quit)
+        test -x "$ROOT/1cedt" && test -x "$JAVA"
+        test -d "$ROOT/plugins" && test -d "$ROOT/p2"
+        if find "$TEAM_RUN/edt" -type l -print -quit | grep -q .; then echo 'Unexpected symlink in EDT copy: stop'; exit 1; fi
+        if grep -rIlF '/opt/si-edt' "$ROOT/configuration" --include='*.ini' --include='*.info' --include='*.properties' | grep -q .; then echo 'Original install path in copied configuration: stop'; exit 1; fi
+        printf 'EDT_ROOT=%s\nEDT_JAVA=%s\nSITE=%s\n' "$ROOT" "$JAVA" "$SITE" > "$TEAM_RUN/edt-paths.env"
+        export HOME="$TEAM_RUN/home" XDG_CONFIG_HOME="$TEAM_RUN/home/.config" XDG_CACHE_HOME="$TEAM_RUN/home/.cache" XDG_DATA_HOME="$TEAM_RUN/home/.local/share"
+        mkdir -p "$TEAM_RUN/p2config"
+        echo 'Offline p2 install into the copy (timeout 600 seconds); no workbench or MCP started.'
+        set +e
+        nice -n 10 ionice -c2 -n7 timeout --signal=TERM --kill-after=30s 600s xvfb-run -a "$ROOT/1cedt" -vm "$JAVA" -nosplash -configuration "$TEAM_RUN/p2config" -application org.eclipse.equinox.p2.director -repository "file:$SITE" -installIU si.edt.mcp.server.feature.feature.group -destination "$ROOT" -bundlepool "$ROOT" -p2.os linux -p2.ws gtk -p2.arch x86_64 -consoleLog > "$TEAM_RUN/p2-install-private.log" 2>&1 &
+        PID=$!
+        while kill -0 "$PID" 2>/dev/null; do echo 'Offline p2 director running...'; sleep 15; done
+        wait "$PID"
+        CODE=$?
+        set -e
+        python3 - <<'PY'
+        import pathlib,os,re,json,hashlib,zipfile
+        r=pathlib.Path(os.environ['TEAM_RUN']);text=(r/'p2-install-private.log').read_text(errors='replace')
+        # No license is present in this private HOME. Mask any incidental credential-like strings.
+        text=re.sub(r'(?i)(password|pwd|token|secret)(\s*[=:]\s*)[^\s;]+',r'\1\2<redacted>',text)
+        (r/'reports/p2-install.log').write_text(text)
+        print('\n'.join(text.splitlines()[-55:]))
+        root=next(p.parent for p in (r/'edt').rglob('1cedt') if p.is_file())
+        plugins=[]
+        for p in (root/'plugins').glob('si.edt.mcp.*_*.jar'):
+            with zipfile.ZipFile(p) as z:manifest=z.read('META-INF/MANIFEST.MF').decode('utf-8','replace')
+            version=re.search(r'(?m)^Bundle-Version: (.+)',manifest)
+            plugins.append({'name':p.name,'sha256':hashlib.sha256(p.read_bytes()).hexdigest(),'version':version.group(1).strip() if version else None})
+        (r/'reports/installed-plugins.json').write_text(json.dumps(plugins,indent=2))
+        print('SI_PLUGIN_JAR_COUNT='+str(len(plugins)))
+        PY
+        printf '%s\n' "$CODE" > "$TEAM_RUN/reports/p2-install.exit"
+        if [ "$CODE" -ne 0 ]; then exit "$CODE"; fi
+        test -f "$ROOT/configuration/org.eclipse.equinox.simpleconfigurator/bundles.info"
+        grep '^si.edt.mcp.' "$ROOT/configuration/org.eclipse.equinox.simpleconfigurator/bundles.info" > "$TEAM_RUN/reports/installed-bundles-info.txt"
+        touch "$TEAM_RUN/READY-FOR-READONLY-SMOKE"
+        echo 'PREPARATION_READY=true; GUI/MCP not started; awaiting team live-queue agreement.'
+      id: prepare
+      continue-on-error: true
+    - name: Summarize all real outcomes, including failures
+      shell: bash
+      run: |
+        set -euo pipefail
+        python3 - <<'PY'
+        import os,pathlib,json
+        out={k:os.environ.get(k,'unknown') for k in ('BENCHMARKS','TARGET2026','P2_PREPARE')}
+        print(json.dumps(out,indent=2))
+        r=os.environ.get('TEAM_RUN')
+        if r:pathlib.Path(r,'reports','outcomes.json').write_text(json.dumps(out,indent=2))
+        with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as f:
+            f.write('Source b029b9e0566310aea3b02242bb23a568b71771f1; active edt-2026.2 profile.\n\n')
+            for k,v in out.items():f.write(f'- {k}: {v}\n')
+            f.write('\nNo live MCP workbench, infobase calls or models; no license copied/read.\n')
+        if any(v!='success' for v in out.values()):raise SystemExit('At least one suite failed or was skipped; do not report green.')
+        PY
+      if: always()
+      env:
+        BENCHMARKS: ${{ steps.client.outcome }}
+        TARGET2026: ${{ steps.maven_tests.outcome }}
+        P2_PREPARE: ${{ steps.prepare.outcome }}
+    - name: Upload only reports, never preferences or private logs
+      if: always() && env.TEAM_RUN != ''
+      uses: actions/upload-artifact@v4
+      with:
+        name: extended-tests-${{ github.run_id }}-${{ github.run_attempt }}
+        path: ${{ env.TEAM_RUN }}/reports/
+        retention-days: 7
+    - name: Report retained directories and free space
+      shell: bash
+      run: |
+        if [ -n "${TEAM_RUN:-}" ]; then echo "RETAINED=$TEAM_RUN"; du -sh "$TEAM_RUN"; df -h "$TEAM_RUN"; fi
+      if: always()
