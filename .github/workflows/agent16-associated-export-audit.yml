@@ -1,0 +1,41 @@
+name: SI16 безопасный аудит неуспешной выгрузки
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: [self-hosted, Linux, X64, si1c]
+    timeout-minutes: 5
+    steps:
+      - name: Аудит только собственного стенда без повторной операции
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os,pathlib,re
+          home=pathlib.Path.home();root=home/'SI-MCP-Polygons/Agent-16/LicensedProbe-42993158911'
+          for d in (home/'SI-MCP-Polygons',home/'SI-MCP-Polygons/Agent-16',root):
+              if d.is_symlink() or not d.is_dir() or d.stat().st_uid!=os.getuid():raise RuntimeError('Unsafe path')
+          print('RESULT_PENDING_MARKER='+str((root/'PENDING_MUTATION_DO_NOT_CLEAN').is_file()).lower())
+          dest=root/'out/mcp-associated-export.cf'
+          print('RESULT_OUTPUT_PRESENT='+str(dest.is_file()).lower())
+          logs=[root/'exportwait-edt.log',root/'workspace/.metadata/.log']
+          patterns={'LICENSE_NOT_FOUND':r'license not found|лицензия не найдена','AUTH_FAIL':r'auth fail|authentication failed','SSH':r'ssh|sftp','PROJECT_BUILD':r'project is still building|derived data is still being computed','NATURE':r'edt nature is missing','DUMPCFG':r'dumpcfg','EXPORT_ERROR':r'export.{0,100}(failed|error)|failed.{0,100}export','PLATFORM_ERROR':r'platform.{0,100}(failed|error)|платформ.{0,100}ошибк','NO_ACTIVE_APPLICATION':r'no.{0,30}application|application.{0,40}not found','SECURE_STORAGE':r'secure storage','AGENT_FAIL':r'agent.{0,100}(failed|error)|агент.{0,100}ошибк'}
+          for f in logs:
+              if not f.is_file() or f.is_symlink():continue
+              text=f.read_text(encoding='utf8',errors='replace')[-1500000:]
+              for key,pattern in patterns.items():print('RESULT_'+f.name.replace('.','_').upper()+'_'+key+'='+str(bool(re.search(pattern,text,re.I))).lower())
+              es=[]
+              for x in re.findall(r'\b((?:[a-zA-Z_]\w*\.)+(?:[A-Z]\w*(?:Exception|Error)))\b',text):
+                  if x not in es:es.append(x)
+              for x in es[-15:]:print('RESULT_LOG_EXCEPTION_TYPE='+x)
+          found=0
+          for d in pathlib.Path('/proc').iterdir():
+              if not d.name.isdigit():continue
+              try:cmd=(d/'cmdline').read_bytes().replace(b'\x00',b' ')
+              except OSError:continue
+              if str(root).encode() in cmd and int(d.name)!=os.getpid():found+=1
+          print('RESULT_PROCESSES_WITH_STAND_PATH='+str(found))
+          print('RESULT_NO_MUTATION_ATTEMPTED=true')
+          PY
