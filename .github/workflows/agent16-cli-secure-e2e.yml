@@ -1,0 +1,305 @@
+name: SI16 проверка EDT и Конфигуратора с доступной лицензией
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  check:
+    runs-on: [self-hosted, Linux, X64, si1c]
+    timeout-minutes: 18
+    steps:
+      - name: Создать постоянный личный стенд
+        shell: bash
+        run: |
+          set -euo pipefail
+          PARENT="$HOME/SI-MCP-Polygons"
+          AGENT="$PARENT/Agent-16"
+          for DIR in "$PARENT" "$AGENT"; do test -d "$DIR" && test ! -L "$DIR" && test -O "$DIR"; done
+          test -f "$AGENT/OWNER-Agent-16.txt" && test ! -L "$AGENT/OWNER-Agent-16.txt"
+          ROOT="$AGENT/CliSecureProbe-${GITHUB_RUN_ID}"
+          mkdir -m 700 "$ROOT"
+          mkdir -m 700 "$ROOT/home" "$ROOT/workspace" "$ROOT/out" "$ROOT/site" "$ROOT/p2config"
+          python3 - "$HOME" "$ROOT/home" <<'PY'
+          import os,pathlib,shutil,sys
+          original=pathlib.Path(sys.argv[1])/'.1cv8/1C/1cv8/conf';target=pathlib.Path(sys.argv[2])/'.1cv8/1C/1cv8/conf'
+          if not original.is_dir() or original.is_symlink():raise RuntimeError('License source directory unavailable')
+          files=[x for x in original.iterdir() if x.suffix.lower()=='.lic' and x.is_file() and not x.is_symlink() and os.access(x,os.R_OK)]
+          if len(files)!=1:raise RuntimeError('Expected exactly one readable local license')
+          target.mkdir(mode=0o700,parents=True)
+          src=files[0];dst=target/src.name
+          with src.open('rb') as i, os.fdopen(os.open(dst,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600),'wb') as o:shutil.copyfileobj(i,o)
+          print('RESULT_LICENSE_COPIED_TO_PRIVATE_HOME=true')
+          print('RESULT_ORIGINAL_LICENSE_NOT_CHANGED=true')
+          PY
+          CLI=$(find /opt/si-edt -type f -name 1cedtcli -print -quit)
+          PLATFORM=/opt/1cv8/x86_64/8.3.27.2342/1cv8
+          test -x "$CLI" && test -x "$PLATFORM"
+          echo "SI16_ROOT=$ROOT" >> "$GITHUB_ENV"
+          echo "EDT_CLI=$CLI" >> "$GITHUB_ENV"
+          echo "SI16_PLATFORM=$PLATFORM" >> "$GITHUB_ENV"
+          echo "RESULT_PERMANENT_STAND=SI-MCP-Polygons/Agent-16/CliSecureProbe-${GITHUB_RUN_ID}"
+      - name: Своя ИБ, Конфигуратор и импорт штатной командой EDT
+        shell: bash
+        run: |
+          set -euo pipefail
+          export HOME="$SI16_ROOT/home" XDG_CONFIG_HOME="$SI16_ROOT/home/.config" XDG_CACHE_HOME="$SI16_ROOT/home/.cache" XDG_DATA_HOME="$SI16_ROOT/home/.local/share"
+          python3 - <<'PY'
+          import os,pathlib,re,subprocess,signal
+          root=pathlib.Path(os.environ['SI16_ROOT']);ws=root/'workspace';cli=os.environ['EDT_CLI'];platform=os.environ['SI16_PLATFORM'];marker=root/'PENDING_MUTATION_DO_NOT_CLEAN'
+          ib=root/'ib';project='SI16Imported'+os.environ['GITHUB_RUN_ID'];name='SI16Designer'+os.environ['GITHUB_RUN_ID']
+          print('RESULT_CONTAINER_INDICATOR_DOCKERENV='+str(pathlib.Path('/.dockerenv').exists()).lower(),flush=True)
+          def run(label,cmd,timeout,mutating=False):
+              if mutating:
+                  if marker.exists():raise RuntimeError('Earlier operation remains uncertain')
+                  marker.write_text(label+' outcome not yet verified; preserve and do not retry\n')
+              with open(root/(label.lower()+'.log'),'wb') as out:
+                  p=subprocess.Popen(['xvfb-run','-a']+cmd,stdout=out,stderr=subprocess.STDOUT,start_new_session=True)
+                  try:code=p.wait(timeout=timeout)
+                  except subprocess.TimeoutExpired:
+                      try:os.killpg(p.pid,signal.SIGKILL)
+                      except ProcessLookupError:pass
+                      p.wait(timeout=10);print('RESULT_'+label+'_TIMEOUT=true',flush=True);raise RuntimeError(label+' timed out; preserve stand')
+              print('RESULT_'+label+'_EXIT='+str(code),flush=True)
+              text=(root/(label.lower()+'.log')).read_text(encoding='utf8',errors='replace')
+              if label=='DESIGNER' and (root/'out/designer-out.log').is_file():text+='\n'+(root/'out/designer-out.log').read_text(encoding='utf8',errors='replace')
+              for key,pattern in {'LICENSE_NOT_FOUND':r'license not found|лицензия не найдена|лицензия не обнаружена','AUTH_FAILURE':r'auth fail|authentication failed|пользователь.*не идентифицирован','LOCK':r'configuration.{0,40}(locked|lock)|конфигурац.{0,40}блокир','EMPTY_CONFIG':r'empty configuration|пустая конфигурация'}.items():
+                  print('RESULT_'+label+'_'+key+'='+str(bool(re.search(pattern,text,re.I))).lower(),flush=True)
+              if code!=0:raise RuntimeError(label+' failed; leave marker and stand')
+              return text
+          def edt(args):return [cli,'-data',str(ws),'-command']+args
+          run('IB_CREATE',edt(['infobase-create','--name',name,'--version','8.3.27','--path',str(ib)]),180,True)
+          if not (ib/'1Cv8.1CD').is_file() or (ib/'1Cv8.1CD').stat().st_size==0:raise RuntimeError('IB creation not verified')
+          marker.unlink();print('RESULT_NEW_OWN_IB_CREATED=true',flush=True)
+          output=run('IB_LIST',edt(['infobase','--details']),90)
+          if name not in output or str(ib) not in output:raise RuntimeError('IB identity not verified')
+          print('RESULT_NEW_OWN_IB_LISTED=true',flush=True)
+          cf=root/'out'/'empty.cf'
+          if cf.exists():raise RuntimeError('Output already exists')
+          run('DESIGNER',[platform,'DESIGNER','/F'+str(ib),'/DumpCfg',str(cf),'/DisableStartupDialogs','/Out',str(root/'out/designer-out.log')],180,True)
+          if not cf.is_file() or cf.stat().st_size==0:raise RuntimeError('Designer returned zero but fresh CF not verified')
+          marker.unlink();print('RESULT_DESIGNER_FRESH_EXPORT_CONFIRMED=true',flush=True)
+          access=root/'access-settings.txt'
+          fd=os.open(access,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
+          with os.fdopen(fd,'w',encoding='utf8') as f:f.write('access=INFOBASE\n')
+          if (ws/project).exists():raise RuntimeError('Project collision')
+          run('EDT_IMPORT',edt(['infobase-import','--name',name,'--project',project,'--build','false','--access',str(access)]),420,True)
+          if not (ws/project/'.project').is_file():raise RuntimeError('Import returned zero but project file not found')
+          listed=run('PROJECT_LIST',edt(['project','--details']),90)
+          if project not in listed:raise RuntimeError('Imported project not listed')
+          marker.unlink();print('RESULT_EDT_IMPORT_AND_PROJECT_CONFIRMED=true',flush=True)
+          print('RESULT_SI_MCP_NOT_TESTED=true',flush=True)
+          PY
+      - name: Получить ранее собранный p2 артефакт
+        uses: actions/download-artifact@v4
+        with:
+          name: si16-p2-d03eea5
+          path: ${{ env.SI16_ROOT }}/site
+          run-id: 42918245962
+          github-token: ${{ github.token }}
+      - name: Скопировать EDT в отдельный каталог
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f "$SI16_ROOT/site/content.jar" || test -f "$SI16_ROOT/site/content.xml"
+          cp -a --reflink=auto /opt/si-edt "$SI16_ROOT/edt"
+          ROOT=$(dirname "$(find "$SI16_ROOT/edt" -type f -name 1cedt -print -quit)")
+          JAVA=$(find "$SI16_ROOT/edt" -type f -path '*/bin/java' -print -quit)
+          test -x "$ROOT/1cedt" && test -x "$ROOT/1cedtcli" && test -x "$JAVA"
+          test -d "$ROOT/p2" && test -d "$ROOT/plugins"
+          if find "$SI16_ROOT/edt" -type l -print -quit | grep -q .; then echo 'Unexpected symlink in copy; stopping'; exit 1; fi
+          if grep -rIlF '/opt/si-edt' "$ROOT/configuration" --include='*.ini' --include='*.info' --include='*.properties' | grep -q .; then echo 'Original install path in configuration; stopping'; exit 1; fi
+          echo "EDT_BIN=$ROOT/1cedt" >> "$GITHUB_ENV"
+          ORIGINAL_CLI=$(find /opt/si-edt -type f -name 1cedtcli -print -quit)
+          test -x "$ORIGINAL_CLI"
+          echo "EDT_CLI=$ORIGINAL_CLI" >> "$GITHUB_ENV"
+          echo "EDT_ROOT=$ROOT" >> "$GITHUB_ENV"
+          echo "EDT_JAVA=$JAVA" >> "$GITHUB_ENV"
+          echo 'RESULT_COPY_CREATED=true'
+      - name: Установить p2 только в копию EDT
+        shell: bash
+        run: |
+          set -euo pipefail
+          export HOME="$SI16_ROOT/home" XDG_CONFIG_HOME="$SI16_ROOT/home/.config" XDG_CACHE_HOME="$SI16_ROOT/home/.cache" XDG_DATA_HOME="$SI16_ROOT/home/.local/share"
+          timeout -s KILL 600s xvfb-run -a "$EDT_BIN" -vm "$EDT_JAVA" -nosplash -configuration "$SI16_ROOT/p2config" -application org.eclipse.equinox.p2.director -repository "file:$SI16_ROOT/site" -installIU si.edt.mcp.server.feature.feature.group -destination "$EDT_ROOT" -bundlepool "$EDT_ROOT" -p2.os linux -p2.ws gtk -p2.arch x86_64 -consoleLog > "$SI16_ROOT/p2.log" 2>&1 || { tail -60 "$SI16_ROOT/p2.log"; exit 1; }
+          tail -20 "$SI16_ROOT/p2.log"
+          echo 'RESULT_P2_INSTALL_SUCCESS=true'
+      - name: Выгрузить собственную ИБ через привязанное приложение
+        shell: bash
+        run: |
+          set -euo pipefail
+          export HOME="$SI16_ROOT/home" XDG_CONFIG_HOME="$SI16_ROOT/home/.config" XDG_CACHE_HOME="$SI16_ROOT/home/.cache" XDG_DATA_HOME="$SI16_ROOT/home/.local/share"
+          python3 - <<'PY'
+          import json,os,pathlib,re,secrets,signal,socket,subprocess,time,urllib.request,urllib.error
+          root=pathlib.Path(os.environ['SI16_ROOT']); ws=root/'workspace'
+          secure=root/'secure';secure.mkdir(mode=0o700)
+          master=secure/'master-password';keyring=secure/'keyring'
+          with os.fdopen(os.open(master,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600),'w',encoding='ascii') as f:f.write(secrets.token_urlsafe(48))
+          print('RESULT_PRIVATE_KEYRING_CONFIGURED=true',flush=True)
+          with socket.socket() as s:
+              s.bind(('127.0.0.1',0));port=s.getsockname()[1]
+          token=secrets.token_urlsafe(32)
+          prefs=ws/'.metadata/.plugins/org.eclipse.core.runtime/.settings/si.edt.mcp.server.prefs';prefs.parent.mkdir(parents=True,exist_ok=True)
+          prefs.write_text('eclipse.preferences.version=1\nmcpServerAutoStart=true\nmcpServerPort='+str(port)+'\nmcpAuthEnabled=true\nmcpAuthToken='+token+'\n',encoding='utf8')
+          log=open(root/'gui-secure.log','xb')
+          cmd=['xvfb-run','-a',os.environ['EDT_BIN'],'-vm',os.environ['EDT_JAVA'],'-nosplash','-data',str(ws),'-eclipse.keyring',str(keyring),'-eclipse.password',str(master),'-consoleLog','--launcher.appendVmargs','-vmargs','-Xmx3g']
+          proc=subprocess.Popen(cmd,stdout=log,stderr=subprocess.STDOUT,start_new_session=True)
+          try:
+              deadline=time.monotonic()+300
+              while time.monotonic()<deadline:
+                  if proc.poll() is not None:raise RuntimeError('EDT exited before MCP start')
+                  try:
+                      with socket.create_connection(('127.0.0.1',port),timeout=1):break
+                  except OSError:time.sleep(2)
+              else:raise RuntimeError('MCP port did not open in 300 seconds')
+              print('RESULT_MCP_PORT_OPEN=true',flush=True)
+              url=f'http://127.0.0.1:{port}/mcp'
+              def post(payload,bearer=None,sid=None):
+                  headers={'Content-Type':'application/json','Accept':'application/json, text/event-stream'}
+                  if bearer:headers['Authorization']='Bearer '+bearer
+                  if sid:headers['Mcp-Session-Id']=sid
+                  req=urllib.request.Request(url,data=json.dumps(payload).encode(),headers=headers,method='POST')
+                  try:
+                      with urllib.request.urlopen(req,timeout=120) as r:return r.status,r.headers,r.read().decode('utf8','replace')
+                  except urllib.error.HTTPError as e:return e.code,e.headers,e.read().decode('utf8','replace')
+              ping={'jsonrpc':'2.0','id':1,'method':'ping','params':{}}
+              code,_,_=post(ping)
+              print('RESULT_UNAUTHENTICATED_HTTP='+str(code),flush=True)
+              if code!=401:raise RuntimeError('Expected HTTP 401 without token')
+              init={'jsonrpc':'2.0','id':2,'method':'initialize','params':{'protocolVersion':'2025-11-25','capabilities':{},'clientInfo':{'name':'si16-isolated','version':'1'}}}
+              code,h,b=post(init,token)
+              print('RESULT_INITIALIZE_HTTP='+str(code),flush=True)
+              if code!=200:raise RuntimeError('MCP initialize failed')
+              def parse(body):
+                  if body.lstrip().startswith('data:') or '\ndata:' in body:
+                      body='\n'.join(x[5:].lstrip() for x in body.splitlines() if x.startswith('data:'))
+                  return json.loads(body)
+              data=parse(b)
+              if data.get('jsonrpc')!='2.0' or data.get('id')!=2 or not isinstance(data.get('result'),dict):raise RuntimeError('Invalid initialize result')
+              sid=h.get('Mcp-Session-Id');print('RESULT_SESSION_ID_PRESENT='+str(bool(sid)).lower(),flush=True)
+              if not sid:raise RuntimeError('Missing session id')
+              code,_,_=post({'jsonrpc':'2.0','method':'notifications/initialized'},token,sid)
+              print('RESULT_INITIALIZED_NOTIFICATION_HTTP='+str(code),flush=True)
+              if code not in (200,202,204):raise RuntimeError('Notification refused')
+              code,_,b=post({'jsonrpc':'2.0','id':3,'method':'tools/list','params':{}},token,sid)
+              if code!=200:raise RuntimeError('tools/list failed')
+              data=parse(b);result=data.get('result',{})
+              if data.get('id')!=3 or not isinstance(result.get('tools'),list):raise RuntimeError('Invalid tools/list')
+              names={x.get('name') for x in result['tools'] if isinstance(x,dict)}
+              print('RESULT_TOOLS_FIRST_PAGE_COUNT='+str(len(names)),flush=True)
+              print('RESULT_CREATE_PROJECT_PRESENT='+str('create_project' in names).lower(),flush=True)
+              print('RESULT_PROJECT_ADMIN_PRESENT='+str('project_admin' in names).lower(),flush=True)
+              print('RESULT_SECURITY_AUDIT_PRESENT='+str('security_audit' in names).lower(),flush=True)
+              print('RESULT_TOOLS_MORE_PAGES='+str(bool(result.get('nextCursor'))).lower(),flush=True)
+              print('RESULT_INFOBASE_ADMIN_PRESENT='+str('infobase_admin' in names).lower(),flush=True)
+              if 'project_admin' not in names or 'infobase_admin' not in names:
+                  raise RuntimeError('Required project or infobase facade missing')
+              def call_tool(reqid,name,args,mutating=False):
+                  marker=root/'PENDING_MUTATION_DO_NOT_CLEAN'
+                  if mutating:
+                      if marker.exists():raise RuntimeError('Previous mutation has uncertain result')
+                      marker.write_text('Mutation '+name+' outcome not yet proven complete; do not clean or repeat\n')
+                  payload={'jsonrpc':'2.0','id':reqid,'method':'tools/call','params':{'name':name,'arguments':args}}
+                  code,_,body=post(payload,token,sid)
+                  if code!=200:raise RuntimeError('tools/call HTTP '+str(code))
+                  rpc=parse(body)
+                  if rpc.get('jsonrpc')!='2.0' or rpc.get('id')!=reqid or 'error' in rpc:raise RuntimeError('Invalid tools/call JSON-RPC')
+                  out=rpc.get('result')
+                  if not isinstance(out,dict):raise RuntimeError('Malformed tool result')
+                  value=out.get('structuredContent')
+                  texts=[]
+                  if not isinstance(value,dict):
+                      texts=[]
+                      for x in out.get('content',[]):
+                          if not isinstance(x,dict):continue
+                          if x.get('type')=='text' and isinstance(x.get('text'),str):texts.append(x['text'])
+                          if x.get('type')=='resource' and isinstance(x.get('resource'),dict) and isinstance(x['resource'].get('text'),str):texts.append(x['resource']['text'])
+                      if len(texts)==1:
+                          try:value=json.loads(texts[0])
+                          except (ValueError,TypeError):value=None
+                  if out.get('isError') is True:
+                      detail=(str(value.get('error',''))+' '+str(value.get('hint',''))) if isinstance(value,dict) else ' '.join(texts)
+                      low=detail.casefold()
+                      classifiers={'PRESET_DISABLED':r'disabled|switched off|preset', 'SERVICE_UNAVAILABLE':r'iconfigurationprojectmanager|service.*not.*(reachable|found)|service.*unavailable', 'VERSION_ERROR':r'version.*not.*valid|unsupported|платформ.*не.*', 'LICENSE_ERROR':r'licen[cs]|лиценз', 'CREATE_FAILED':r'create configuration project failed', 'PERMISSION_ERROR':r'permission denied|access denied', 'TIMEOUT':r'timeout|timed out', 'COLLISION':r'already exists|already.*exist'}
+                      for label,pattern in classifiers.items():
+                          print('RESULT_TOOL_ERROR_'+label+'='+str(bool(re.search(pattern,low))).lower(),flush=True)
+                      print('RESULT_TOOL_ERROR_JSON='+str(isinstance(value,dict)).lower(),flush=True)
+                      if isinstance(value,dict) and isinstance(value.get('error'),str):
+                          msg=value['error'].replace(token,'<redacted>').replace(str(root),'<temporary>')
+                          msg=re.sub(r'(?i)(password|pwd|token|secret)\s*[=:]\s*[^\s;]+',r'\1=<redacted>',msg)
+                          msg=re.sub(r'(?:[A-Za-z]:[\\/]|/)[^\s;:]+','<path>',msg)
+                          msg=' '.join(msg.split())[:350]
+                          print('RESULT_TOOL_ERROR_SUMMARY='+msg,flush=True)
+                      if isinstance(value,dict):print('RESULT_TOOL_SERVICE_NOT_FOUND='+str(value.get('serviceNotFound') is True).lower(),flush=True)
+                      if 'project is still building' in low or 'not an edt project (the edt nature is missing)' in low:raise BlockingIOError('project loading or nature unavailable')
+                      raise RuntimeError(name+' refused or errored')
+                  if not isinstance(value,dict):raise RuntimeError(name+' did not return JSON ToolResult')
+                  if str(value.get('status','')).casefold()=='pending':raise RuntimeError(name+' pending: no blind repeat')
+                  if value.get('success') is not True:
+                      raise RuntimeError(name+' did not confirm success')
+                  return value
+              project='SI16Imported'+os.environ['GITHUB_RUN_ID']
+              ibname='SI16Designer'+os.environ['GITHUB_RUN_ID']
+              for attempt in range(24):
+                  try:
+                      result=call_tool(4+attempt,'infobase_admin',{'operation':'get_applications','projectName':project})
+                      break
+                  except BlockingIOError:
+                      print('RESULT_PROJECT_BUILD_WAIT_ATTEMPT='+str(attempt+1),flush=True)
+                      time.sleep(15)
+              else:raise RuntimeError('Project still building after bounded read-only waits')
+              rows=result.get('applications')
+              if result.get('project')!=project or not isinstance(rows,list):raise RuntimeError('Unexpected applications readback')
+              matches=[]
+              for row in rows:
+                  if not isinstance(row,dict) or row.get('applicationKind')!='infobase':continue
+                  ib=row.get('infobase')
+                  if not isinstance(ib,dict) or ib.get('location')!='file' or not isinstance(ib.get('path'),str):continue
+                  if pathlib.Path(ib['path']).resolve()==(root/'ib').resolve() and ib.get('title')==ibname and row.get('id'):matches.append(row)
+              print('RESULT_OWN_IB_BOUND_APPLICATION_MATCH_COUNT='+str(len(matches)),flush=True)
+              if len(matches)!=1:raise RuntimeError('No unique positive association readback')
+              print('RESULT_OWN_APPLICATION_READBACK_CONFIRMED=true',flush=True)
+              target=root/'out'/'mcp-associated-export.cf'
+              marker=root/'PENDING_MUTATION_DO_NOT_CLEAN'
+              if target.exists() or marker.exists():raise RuntimeError('Output occupied or pending operation; refusing')
+              marker.write_text('MCP export operation not yet verified; preserve stand and do not retry\n')
+              payload={'jsonrpc':'2.0','id':99,'method':'tools/call','params':{'name':'config_io','arguments':{'operation':'export_configuration_to_cf','projectName':project,'applicationId':matches[0]['id'],'outputPath':str(target)}}}
+              code,_,body=post(payload,token,sid)
+              print('RESULT_ASSOCIATED_EXPORT_HTTP='+str(code),flush=True)
+              if code!=200:raise RuntimeError('Export transport failed; leave marker')
+              rpc=parse(body)
+              if rpc.get('id')!=99 or 'error' in rpc or not isinstance(rpc.get('result'),dict):raise RuntimeError('Export RPC failed; leave marker')
+              result=rpc['result'];texts=[]
+              for x in result.get('content',[]):
+                  if not isinstance(x,dict):continue
+                  if x.get('type')=='text' and isinstance(x.get('text'),str):texts.append(x['text'])
+                  if x.get('type')=='resource' and isinstance(x.get('resource'),dict) and isinstance(x['resource'].get('text'),str):texts.append(x['resource']['text'])
+              text='\n'.join(texts)
+              with os.fdopen(os.open(root/'out/export-report.txt',os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600),'w',encoding='utf8') as f:f.write(text)
+              print('RESULT_ASSOCIATED_EXPORT_IS_ERROR='+str(result.get('isError') is True).lower(),flush=True)
+              print('RESULT_ASSOCIATED_EXPORT_REPORT_EXPORTED='+str('**Exported:**' in text).lower(),flush=True)
+              print('RESULT_ASSOCIATED_EXPORT_REPORT_FAILED='+str('**Failed:**' in text).lower(),flush=True)
+              print('RESULT_ASSOCIATED_EXPORT_REPORT_BLOCKED='+str('blocked' in text.casefold()).lower(),flush=True)
+              print('RESULT_ASSOCIATED_EXPORT_REPORT_LICENSE_ERROR='+str(bool(re.search(r'licen[cs]|лиценз',text,re.I))).lower(),flush=True)
+              print('RESULT_ASSOCIATED_EXPORT_REPORT_AUTH_ERROR='+str(bool(re.search(r'auth fail|authentication fail',text,re.I))).lower(),flush=True)
+              print('RESULT_ASSOCIATED_EXPORT_FILE_PRESENT='+str(target.is_file() and target.stat().st_size>0).lower(),flush=True)
+              if result.get('isError') is True or '**Exported:**' not in text or not target.is_file() or target.stat().st_size==0:
+                  for line in text.splitlines():
+                      if line.startswith('**Failed:**') or line.startswith('- failureKind:'):
+                          safe=line.replace(token,'<redacted>').replace(str(root),'<stand>')
+                          safe=re.sub(r'(?i)(password|pwd|token|secret)\s*[=:]\s*[^\s;]+',r'\1=<redacted>',safe)
+                          safe=re.sub(r'(?:[A-Za-z]:[\\/]|/)[^\s;:]+','<path>',safe)
+                          print('RESULT_EXPORT_ERROR_SUMMARY='+safe[:350],flush=True)
+                  raise RuntimeError('Export not positively confirmed; leave marker')
+              marker.unlink()
+              print('RESULT_ASSOCIATED_EXPORT_CONFIRMED=true',flush=True)
+          finally:
+              try:os.killpg(proc.pid,signal.SIGTERM)
+              except ProcessLookupError:pass
+              try:proc.wait(timeout=20)
+              except subprocess.TimeoutExpired:
+                  try:os.killpg(proc.pid,signal.SIGKILL)
+                  except ProcessLookupError:pass
+                  proc.wait(timeout=10)
+              log.close()
+              print('RESULT_EDT_PROCESS_STOPPED='+str(proc.poll() is not None).lower(),flush=True)
