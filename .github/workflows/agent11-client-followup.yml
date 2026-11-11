@@ -1,0 +1,177 @@
+name: SI-MCP — R-1 fixture followup and independent catalog check (11)
+'on':
+  workflow_dispatch: {}
+permissions:
+  contents: read
+concurrency:
+  group: si1c-team-test-stand
+  cancel-in-progress: false
+jobs:
+  validate:
+    runs-on:
+    - self-hosted
+    - Linux
+    - X64
+    - si1c
+    timeout-minutes: 45
+    env:
+      LANG: C.UTF-8
+      LC_ALL: C.UTF-8
+      RUNNER_TOOL_CACHE: /home/runner/si1c-team-tests/toolcache
+      AGENT_TOOLSDIRECTORY: /home/runner/si1c-team-tests/toolcache
+    steps:
+    - name: Create private release validation run; no infobase or GUI
+      shell: bash
+      run: |
+        set -euo pipefail
+        umask 077
+        BASE="$HOME/si1c-team-tests"
+        test -d "$BASE" && test ! -L "$BASE" && test -O "$BASE"
+        test "$(cat "$BASE/OWNER.txt")" = 'SI-MCP team test stand; provisioned by agent 11'
+        RUN="$BASE/runs/$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+        test ! -e "$RUN"
+        mkdir -m 700 "$RUN"
+        mkdir "$RUN/reports" "$RUN/home"
+        printf 'TEAM_BASE=%s\nTEAM_RUN=%s\n' "$BASE" "$RUN" >> "$GITHUB_ENV"
+        test "$(df -Pk "$BASE" | awk 'NR==2 {print $4}')" -gt 20971520
+    - name: Prepare setup-python in isolated team toolcache
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+    - name: Prepare setup-node in isolated team toolcache
+      uses: actions/setup-node@v4
+      with:
+        node-version: '22'
+    - name: Use existing private SSH client; no system installation
+      shell: bash
+      run: |
+        set -euo pipefail
+        if command -v ssh >/dev/null; then exit 0; fi
+        SSH_DIR="$TEAM_BASE/tools/openssh/usr/bin"
+        test -x "$SSH_DIR/ssh"
+        "$SSH_DIR/ssh" -V
+        echo "$SSH_DIR" >> "$GITHUB_PATH"
+    - name: Checkout exact r1 candidate without retained credentials
+      uses: actions/checkout@v4
+      with:
+        repository: Lavren73/SI-MCP
+        ref: 0c2af8808950264e9534f93c5c8aecd4f9b26d49
+        ssh-key: ${{ secrets.SI_MCP_DEPLOY_KEY }}
+        persist-credentials: false
+        fetch-depth: 0
+        path: release-r1-${{ github.run_id }}
+    - name: Checkout exact catalog candidate without retained credentials
+      uses: actions/checkout@v4
+      with:
+        repository: Lavren73/SI-MCP
+        ref: 11a08e9674f044be6a3be827c319bf8612462866
+        ssh-key: ${{ secrets.SI_MCP_DEPLOY_KEY }}
+        persist-credentials: false
+        fetch-depth: 0
+        path: release-target-${{ github.run_id }}
+    - name: Sequential client candidates under shared lock; no integration claim
+      shell: bash
+      run: |
+        set -euo pipefail
+        umask 077
+        exec 9>"$TEAM_BASE/locks/live-tests.lock"
+        flock -w 600 9
+        export HOME="$TEAM_RUN/home"
+        export XDG_CONFIG_HOME="$HOME/.config" XDG_CACHE_HOME="$HOME/.cache" XDG_DATA_HOME="$HOME/.local/share"
+        export PATH="$TEAM_BASE/tools/python-tests/bin:$TEAM_BASE/tools/apache-maven-3.9.9/bin:$TEAM_BASE/tools/powershell-7.4.13:$PATH"
+        export NODE_PATH="$TEAM_BASE/tools/node-tests/node_modules"
+        export PYTHONDONTWRITEBYTECODE=1
+        python - <<'PY'
+        import os,pathlib,json
+        busy=[]
+        for p in pathlib.Path('/proc').iterdir():
+            if not p.name.isdecimal():continue
+            try:
+                name=(p/'comm').read_text().strip()
+                if name in ('java','javaw','1cedt','1cedtcli','1cv8','1cv8c','rphost','ragent','rmngr','ras'):busy.append({'pid':int(p.name),'name':name})
+            except OSError:pass
+        mem={x.split(':')[0]:int(x.split()[1])*1024 for x in pathlib.Path('/proc/meminfo').read_text().splitlines() if x.startswith(('MemTotal:','MemAvailable:'))}
+        out={'kernel':os.uname().release,'memory':mem,'visible_sessions':busy,'scope':'Runner container PID namespace only; not all host sessions','loadavg':pathlib.Path('/proc/loadavg').read_text().strip()}
+        pathlib.Path(os.environ['TEAM_RUN'],'reports','preflight.json').write_text(json.dumps(out,indent=2));print(json.dumps(out))
+        if busy:raise SystemExit('Other visible sessions: refuse without kill')
+        if out['kernel']!='5.15.0-203-generic':raise SystemExit('Diagnostic kernel changed; do not continue blindly')
+        if mem.get('MemAvailable',0)<6*1024**3:raise SystemExit('Insufficient available memory')
+        for root,cur,lim in [('/sys/fs/cgroup','memory.current','memory.max'),('/sys/fs/cgroup/memory','memory.usage_in_bytes','memory.limit_in_bytes')]:
+            c=pathlib.Path(root)/cur;l=pathlib.Path(root)/lim
+            if c.exists() and l.exists():
+                v=l.read_text().strip()
+                if v!='max' and int(v)-int(c.read_text())<5*1024**3:raise SystemExit('Insufficient cgroup memory headroom')
+                break
+        PY
+        for pair in 'r1 0c2af8808950264e9534f93c5c8aecd4f9b26d49' 'target 11a08e9674f044be6a3be827c319bf8612462866'; do
+          read -r LABEL SHA <<< "$pair"
+          CHECKOUT="$GITHUB_WORKSPACE/release-$LABEL-$GITHUB_RUN_ID"
+          test "$(git -C "$CHECKOUT" rev-parse HEAD)" = "$SHA"
+          git clone --no-hardlinks "$CHECKOUT" "$TEAM_RUN/$LABEL"
+          git -C "$TEAM_RUN/$LABEL" remote set-url origin https://github.com/Lavren73/SI-MCP.git
+          test "$(git -C "$TEAM_RUN/$LABEL" rev-parse HEAD)" = "$SHA"
+          printf '%s\n' "$SHA" > "$TEAM_RUN/reports/$LABEL-sha.txt"
+        done
+        git -C "$TEAM_RUN/r1" worktree add --detach "$TEAM_RUN/baseline" d45db3b99ab10e7022beeabdbb024527cb79ec0a
+        # Clone baseline tests separately: new regression cases run against unmodified baseline code.
+        cp "$TEAM_RUN/r1/client/tests/test_rollback_snapshot_cut.py" "$TEAM_RUN/baseline/client/tests/test_rollback_snapshot_cut.py"
+        python --version > "$TEAM_RUN/reports/python-version.log"
+        export MAVEN_OPTS="-Xmx3g -XX:ActiveProcessorCount=4 -Dfile.encoding=UTF-8 -Duser.home=$HOME"
+        export JAVA_TOOL_OPTIONS="-XX:ActiveProcessorCount=4 -Dfile.encoding=UTF-8"
+        # Single-command execution with bounded duration and visible heartbeat. No concurrent test jobs.
+        run_logged() {
+          local LABEL="$1" LIMIT="$2"; shift 2
+          set +e
+          nice -n 10 ionice -c2 -n7 timeout --signal=TERM --kill-after=30s "$LIMIT" "$@" > "$TEAM_RUN/reports/$LABEL.log" 2>&1 &
+          local PID=$!
+          while kill -0 "$PID" 2>/dev/null; do
+            printf '[%s] %s running; ' "$(date -u +%T)" "$LABEL"
+            awk '/MemAvailable:/ {printf "MemAvailable=%s KiB; ",$2}' /proc/meminfo
+            tail -1 "$TEAM_RUN/reports/$LABEL.log"
+            sleep 15
+          done
+          wait "$PID"; local CODE=$?
+          set -e
+          printf '%s\n' "$CODE" > "$TEAM_RUN/reports/$LABEL.exit"
+          echo "RESULT $LABEL exit=$CODE"
+          tail -30 "$TEAM_RUN/reports/$LABEL.log"
+        }
+        cd "$TEAM_RUN/baseline"
+        run_logged r1-baseline-independent 120s python tools/проверка-Р-1-№16.py client
+        cd "$TEAM_RUN/baseline/client"
+        run_logged r1-baseline-regressions 180s python -m pytest -q tests/test_rollback_snapshot_cut.py --junitxml="$TEAM_RUN/reports/r1-baseline-regressions.xml"
+        cd "$TEAM_RUN/r1"
+        run_logged r1-independent 120s python tools/проверка-Р-1-№16.py client
+        cd "$TEAM_RUN/r1/client"
+        run_logged r1-focused 240s python -m pytest -q tests/test_rollback.py tests/test_rollback_snapshot_cut.py tests/test_diagnostics_failclosed.py tests/test_edt_stand.py --junitxml="$TEAM_RUN/reports/r1-focused.xml"
+        run_logged client-full 1200s python прогнать-тесты.py
+
+        cd "$TEAM_RUN/target/client"
+        run_logged catalog-en 180s python tests/extract_edt_catalog.py --check
+        run_logged catalog-ru 180s python tests/извлечь-каталог-из-исходников.py --src ../server --check
+        run_logged catalog-focused 240s python -m pytest -q tests/test_archive_hij.py tests/test_catalog_extract.py --junitxml="$TEAM_RUN/reports/catalog-focused.xml"
+        run_logged catalog-client-full 1200s python прогнать-тесты.py
+        python - <<'PYEND'
+        import pathlib,os,json,re
+        r=pathlib.Path(os.environ['TEAM_RUN'])/'reports'
+        exits={p.stem:int(p.read_text()) for p in r.glob('*.exit')}
+        summary={'r1_sha':(r/'r1-sha.txt').read_text().strip(),'catalog_sha':(r/'target-sha.txt').read_text().strip(),'exits':exits,'limitations':['Separate candidate SHAs, not integration','Linux loopback tests, not EDT or Windows','No infobase or manual host session claims']}
+        for p in r.rglob('*'):
+         if not p.is_file():continue
+         text=p.read_text(errors='replace')
+         if re.search(r'-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----|\bgh[pousr]_[A-Za-z0-9]{20,}|\bgithub_pat_[A-Za-z0-9_]{30,}',text):
+          p.unlink();raise SystemExit('Potential secret: report removed, refuse further publication')
+        negative=exits.get('r1-baseline-independent')==1 and exits.get('r1-baseline-regressions')==1
+        passed=negative and all(v==0 for k,v in exits.items() if k not in ('r1-baseline-independent','r1-baseline-regressions'))
+        summary['negative_controls_expected_failure']=negative;summary['outcome']='success' if passed else 'failure'
+        (r/'client-followup-summary.json').write_text(json.dumps(summary,ensure_ascii=False,indent=2));print(json.dumps(summary,ensure_ascii=False))
+        raise SystemExit(0 if passed else 1)
+        PYEND
+      id: validate
+    - name: Upload allowlisted sanitized validation reports
+      if: always() && env.TEAM_RUN != ''
+      uses: actions/upload-artifact@v4
+      with:
+        name: client-followup-${{ github.run_id }}-${{ github.run_attempt }}
+        path: ${{ env.TEAM_RUN }}/reports/
+        retention-days: 7
