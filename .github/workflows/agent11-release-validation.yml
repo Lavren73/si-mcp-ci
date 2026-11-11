@@ -47,11 +47,20 @@ jobs:
       with:
         distribution: temurin
         java-version: '25'
+    - name: Use existing private SSH client; no system installation
+      shell: bash
+      run: |
+        set -euo pipefail
+        if command -v ssh >/dev/null; then exit 0; fi
+        SSH_DIR="$TEAM_BASE/tools/openssh/usr/bin"
+        test -x "$SSH_DIR/ssh"
+        "$SSH_DIR/ssh" -V
+        echo "$SSH_DIR" >> "$GITHUB_PATH"
     - name: Checkout exact r1 candidate without retained credentials
       uses: actions/checkout@v4
       with:
         repository: Lavren73/SI-MCP
-        ref: 25ada7591b0c632f144b788ffec706b3f3edaa93
+        ref: bd8ea875023cf313b253e085a440abb055a3ce07
         ssh-key: ${{ secrets.SI_MCP_DEPLOY_KEY }}
         persist-credentials: false
         fetch-depth: 0
@@ -99,7 +108,7 @@ jobs:
                 if v!='max' and int(v)-int(c.read_text())<5*1024**3:raise SystemExit('Insufficient cgroup memory headroom')
                 break
         PY
-        for pair in 'r1 25ada7591b0c632f144b788ffec706b3f3edaa93' 'target 61c97cb99f8c08478b50bc28a4da34818987d721'; do
+        for pair in 'r1 bd8ea875023cf313b253e085a440abb055a3ce07' 'target 61c97cb99f8c08478b50bc28a4da34818987d721'; do
           read -r LABEL SHA <<< "$pair"
           CHECKOUT="$GITHUB_WORKSPACE/release-$LABEL-$GITHUB_RUN_ID"
           test "$(git -C "$CHECKOUT" rev-parse HEAD)" = "$SHA"
@@ -140,7 +149,7 @@ jobs:
         cd "$TEAM_RUN/r1"
         run_logged r1-independent 120s python tools/проверка-Р-1-№16.py client
         cd "$TEAM_RUN/r1/client"
-        run_logged r1-focused 240s python -m pytest -q tests/test_rollback.py tests/test_rollback_snapshot_cut.py --junitxml="$TEAM_RUN/reports/r1-focused.xml"
+        run_logged r1-focused 240s python -m pytest -q tests/test_rollback.py tests/test_rollback_snapshot_cut.py tests/test_diagnostics_failclosed.py --junitxml="$TEAM_RUN/reports/r1-focused.xml"
         run_logged client-full 1200s python прогнать-тесты.py
         cd "$TEAM_RUN/target/server"
         # Capture inherited resolver requirements without running tests with altered settings.
@@ -176,7 +185,7 @@ jobs:
                     c=p.find('m:configuration',ns)
                     required={'executionEnvironment':c.findtext('m:executionEnvironment',namespaces=ns),'extraRequirements':[x.findtext('m:id',namespaces=ns) for x in c.findall('m:dependency-resolution/m:extraRequirements/m:requirement',ns)]}
         exits={p.stem:int(p.read_text()) for p in report.glob('*.exit')}
-        summary={'source_r1':'25ada7591b0c632f144b788ffec706b3f3edaa93','source_target':'61c97cb99f8c08478b50bc28a4da34818987d721','base':'d45db3b99ab10e7022beeabdbb024527cb79ec0a','exits':exits,'maven_reports':len(xmls),'maven':total,'failed_tests':failed,'plugin_bytecode':classes,'effective_resolver':required,'kernel':os.uname().release,'limitations':['No infobase or GUI smoke in this job','Linux-only, not Windows runtime','Candidate SHAs are not one merged release SHA','Short test is not proof of host kernel stability']}
+        summary={'source_r1':'bd8ea875023cf313b253e085a440abb055a3ce07','source_target':'61c97cb99f8c08478b50bc28a4da34818987d721','base':'d45db3b99ab10e7022beeabdbb024527cb79ec0a','exits':exits,'maven_reports':len(xmls),'maven':total,'failed_tests':failed,'plugin_bytecode':classes,'effective_resolver':required,'kernel':os.uname().release,'limitations':['No infobase or GUI smoke in this job','Linux-only, not Windows runtime','Candidate SHAs are not one merged release SHA','Short test is not proof of host kernel stability']}
         expected_negative=exits.get('r1-baseline-independent')==1 and exits.get('r1-baseline-regressions')==1
         required_positive=['r1-independent','r1-focused','client-full','effective-pom','target2026-verify']
         passed=expected_negative and all(exits.get(k)==0 for k in required_positive) and total['tests']>0 and total['failures']==0 and total['errors']==0 and len(classes)>=2 and all(c['all_class_major_61'] for c in classes) and required.get('executionEnvironment')=='JavaSE-25' and {'org.apache.felix.scr','org.apache.aries.spifly.dynamic.bundle','org.eclipse.swt.svg'}.issubset(set(required.get('extraRequirements',[])))
