@@ -1,0 +1,69 @@
+name: SI-MCP — explicit catalog and EDT preparation readback (11)
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: si1c-team-test-stand
+  cancel-in-progress: false
+jobs:
+  audit:
+    runs-on: [self-hosted, Linux, X64, si1c]
+    timeout-minutes: 8
+    steps:
+      - name: Validate only our source, prepared copy and installed bundle metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          BASE="$HOME/si1c-team-tests"
+          test ! -L "$BASE" && test -O "$BASE"
+          test "$(cat "$BASE/OWNER.txt")" = 'SI-MCP team test stand; provisioned by agent 11'
+          RUN="$BASE/runs/$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          test ! -e "$RUN"
+          mkdir -m 700 "$RUN"
+          mkdir "$RUN/reports" "$RUN/home"
+          echo "AUDIT_RUN=$RUN" >> "$GITHUB_ENV"
+          PREPARED="$BASE/runs/43070810460-1"
+          test -f "$PREPARED/READY-FOR-READONLY-SMOKE"
+          test "$(git -C "$PREPARED/source" rev-parse HEAD)" = b029b9e0566310aea3b02242bb23a568b71771f1
+          python3 - "$PREPARED" "$RUN" <<'PY'
+          import pathlib,sys,json,hashlib,os
+          r=pathlib.Path(sys.argv[1]);out=pathlib.Path(sys.argv[2])/'reports'
+          installed=json.loads((r/'reports/installed-plugins.json').read_text())
+          root=next(p.parent for p in (r/'edt').rglob('1cedt') if p.is_file())
+          for x in installed:
+              p=root/'plugins'/x['name']
+              if p.is_symlink() or hashlib.sha256(p.read_bytes()).hexdigest()!=x['sha256']:raise SystemExit('Prepared plugin identity mismatch')
+          report={'ready_marker':True,'plugin_hashes_verified':len(installed),'source':'b029b9e0566310aea3b02242bb23a568b71771f1','build_target':'2026.1','runtime_edt':'2026.2.2.21','runtime_jvm':'25.0.4.1','gui_started':False,'mcp_started':False,'license_read_or_copied':False}
+          (out/'prepared-copy.json').write_text(json.dumps(report,indent=2));print(json.dumps(report,indent=2))
+          PY
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Check catalog without writing; skip and drift stay failures
+        shell: bash
+        run: |
+          set -euo pipefail
+          export HOME="$AUDIT_RUN/home"
+          export SI_EDT_SRC="/home/runner/si1c-team-tests/runs/43070810460-1/source/server/bundles"
+          cd /home/runner/si1c-team-tests/runs/43070810460-1/source/client
+          set +e
+          python tests/extract_edt_catalog.py --check 2>&1 | tee "$AUDIT_RUN/reports/catalog-check.log"
+          CODE=${PIPESTATUS[0]}
+          set -e
+          printf '%s\n' "$CODE" > "$AUDIT_RUN/reports/catalog-check.exit"
+          if grep -q 'ПРОПУЩЕНО' "$AUDIT_RUN/reports/catalog-check.log"; then echo 'Skipped check is not a pass'; exit 2; fi
+          exit "$CODE"
+      - name: Upload reports only
+        if: always() && env.AUDIT_RUN != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: catalog-audit-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.AUDIT_RUN }}/reports/
+          retention-days: 7
+      - name: Preserve the prepared copy and show free space
+        if: always()
+        run: |
+          df -h "$HOME/si1c-team-tests"
+          echo 'No EDT workbench, MCP, infobase operation or model API was started by this audit.'
