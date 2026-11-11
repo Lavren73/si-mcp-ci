@@ -13,13 +13,21 @@ jobs:
         run: |
           set -euo pipefail
           python3 - <<'PY'
-          import os, pathlib, xml.etree.ElementTree as ET, subprocess
+          import os, pathlib, xml.etree.ElementTree as ET, subprocess, locale, sys
           root=pathlib.Path.home()/'SI-MCP-Polygons/Agent-16/JavaRegression-43030590090'
           for p in [root.parent.parent,root.parent,root,root/'source']:
               if not p.is_dir() or p.is_symlink() or p.stat().st_uid!=os.getuid(): raise RuntimeError('unsafe personal directory')
           sha=subprocess.check_output(['git','-C',str(root/'source'),'rev-parse','HEAD'],text=True).strip()
           if sha!='99d6dd52f72f856f8b2d5471a89c4474db0b7384': raise RuntimeError('unexpected source sha')
           print('RESULT_SHA='+sha)
+          print('RESULT_LOCALE_LANG='+os.environ.get('LANG','<unset>'))
+          print('RESULT_LOCALE_LC_ALL='+os.environ.get('LC_ALL','<unset>'))
+          print('RESULT_PYTHON_FILE_ENCODING='+sys.getfilesystemencoding())
+          env=dict(os.environ,HOME=str(root/'home'))
+          p=subprocess.run([str(root/'jdk/bin/java'),'-XshowSettings:properties','-version'],capture_output=True,text=True,env=env)
+          for line in p.stderr.splitlines():
+              line=line.strip()
+              if line.startswith(('file.encoding =','sun.jnu.encoding =','native.encoding =')):print('RESULT_JAVA_'+line)
           files=sorted((root/'source'/'server').glob('**/target/surefire-reports/TEST-*.xml'))
           print('RESULT_REPORTS='+str(len(files)))
           for p in files:
