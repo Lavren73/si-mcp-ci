@@ -1,0 +1,46 @@
+name: SI16 аудит успешного сквозного теста
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: [self-hosted, Linux, X64, si1c]
+    timeout-minutes: 5
+    steps:
+      - name: Проверить артефакт и безопасность личного стенда
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib,os,pathlib,stat
+          home=pathlib.Path.home();root=home/'SI-MCP-Polygons/Agent-16/ExternalShimProbe-43006869644'
+          for d in (home/'SI-MCP-Polygons',home/'SI-MCP-Polygons/Agent-16',root):
+              if not d.is_dir() or d.is_symlink() or d.stat().st_uid!=os.getuid():raise RuntimeError('Unsafe personal path')
+          files={'IB':root/'ib/1Cv8.1CD','PROJECT':root/'workspace/SI16Check43006869644/.project','EXPORT':root/'out/associated-export.cf','REPORT':root/'out/associated-export-report.txt','MASTER_PASSWORD':root/'secure/master-password','KEYRING':root/'secure/keyring'}
+          for name,p in files.items():
+              ok=p.is_file() and not p.is_symlink()
+              print('RESULT_'+name+'_FILE_PRESENT='+str(ok).lower())
+              if not ok:continue
+              mode=stat.S_IMODE(p.stat().st_mode)
+              print('RESULT_'+name+'_MODE_OCTAL='+oct(mode))
+              if name=='EXPORT':
+                  print('RESULT_EXPORT_SIZE_BYTES='+str(p.stat().st_size))
+                  h=hashlib.sha256()
+                  with p.open('rb') as f:
+                      for chunk in iter(lambda:f.read(1048576),b''):h.update(chunk)
+                  print('RESULT_EXPORT_SHA256='+h.hexdigest())
+              if name=='REPORT':
+                  s=p.read_text(encoding='utf8',errors='replace')
+                  print('RESULT_REPORT_EXPORTED='+str('**Exported:**' in s).lower())
+                  print('RESULT_REPORT_FAILED='+str('**Failed:**' in s).lower())
+          print('RESULT_PENDING_MARKER_PRESENT='+str((root/'PENDING_MUTATION_DO_NOT_CLEAN').exists()).lower())
+          count=0
+          for d in pathlib.Path('/proc').iterdir():
+              if not d.name.isdigit():continue
+              try:c=(d/'cmdline').read_bytes().replace(b'\x00',b' ')
+              except OSError:continue
+              if str(root).encode() in c and int(d.name)!=os.getpid():count+=1
+          print('RESULT_PROCESSES_WITH_STAND_PATH='+str(count))
+          print('RESULT_LICENSE_AND_PASSWORD_CONTENT_NOT_READ=true')
+          PY
