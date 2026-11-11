@@ -1,0 +1,116 @@
+name: SI16 целевые Java тесты исправления ИБ
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: [self-hosted, Linux, X64, si1c]
+    timeout-minutes: 40
+    steps:
+      - name: Создать личный постоянный каталог регрессии
+        shell: bash
+        run: |
+          set -euo pipefail
+          test ! -e "$GITHUB_WORKSPACE/si16-src-$GITHUB_RUN_ID"
+          echo 'SI16_OWNED_SRC=1' >> "$GITHUB_ENV"
+          BASE="$HOME/SI-MCP-Polygons/Agent-16"
+          for P in "$HOME/SI-MCP-Polygons" "$BASE"; do test -d "$P" && test ! -L "$P" && test -O "$P"; done
+          test -f "$BASE/OWNER-Agent-16.txt" && test ! -L "$BASE/OWNER-Agent-16.txt"
+          DIR="$BASE/JavaRegression-${GITHUB_RUN_ID}"
+          mkdir -m 700 "$DIR"
+          echo "SI16_BUILD_DIR=$DIR" >> "$GITHUB_ENV"
+      - name: Подготовить личный SSH-клиент без установки
+        shell: bash
+        run: |
+          set -euo pipefail
+          if command -v ssh >/dev/null; then ssh -V; exit 0; fi
+          command -v apt-get >/dev/null && command -v dpkg-deb >/dev/null
+          cd "$SI16_BUILD_DIR"
+          mkdir -p apt-lists/partial apt-cache/archives/partial
+          APT_OPTS=(-o "Dir::State::lists=$SI16_BUILD_DIR/apt-lists" -o "Dir::Cache::archives=$SI16_BUILD_DIR/apt-cache/archives" -o Acquire::Retries=1 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20)
+          apt-get "${APT_OPTS[@]}" update
+          apt-get "${APT_OPTS[@]}" download openssh-client
+          mkdir -p ssh-client
+          dpkg-deb -x ./openssh-client_*.deb ssh-client
+          "$SI16_BUILD_DIR/ssh-client/usr/bin/ssh" -V
+          echo "$SI16_BUILD_DIR/ssh-client/usr/bin" >> "$GITHUB_PATH"
+      - name: Исходники SI-MCP с точной ревизией
+        uses: actions/checkout@v4
+        with:
+          repository: Lavren73/SI-MCP
+          ref: 99d6dd52f72f856f8b2d5471a89c4474db0b7384
+          ssh-key: ${{ secrets.SI_MCP_DEPLOY_KEY }}
+          path: si16-src-${{ github.run_id }}
+          persist-credentials: false
+      - name: Сохранить точные исходники в личной постоянной папке
+        shell: bash
+        run: |
+          set -euo pipefail
+          SOURCE="$GITHUB_WORKSPACE/si16-src-$GITHUB_RUN_ID"
+          test "$(git -C "$SOURCE" rev-parse HEAD)" = 99d6dd52f72f856f8b2d5471a89c4474db0b7384
+          test ! -e "$SI16_BUILD_DIR/source"
+          cp -a "$SOURCE" "$SI16_BUILD_DIR/source"
+          test "$(git -C "$SI16_BUILD_DIR/source" rev-parse HEAD)" = 99d6dd52f72f856f8b2d5471a89c4474db0b7384
+          echo 'RESULT_PERSONAL_SOURCE_PRESERVED=true'
+      - name: Получить JDK 17 и Maven с проверкой хэшей
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$SI16_BUILD_DIR"
+          curl -fL --retry 2 --connect-timeout 20 --max-time 600 -sS https://cdn.azul.com/zulu/bin/zulu17.54.21-ca-fx-jdk17.0.13-linux_x64.tar.gz -o java.tar.gz
+          echo 'b3d566934b49589346a304dabcab1faef84882aae445a080eae433355423a7f9  java.tar.gz' | sha256sum -c -
+          curl -fL --retry 2 --connect-timeout 20 --max-time 300 -sS https://archive.apache.org/dist/maven/maven-3/3.9.9/binaries/apache-maven-3.9.9-bin.tar.gz -o maven.tar.gz
+          echo 'a555254d6b53d267965a3404ecb14e53c3827c09c3b94b5678835887ab404556bfaf78dcfe03ba76fa2508649dca8531c74bca4d5846513522404d48e8c4ac8b  maven.tar.gz' | sha512sum -c -
+          mkdir jdk maven home
+          tar --no-same-owner -xzf java.tar.gz -C jdk --strip-components=1
+          tar --no-same-owner -xzf maven.tar.gz -C maven --strip-components=1
+          export JAVA_HOME="$SI16_BUILD_DIR/jdk" PATH="$SI16_BUILD_DIR/jdk/bin:$PATH"
+          ./jdk/bin/java -version 2>&1 | head -3
+          ./maven/bin/mvn -version 2>&1 | head -4
+      - name: Целевые тесты сервера на изолированной ревизии
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT="$SI16_BUILD_DIR/source"
+          test "$(git -C "$ROOT" rev-parse HEAD)" = 99d6dd52f72f856f8b2d5471a89c4474db0b7384
+          export HOME="$SI16_BUILD_DIR/home" JAVA_HOME="$SI16_BUILD_DIR/jdk" PATH="$SI16_BUILD_DIR/jdk/bin:$PATH" MAVEN_OPTS='-Xmx3g'
+          cd "$ROOT/server"
+          set +e
+          xvfb-run -a "$SI16_BUILD_DIR/maven/bin/mvn" -B -ntp -Dstyle.color=never -Dmaven.repo.local="$SI16_BUILD_DIR/m2" '-Dtest=*Infobase*Test' -DfailIfNoTests=false verify > "$SI16_BUILD_DIR/verify.log" 2>&1
+          CODE=$?
+          set -e
+          echo "RESULT_MAVEN_EXIT=$CODE"
+          export ROOT CODE
+          python3 - <<'PYTEST'
+          import os,pathlib,xml.etree.ElementTree as ET
+          root=pathlib.Path(os.environ['ROOT']); reports=list(root.glob('server/**/target/surefire-reports/TEST-*.xml'))
+          counts={};total=[0,0,0,0]
+          for path in reports:
+              try:
+                  x=ET.parse(path).getroot();name=x.attrib.get('name',path.name)
+                  vals=[int(x.attrib.get(k,'0')) for k in ('tests','failures','errors','skipped')]
+                  counts[name]=vals
+                  total=[a+b for a,b in zip(total,vals)]
+              except (ET.ParseError,ValueError):
+                  print('RESULT_BAD_TEST_REPORT=true')
+          print('RESULT_XML_REPORTS='+str(len(reports)))
+          print('RESULT_TOTAL_TESTS_FAILURES_ERRORS_SKIPPED='+','.join(map(str,total)))
+          for name,vals in sorted(counts.items()):
+              if 'RegisteredInfobasesReaderTest' in name or 'InfobaseParametersRedaction16Test' in name:
+                  print('RESULT_TARGET_TEST='+name+':'+','.join(map(str,vals)))
+          required=['RegisteredInfobasesReaderTest','InfobaseParametersRedaction16Test']
+          for name in required:
+              selected=[vals for label,vals in counts.items() if label.endswith('.'+name) or label==name]
+              ok=len(selected)==1 and selected[0][0]>0 and selected[0][1:]==[0,0,0]
+              print('RESULT_REQUIRED_'+name+'='+str(ok).lower())
+              if not ok:raise SystemExit('required report missing, failed or skipped')
+          if os.environ['CODE']!='0':raise SystemExit('Maven command failed')
+          PYTEST
+          if [ "$CODE" -ne 0 ]; then tail -70 "$SI16_BUILD_DIR/verify.log"; exit "$CODE"; fi
+      - name: Сохранить собственный стенд и кэш
+        if: always()
+        shell: bash
+        run: |
+          echo "RESULT_BUILD_STAND_RETAINED=${SI16_BUILD_DIR:-unknown}"
+          echo "RESULT_PERSONAL_SOURCE_AND_LOGS_RETAINED=true"
