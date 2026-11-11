@@ -136,7 +136,9 @@ jobs:
           python3 - <<'PY'
         import hashlib,pathlib,re
         name='powershell-7.4.13-linux-x64.tar.gz'
-        lines=[x for x in pathlib.Path('powershell-7.4.13.sha256').read_text().splitlines() if name in x]
+        raw=pathlib.Path('powershell-7.4.13.sha256').read_bytes()
+        text=raw.decode('utf-16' if raw.startswith((b'\\xff\\xfe',b'\\xfe\\xff')) else 'utf-8-sig')
+        lines=[x for x in text.splitlines() if name in x]
         if len(lines)!=1:raise SystemExit('Expected exactly one official PowerShell checksum')
         hashes=re.findall(r'(?i)\b[0-9a-f]{64}\b',lines[0])
         if len(hashes)!=1:raise SystemExit('Invalid checksum format')
