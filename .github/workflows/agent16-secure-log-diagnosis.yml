@@ -1,0 +1,40 @@
+name: SI16 аудит запуска EDT с отдельным хранилищем
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: [self-hosted, Linux, X64, si1c]
+    timeout-minutes: 5
+    steps:
+      - name: Сравнить обезличенные причины ошибок личных стендов
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os,pathlib,re
+          home=pathlib.Path.home();agent=home/'SI-MCP-Polygons/Agent-16'
+          for p in (home/'SI-MCP-Polygons',agent):
+              if not p.is_dir() or p.is_symlink() or p.stat().st_uid!=os.getuid():raise RuntimeError('Unsafe agent root')
+          roots={'BASELINE':agent/'VerifiedProbe-42994724312','SECURE_CREATE':agent/'ReadyProbe-42995543775','SECURE_IMPORT':agent/'CliSecureProbe-42996249678'}
+          for label,root in roots.items():
+              if not root.is_dir() or root.is_symlink() or root.stat().st_uid!=os.getuid():raise RuntimeError('Unsafe stand')
+              print('RESULT_STAND='+label)
+              for path in (root/'edt.log',root/'gui-secure.log',root/'workspace/.metadata/.log'):
+                  if not path.is_file() or path.is_symlink():continue
+                  text=path.read_text(encoding='utf8',errors='replace')[-2500000:]
+                  rules={'INACCESSIBLE_OBJECT':r'InaccessibleObjectException|does not opens|does not open|Unable to make .* accessible','NO_CLASS':r'NoClassDefFoundError|ClassNotFoundException','NO_SERVICE':r'ServiceUnavailableException|service unavailable','INJECT_ERROR':r'InjectionException|could not inject|injection failed','JVM_OPTIONS':r'--add-opens|--add-exports','UNSUPPORTED_OPERATION':r'UnsupportedOperationException','MODULE_ERROR':r'module .{0,100} (does not|cannot|exports|opens)','SECURE_STORAGE':r'secure storage|eclipse\.password|eclipse\.keyring','UNABLE_PLATFORM':r'platform.{0,100}(not found|unavailable|cannot|failed)','CONFIG_PROJECT_MANAGER':r'ConfigurationProjectManager','NO_PASSWORD':r'No password provided','NATURE':r'nature is missing'}
+                  print('RESULT_LOG='+('workspace-metadata' if path.name=='.log' else path.name))
+                  for k,v in rules.items():print('RESULT_'+k+'='+str(bool(re.search(v,text,re.I))).lower())
+                  for line in text.splitlines():
+                      if not re.search(r'(?:!MESSAGE|Caused by:|^java\.lang\.UnsupportedOperationException|^java\.lang\.IllegalStateException)',line):continue
+                      if not re.search(r'exception|error|failed|cannot|could not|unsupported|unavailable|not found|not an EDT project|configur|secure|password',line,re.I):continue
+                      line=re.sub(r'(?i)(password|pwd|token|secret)\s*[=:]\s*[^\s;]+',r'\1=<redacted>',line)
+                      line=line.replace(str(home),'<home>')
+                      line=re.sub(r'(?:[A-Za-z]:[\\/]|/)[^\s;:]+','<path>',line)
+                      line=re.sub(r'\b[a-zA-Z0-9_-]{32,}\b','<redacted>',line)
+                      line=' '.join(line.split())[:260]
+                      print('RESULT_REDACTED_DIAGNOSTIC='+line)
+          print('RESULT_NO_EDT_OR_INFOBASE_OPERATION=true')
+          PY
