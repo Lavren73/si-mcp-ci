@@ -1,0 +1,45 @@
+name: SI16 проверка кода вызова защищённого хранилища
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: [self-hosted, Linux, X64, si1c]
+    timeout-minutes: 5
+    steps:
+      - name: Прочитать байткод только личной копии EDT
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import glob,os,pathlib,subprocess,zipfile,re
+          home=pathlib.Path.home();root=home/'SI-MCP-Polygons/Agent-16/ReadyProbe-42995543775'
+          for p in (home/'SI-MCP-Polygons',home/'SI-MCP-Polygons/Agent-16',root,root/'edt'):
+              if p.is_symlink() or not p.is_dir() or p.stat().st_uid!=os.getuid():raise RuntimeError('Unsafe personal stand')
+          bins=glob.glob('/usr/lib/jvm/*/bin/javap')+glob.glob(str(root/'edt/**/bin/javap'),recursive=True)
+          bins=[x for x in bins if os.access(x,os.X_OK)]
+          if not bins:print('RESULT_JAVAP_AVAILABLE=false');raise SystemExit(0)
+          print('RESULT_JAVAP_AVAILABLE=true')
+          targets={'MONITOR':'com/_1c/g5/ides/monitoring/internal/instance/SecurePreferencesApplicationInstance.class','SECURITY':'org/eclipse/equinox/internal/security/storage/SecurePreferencesMapper.class'}
+          jars={}
+          for path in (root/'edt').rglob('*.jar'):
+              if path.is_symlink() or not ('monitor' in path.name.lower() or 'equinox.security' in path.name.lower()):continue
+              try:
+                  with zipfile.ZipFile(path) as z:
+                      names=set(z.namelist())
+                      for k,v in targets.items():
+                          if v in names:jars[k]=path
+              except (OSError,zipfile.BadZipFile):pass
+          for k,entry in targets.items():
+              path=jars.get(k);print('RESULT_'+k+'_JAR_PRESENT='+str(bool(path)).lower())
+              if not path:continue
+              clazz=entry[:-6].replace('/','.')
+              p=subprocess.run([bins[0],'-c','-p','-classpath',str(path),clazz],stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,timeout=30)
+              print('RESULT_'+k+'_JAVAP_EXIT='+str(p.returncode))
+              for line in p.stdout.splitlines():
+                  if re.search(r'java/util/Collections\.emptyMap|java/util/Map\.of|java/util/Collections\.singletonMap|java/util/Collections\.unmodifiableMap|java/util/Map\.put|DEFAULT_PASSWORD|processPassword|SecurePreferencesFactory.open|java/util/HashMap',line):
+                      line=re.sub(r'\s+',' ',line.strip())
+                      print('RESULT_'+k+'_BYTECODE='+line[:300])
+          print('RESULT_NO_CONFIG_OR_INFOBASE_CHANGED=true')
+          PY
