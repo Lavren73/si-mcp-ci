@@ -178,8 +178,11 @@ jobs:
         CHECKOUT="$GITHUB_WORKSPACE/team-source-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
         EXPECTED=b029b9e0566310aea3b02242bb23a568b71771f1
         test "$(git -C "$CHECKOUT" rev-parse HEAD)" = "$EXPECTED"
-        mkdir "$TEAM_RUN/source"
-        git -C "$CHECKOUT" archive HEAD | tar -xf - -C "$TEAM_RUN/source"
+        git -C "$CHECKOUT" branch agent/obmen-20261102 "$EXPECTED"
+        git clone --no-hardlinks --single-branch --branch agent/obmen-20261102 "$CHECKOUT" "$TEAM_RUN/source"
+        git -C "$TEAM_RUN/source" remote set-url origin git@github.com:Lavren73/SI-MCP.git
+        test "$(git -C "$TEAM_RUN/source" rev-parse HEAD)" = "$EXPECTED"
+        test "$(git -C "$TEAM_RUN/source" rev-parse refs/remotes/origin/agent/obmen-20261102)" = "$EXPECTED"
         printf '%s\n' "$EXPECTED" > "$TEAM_RUN/reports/source-sha.txt"
         printf 'Source SHA: `%s`\n' "$EXPECTED" >> "$GITHUB_STEP_SUMMARY"
         echo "TEAM_SOURCE=$TEAM_RUN/source" >> "$GITHUB_ENV"
@@ -250,7 +253,7 @@ jobs:
         export MAVEN_OPTS="-Xmx3g -Dfile.encoding=UTF-8 -Duser.home=$TEAM_RUN/home"
         echo 'Full mvn verify started; heartbeat every 20 seconds. Tests are NOT skipped.'
         set +e
-        nice -n 10 ionice -c 2 -n 7 timeout --signal=TERM --kill-after=60s 2400s xvfb-run -a mvn -B -ntp -Dstyle.color=never -Dmaven.repo.local="$TEAM_BASE/cache/m2" verify > "$TEAM_RUN/reports/maven.log" 2>&1 &
+        nice -n 10 ionice -c 2 -n 7 timeout --signal=TERM --kill-after=60s 2400s xvfb-run -a mvn -B -fae -ntp -Dstyle.color=never -Dmaven.repo.local="$TEAM_BASE/cache/m2" verify > "$TEAM_RUN/reports/maven.log" 2>&1 &
         PID=$!
         while kill -0 "$PID" 2>/dev/null; do
           printf '[%s] Maven is running; ' "$(date -u +%T)"
@@ -288,7 +291,7 @@ jobs:
         cd "$TEAM_SOURCE/server"
         export HOME="$TEAM_RUN/home"
         set +e
-        bash scripts/run-gates.sh --json "$TEAM_RUN/reports/gates.json" 2>&1 | tee "$TEAM_RUN/reports/gates.log"
+        bash scripts/run-gates.sh --подробно --json "$TEAM_RUN/reports/gates.json" 2>&1 | tee "$TEAM_RUN/reports/gates.log"
         CODE=${PIPESTATUS[0]}
         set -e
         printf '%s\n' "$CODE" > "$TEAM_RUN/reports/gates.exit"
@@ -324,6 +327,7 @@ jobs:
               ('format-comparison',['python','tools/ЗД-41-тест-сверки-13.py'],root),
               ('exception-probe',['python','tools/ЗД-152-ошибка-службы-тест-13.py',str(root)],root)]
         results={}
+        plan.append(('known-reds',['python','server/scripts/сторож-красных.py',str(reports/'maven.log'),'docs/отчёты-проверок/эталон-красных-2026-11-07.txt'],root))
         for name,cmd,cwd in plan:
             try:
                 with (reports/(name+'.log')).open('w') as f:
