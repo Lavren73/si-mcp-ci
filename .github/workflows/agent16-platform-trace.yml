@@ -1,0 +1,64 @@
+name: SI16 определение платформы при создании тестовой ИБ
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: [self-hosted, Linux, X64, si1c]
+    timeout-minutes: 12
+    steps:
+      - name: Создать свою ИБ и исследовать путь исполняемого файла
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE="$HOME/.si-mcp-agent16-test-staging"
+          test ! -L "$BASE"
+          mkdir -p -m 700 "$BASE"
+          test -O "$BASE"
+          ROOT=$(mktemp -d "$BASE/si16-platformtrace-${GITHUB_RUN_ID}-XXXXXX")
+          mkdir "$ROOT/home" "$ROOT/workspace"
+          export ROOT HOME="$ROOT/home" XDG_CONFIG_HOME="$ROOT/home/.config" XDG_CACHE_HOME="$ROOT/home/.cache" XDG_DATA_HOME="$ROOT/home/.local/share"
+          CLI=$(find /opt/si-edt -type f -name 1cedtcli -print -quit)
+          test -x "$CLI"
+          export CLI
+          python3 - <<'PY'
+          import os,pathlib,re,signal,subprocess,time
+          root=pathlib.Path(os.environ['ROOT'])
+          print('RESULT_STAND_DIR_NAME='+root.name,flush=True)
+          marker=root/'PENDING_MUTATION_DO_NOT_CLEAN';marker.write_text('IB create launched; preserve if outcome unknown\n')
+          cmd=['xvfb-run','-a',os.environ['CLI'],'-data',str(root/'workspace'),'-command','infobase-create','--name','SI16TraceIsolated','--version','8.3.27','--path',str(root/'ib')]
+          observed=set();log=open(root/'create.log','wb')
+          proc=subprocess.Popen(cmd,stdout=log,stderr=subprocess.STDOUT,start_new_session=True)
+          start=time.monotonic();timedout=False
+          try:
+              while proc.poll() is None:
+                  if time.monotonic()-start>180:
+                      timedout=True
+                      try:os.killpg(proc.pid,signal.SIGKILL)
+                      except ProcessLookupError:pass
+                      proc.wait(timeout=10);break
+                  for p in pathlib.Path('/proc').iterdir():
+                      if not p.name.isdecimal():continue
+                      try:
+                          if os.getpgid(int(p.name))!=proc.pid:continue
+                          exe=os.readlink(p/'exe')
+                          # Output only executable paths under the known platform root, no arguments.
+                          if exe.startswith('/opt/1cv8/') and re.search(r'/8\.3\.\d+\.\d+/',exe):observed.add(exe)
+                      except (OSError,ProcessLookupError,PermissionError):pass
+                  time.sleep(.02)
+          finally:log.close()
+          print('RESULT_CREATE_TIMEOUT='+str(timedout).lower())
+          print('RESULT_CREATE_EXIT='+str(proc.returncode))
+          ib=root/'ib'/'1Cv8.1CD';present=ib.is_file() and ib.stat().st_size>0
+          print('RESULT_IB_NONEMPTY='+str(present).lower())
+          print('RESULT_OBSERVED_PLATFORM_EXECUTABLES='+str(len(observed)))
+          for exe in sorted(observed):print('RESULT_OBSERVED_EXECUTABLE='+exe)
+          print('RESULT_TRACE_LIMIT=only_processes_remaining_in_cli_process_group')
+          if timedout or proc.returncode!=0 or not present:raise SystemExit('creation not proved; stand retained')
+          marker.unlink()
+          print('RESULT_CREATE_CONFIRMED=true')
+          PY
+      - name: Сохранить свой стенд
+        if: always()
+        run: echo 'RESULT_NO_TEST_STANDS_DELETED=true'
