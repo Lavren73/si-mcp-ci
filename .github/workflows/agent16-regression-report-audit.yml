@@ -20,6 +20,8 @@ jobs:
           sha=subprocess.check_output(['git','-C',str(root/'source'),'rev-parse','HEAD'],text=True).strip()
           if sha!='99d6dd52f72f856f8b2d5471a89c4474db0b7384': raise RuntimeError('unexpected source sha')
           print('RESULT_SHA='+sha)
+          locales=subprocess.run(['locale','-a'],capture_output=True,text=True,check=True).stdout.splitlines()
+          print('RESULT_C_UTF8_AVAILABLE='+str(any(x.lower().replace('-','').replace('_','')=='c.utf8' for x in locales)).lower())
           print('RESULT_LOCALE_LANG='+os.environ.get('LANG','<unset>'))
           print('RESULT_LOCALE_LC_ALL='+os.environ.get('LC_ALL','<unset>'))
           print('RESULT_PYTHON_FILE_ENCODING='+sys.getfilesystemencoding())
