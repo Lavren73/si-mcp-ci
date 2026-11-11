@@ -137,7 +137,7 @@ jobs:
         import hashlib,pathlib,re
         name='powershell-7.4.13-linux-x64.tar.gz'
         raw=pathlib.Path('powershell-7.4.13.sha256').read_bytes()
-        text=raw.decode('utf-16' if raw.startswith((b'\\xff\\xfe',b'\\xfe\\xff')) else 'utf-8-sig')
+        text=raw.decode('utf-16' if raw[:2] in (bytes.fromhex('fffe'),bytes.fromhex('feff')) else 'utf-8-sig')
         lines=[x for x in text.splitlines() if name in x]
         if len(lines)!=1:raise SystemExit('Expected exactly one official PowerShell checksum')
         hashes=re.findall(r'(?i)\b[0-9a-f]{64}\b',lines[0])
@@ -250,7 +250,7 @@ jobs:
         export MAVEN_OPTS="-Xmx3g -Dfile.encoding=UTF-8 -Duser.home=$TEAM_RUN/home"
         echo 'Full mvn verify started; heartbeat every 20 seconds. Tests are NOT skipped.'
         set +e
-        nice -n 10 timeout --signal=TERM --kill-after=60s 2400s mvn -B -ntp -Dstyle.color=never -Dmaven.repo.local="$TEAM_BASE/cache/m2" verify > "$TEAM_RUN/reports/maven.log" 2>&1 &
+        nice -n 10 ionice -c 2 -n 7 timeout --signal=TERM --kill-after=60s 2400s xvfb-run -a mvn -B -ntp -Dstyle.color=never -Dmaven.repo.local="$TEAM_BASE/cache/m2" verify > "$TEAM_RUN/reports/maven.log" 2>&1 &
         PID=$!
         while kill -0 "$PID" 2>/dev/null; do
           printf '[%s] Maven is running; ' "$(date -u +%T)"
@@ -309,13 +309,41 @@ jobs:
         exit "$CODE"
       id: text
       continue-on-error: true
+    - name: BSL fixture integrity and standalone synthetic contract checks
+      shell: bash
+      run: |
+        set -euo pipefail
+        cd "$TEAM_SOURCE"
+        export HOME="$TEAM_RUN/home"
+        python - <<'PY'
+        import subprocess,os,pathlib,json
+        root=pathlib.Path(os.environ['TEAM_SOURCE']);reports=pathlib.Path(os.environ['TEAM_RUN'])/'reports'
+        plan=[('corpus-integrity',['python', 'check_corpus.py'],root/'data/bsl-corpus'),
+              ('contract',['python','tools/З-11-T2-тест-контракта.py'],root),
+              ('fake-http',['python','tools/З-11-T2-тест-mcp-http.py'],root),
+              ('format-comparison',['python','tools/ЗД-41-тест-сверки-13.py'],root),
+              ('exception-probe',['python','tools/ЗД-152-ошибка-службы-тест-13.py',str(root)],root)]
+        results={}
+        for name,cmd,cwd in plan:
+            try:
+                with (reports/(name+'.log')).open('w') as f:
+                    p=subprocess.run(cmd,cwd=cwd,stdout=f,stderr=subprocess.STDOUT,timeout=240)
+                results[name]=p.returncode
+            except subprocess.TimeoutExpired:results[name]=124
+            print(name,'EXIT',results[name],flush=True)
+            print((reports/(name+'.log')).read_text()[-6500:],flush=True)
+        (reports/'additional-checks.json').write_text(json.dumps(results,indent=2))
+        raise SystemExit(1 if any(results.values()) else 0)
+        PY
+      id: extra
+      continue-on-error: true
     - name: Summarize without turning failures or skips green
       shell: bash
       run: |
         set -euo pipefail
         python3 - <<'PY'
         import os,pathlib,json
-        names=['bases','installer','client','python_tests','powershell_tests','maven_tests','gates','text']
+        names=['bases','installer','client','python_tests','powershell_tests','maven_tests','gates','text','extra']
         results={n:os.environ.get('RESULT_'+n,'unknown') for n in names}
         print(json.dumps(results,indent=2))
         p=os.environ.get('TEAM_RUN')
@@ -337,6 +365,7 @@ jobs:
         RESULT_maven_tests: ${{ steps.maven_tests.outcome }}
         RESULT_gates: ${{ steps.gates.outcome }}
         RESULT_text: ${{ steps.text.outcome }}
+        RESULT_extra: ${{ steps.extra.outcome }}
     - name: Upload only test reports; never licenses or credentials
       if: always() && env.TEAM_RUN != ''
       uses: actions/upload-artifact@v4
