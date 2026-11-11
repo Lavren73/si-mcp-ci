@@ -27,8 +27,8 @@ jobs:
               print('RESULT_EXCEPTION_COUNT='+str(len(indexes)))
               if indexes:
                   for line in lines[indexes[-1]+1:indexes[-1]+35]:
-                      m=re.search(r'\bat\s+([\w.$]+)\(([\w.$-]+:\d+)\)',line)
-                      if m:print('RESULT_STACK_FRAME='+m.group(1)+'('+m.group(2)+')')
+                      m=re.search(r'\bat\s+([\w.$]+)\(',line)
+                      if m:print('RESULT_STACK_METHOD='+m.group(1))
                       elif re.search(r'^(?:!ENTRY|!MESSAGE)',line):break
           print('RESULT_NO_EDT_OR_INFOBASE_OPERATION=true')
           PY
