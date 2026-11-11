@@ -1,0 +1,99 @@
+name: SI16 проверка EDT и Конфигуратора с доступной лицензией
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: [self-hosted, Linux, X64, si1c]
+    timeout-minutes: 18
+    steps:
+      - name: Создать постоянный личный стенд
+        shell: bash
+        run: |
+          set -euo pipefail
+          PARENT="$HOME/SI-MCP-Polygons"
+          AGENT="$PARENT/Agent-16"
+          for DIR in "$PARENT" "$AGENT"; do test -d "$DIR" && test ! -L "$DIR" && test -O "$DIR"; done
+          test -f "$AGENT/OWNER-Agent-16.txt" && test ! -L "$AGENT/OWNER-Agent-16.txt"
+          ROOT="$AGENT/LicensedProbe-${GITHUB_RUN_ID}"
+          mkdir -m 700 "$ROOT"
+          mkdir -m 700 "$ROOT/home" "$ROOT/workspace" "$ROOT/out"
+          python3 - "$HOME" "$ROOT/home" <<'PY'
+          import os,pathlib,shutil,sys
+          original=pathlib.Path(sys.argv[1])/'.1cv8/1C/1cv8/conf';target=pathlib.Path(sys.argv[2])/'.1cv8/1C/1cv8/conf'
+          if not original.is_dir() or original.is_symlink():raise RuntimeError('License source directory unavailable')
+          files=[x for x in original.iterdir() if x.suffix.lower()=='.lic' and x.is_file() and not x.is_symlink() and os.access(x,os.R_OK)]
+          if len(files)!=1:raise RuntimeError('Expected exactly one readable local license')
+          target.mkdir(mode=0o700,parents=True)
+          src=files[0];dst=target/src.name
+          with src.open('rb') as i, os.fdopen(os.open(dst,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600),'wb') as o:shutil.copyfileobj(i,o)
+          print('RESULT_LICENSE_COPIED_TO_PRIVATE_HOME=true')
+          print('RESULT_ORIGINAL_LICENSE_NOT_CHANGED=true')
+          PY
+          CLI=$(find /opt/si-edt -type f -name 1cedtcli -print -quit)
+          PLATFORM=/opt/1cv8/x86_64/8.3.27.2342/1cv8
+          test -x "$CLI" && test -x "$PLATFORM"
+          echo "SI16_ROOT=$ROOT" >> "$GITHUB_ENV"
+          echo "EDT_CLI=$CLI" >> "$GITHUB_ENV"
+          echo "SI16_PLATFORM=$PLATFORM" >> "$GITHUB_ENV"
+          echo "RESULT_PERMANENT_STAND=SI-MCP-Polygons/Agent-16/LicensedProbe-${GITHUB_RUN_ID}"
+      - name: Своя ИБ, Конфигуратор и импорт штатной командой EDT
+        shell: bash
+        run: |
+          set -euo pipefail
+          export HOME="$SI16_ROOT/home" XDG_CONFIG_HOME="$SI16_ROOT/home/.config" XDG_CACHE_HOME="$SI16_ROOT/home/.cache" XDG_DATA_HOME="$SI16_ROOT/home/.local/share"
+          python3 - <<'PY'
+          import os,pathlib,re,subprocess,signal
+          root=pathlib.Path(os.environ['SI16_ROOT']);ws=root/'workspace';cli=os.environ['EDT_CLI'];platform=os.environ['SI16_PLATFORM'];marker=root/'PENDING_MUTATION_DO_NOT_CLEAN'
+          ib=root/'ib';project='SI16Imported'+os.environ['GITHUB_RUN_ID'];name='SI16Designer'+os.environ['GITHUB_RUN_ID']
+          print('RESULT_CONTAINER_INDICATOR_DOCKERENV='+str(pathlib.Path('/.dockerenv').exists()).lower(),flush=True)
+          def run(label,cmd,timeout,mutating=False):
+              if mutating:
+                  if marker.exists():raise RuntimeError('Earlier operation remains uncertain')
+                  marker.write_text(label+' outcome not yet verified; preserve and do not retry\n')
+              with open(root/(label.lower()+'.log'),'wb') as out:
+                  p=subprocess.Popen(['xvfb-run','-a']+cmd,stdout=out,stderr=subprocess.STDOUT,start_new_session=True)
+                  try:code=p.wait(timeout=timeout)
+                  except subprocess.TimeoutExpired:
+                      try:os.killpg(p.pid,signal.SIGKILL)
+                      except ProcessLookupError:pass
+                      p.wait(timeout=10);print('RESULT_'+label+'_TIMEOUT=true',flush=True);raise RuntimeError(label+' timed out; preserve stand')
+              print('RESULT_'+label+'_EXIT='+str(code),flush=True)
+              text=(root/(label.lower()+'.log')).read_text(encoding='utf8',errors='replace')
+              if label=='DESIGNER' and (root/'out/designer-out.log').is_file():text+='\n'+(root/'out/designer-out.log').read_text(encoding='utf8',errors='replace')
+              for key,pattern in {'LICENSE_NOT_FOUND':r'license not found|лицензия не найдена|лицензия не обнаружена','AUTH_FAILURE':r'auth fail|authentication failed|пользователь.*не идентифицирован','LOCK':r'configuration.{0,40}(locked|lock)|конфигурац.{0,40}блокир','EMPTY_CONFIG':r'empty configuration|пустая конфигурация'}.items():
+                  print('RESULT_'+label+'_'+key+'='+str(bool(re.search(pattern,text,re.I))).lower(),flush=True)
+              if code!=0:raise RuntimeError(label+' failed; leave marker and stand')
+              return text
+          def edt(args):return [cli,'-data',str(ws),'-command']+args
+          run('IB_CREATE',edt(['infobase-create','--name',name,'--version','8.3.27','--path',str(ib)]),180,True)
+          if not (ib/'1Cv8.1CD').is_file() or (ib/'1Cv8.1CD').stat().st_size==0:raise RuntimeError('IB creation not verified')
+          marker.unlink();print('RESULT_NEW_OWN_IB_CREATED=true',flush=True)
+          output=run('IB_LIST',edt(['infobase','--details']),90)
+          if name not in output or str(ib) not in output:raise RuntimeError('IB identity not verified')
+          print('RESULT_NEW_OWN_IB_LISTED=true',flush=True)
+          cf=root/'out'/'empty.cf'
+          if cf.exists():raise RuntimeError('Output already exists')
+          run('DESIGNER',[platform,'DESIGNER','/F'+str(ib),'/DumpCfg',str(cf),'/DisableStartupDialogs','/Out',str(root/'out/designer-out.log')],180,True)
+          if not cf.is_file() or cf.stat().st_size==0:raise RuntimeError('Designer returned zero but fresh CF not verified')
+          marker.unlink();print('RESULT_DESIGNER_FRESH_EXPORT_CONFIRMED=true',flush=True)
+          access=root/'access-settings.txt'
+          fd=os.open(access,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
+          with os.fdopen(fd,'w',encoding='utf8') as f:f.write('access=INFOBASE\n')
+          if (ws/project).exists():raise RuntimeError('Project collision')
+          run('EDT_IMPORT',edt(['infobase-import','--name',name,'--project',project,'--build','false','--access',str(access)]),420,True)
+          if not (ws/project/'.project').is_file():raise RuntimeError('Import returned zero but project file not found')
+          listed=run('PROJECT_LIST',edt(['project','--details']),90)
+          if project not in listed:raise RuntimeError('Imported project not listed')
+          marker.unlink();print('RESULT_EDT_IMPORT_AND_PROJECT_CONFIRMED=true',flush=True)
+          print('RESULT_SI_MCP_NOT_TESTED=true',flush=True)
+          PY
+      - name: Сохранить свой стенд и журналы
+        if: always()
+        shell: bash
+        run: |
+          if [ -n "${SI16_ROOT:-}" ] && [ -d "$SI16_ROOT" ]; then
+            echo 'RESULT_PERMANENT_STAND_RETAINED=true'
+            if [ -f "$SI16_ROOT/PENDING_MUTATION_DO_NOT_CLEAN" ]; then echo 'RESULT_PENDING_MARKER_PRESENT=true'; fi
+          fi
