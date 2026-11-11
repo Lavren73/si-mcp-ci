@@ -36,11 +36,20 @@ jobs:
               fail=int(suite.get('failures','0'));err=int(suite.get('errors','0'))
               if fail or err:
                   print('RESULT_BAD_SUITE='+str(suite.get('name'))+' tests='+str(suite.get('tests'))+' failures='+str(fail)+' errors='+str(err))
+                  props=suite.find('properties')
+                  if props is not None:
+                      for prop in props.findall('property'):
+                          if prop.get('name') in ('file.encoding','sun.jnu.encoding','native.encoding','user.language','user.country'):
+                              print('RESULT_TEST_PROPERTY='+prop.get('name')+'='+str(prop.get('value')))
                   for case in suite.findall('.//testcase'):
                       for k in ('failure','error'):
                           if case.find(k) is not None:
                               node=case.find(k)
                               print('RESULT_BAD_CASE='+str(case.get('classname'))+'#'+str(case.get('name'))+' kind='+k+' type='+str(node.get('type')))
+                              if node.get('type')=='java.nio.file.InvalidPathException':
+                                  msg=(node.get('message') or '').lower()
+                                  print('RESULT_INVALID_PATH_UNMAPPABLE='+str('unmappable' in msg or 'malformed' in msg).lower())
+                                  print('RESULT_INVALID_PATH_NUL='+str('nul' in msg).lower())
                               for line in (node.text or '').splitlines():
                                   line=line.strip()
                                   if line.startswith('at si.edt.mcp.server.') and 'ExportInfobaseObjects' in line:
