@@ -1,0 +1,44 @@
+name: SI16 аудит результата штатного импорта
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: [self-hosted, Linux, X64, si1c]
+    timeout-minutes: 5
+    steps:
+      - name: Проверить только собственный импортированный проект
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os,pathlib,re,xml.etree.ElementTree as ET
+          home=pathlib.Path.home();agent=home/'SI-MCP-Polygons/Agent-16';root=agent/'LicensedProbe-42993158911';project=root/'workspace/SI16Imported42993158911'
+          for d in (home/'SI-MCP-Polygons',agent,root,project):
+              if d.is_symlink() or not d.is_dir() or d.stat().st_uid!=os.getuid():raise RuntimeError('Personal stand validation failed')
+          print('RESULT_PENDING_MARKER='+str((root/'PENDING_MUTATION_DO_NOT_CLEAN').exists()).lower())
+          p=project/'.project';tree=ET.parse(p)
+          for n in tree.findall('./natures/nature'):
+              value=n.text or ''
+              if re.fullmatch('[A-Za-z0-9_.-]{1,180}',value):print('RESULT_PROJECT_NATURE='+value)
+          natures=[x.text or '' for x in tree.findall('./natures/nature')]
+          print('RESULT_PROJECT_NATURE_COUNT='+str(len(natures)))
+          print('RESULT_PROJECT_FILE_BYTES='+str(p.stat().st_size))
+          for name in ['.project','.settings','src','Configuration','pom.xml']:
+              x=project/name
+              print('RESULT_PROJECT_'+name.strip('.').upper()+'_PRESENT='+str(x.exists()).lower())
+          for pattern in ('*.mdo','*.bsl','*.xml'):
+              count=0
+              for x in project.rglob(pattern):
+                  if x.is_file() and not x.is_symlink():count+=1
+                  if count>=1000:break
+              print('RESULT_PROJECT_'+pattern[2:].upper()+'_COUNT_CAPPED='+str(count))
+          for label,path in [('IMPORT',root/'edt_import.log'),('PROJECT_LIST',root/'project_list.log'),('IB_LIST',root/'ib_list.log'),('GUI',root/'readback2-edt.log')]:
+              if not path.is_file() or path.is_symlink():print('RESULT_'+label+'_LOG_EXISTS=false');continue
+              text=path.read_text(encoding='utf8',errors='replace')[:1000000]
+              print('RESULT_'+label+'_LOG_BYTES='+str(path.stat().st_size))
+              for key,pat in {'ERROR':r'\berror\b|ошибк','WARN':r'\bwarn(?:ing)?\b|предупрежден','EMPTY_CONFIGURATION':r'empty configuration|пустая конфигурация','LICENSE':r'licen[cs]e|лиценз','IMPORT':r'import|импорт','AGENT':r'agent|агент','DESIGNER':r'1cv8|designer|конфигуратор','AUTH_FAIL':r'auth fail|authentication failed','CANCEL':r'cancel|отменен','NO_CONFIG':r'no configuration|configuration not found|конфигурац.{0,20}не найдена'}.items():
+                  print('RESULT_'+label+'_LOG_'+key+'='+str(bool(re.search(pat,text,re.I))).lower())
+          print('RESULT_NO_BINDING_MUTATION_ATTEMPTED=true')
+          PY
