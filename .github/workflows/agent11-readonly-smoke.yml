@@ -119,8 +119,13 @@ jobs:
         \    check('initialized_notification',code in (200,202,204),{'http_status':code})\n    ping=call(2,'ping',{});check('ping_empty_result',ping=={})\n\
         \    tools=call(3,'tools/list',{})\n    rows=tools.get('tools');check('nonempty_tool_catalog',isinstance(rows,list)\
         \ and len(rows)>0)\n    check('tool_schema_objects',all(isinstance(x,dict) and isinstance(x.get('name'),str) and isinstance(x.get('inputSchema'),dict)\
-        \ for x in rows))\n    SUMMARY['advertised_tool_count_first_page']=len(rows)\n    check('project_admin_advertised',any(x['name']=='project_admin'\
-        \ for x in rows))\n    result=call(4,'tools/call',{'name':'project_admin','arguments':{'operation':'list_projects'}})\n\
+        \ for x in rows))\n    SUMMARY['advertised_tool_count_first_page']=len(rows)\n    names=[x['name'] for x in rows]\n\
+        \    SUMMARY['advertised_tool_names']=names\n    SUMMARY['project_admin_advertised']='project_admin' in names\n  \
+        \  check('unique_catalog_names',len(names)==len(set(names)))\n    check('catalog_complete_without_cursor',not tools.get('nextCursor'))\n\
+        \    # A strict read-only profile may hide the mixed read/write facade.\n    # Prefer the explicitly advertised standalone\
+        \ read. Never expand rights.\n    if 'list_projects' in names:\n        tool_name='list_projects';arguments={}\n \
+        \   else:\n        check('read_only_project_entrypoint_advertised','project_admin' in names)\n        tool_name='project_admin';arguments={'operation':'list_projects'}\n\
+        \    SUMMARY['read_only_project_entrypoint']=tool_name\n    result=call(4,'tools/call',{'name':tool_name,'arguments':arguments})\n\
         \    check('read_only_tool_not_error',result.get('isError') is not True)\n    content=result.get('content');check('tool_content_list',isinstance(content,list))\n\
         \    texts=[x['text'] for x in content if isinstance(x,dict) and x.get('type')=='text' and isinstance(x.get('text'),str)]\n\
         \    text='\\n'.join(texts)\n    check('empty_workspace_project_count',bool(re.search(r'\\*\\*Project count:\\*\\\
