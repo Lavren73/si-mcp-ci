@@ -1,0 +1,64 @@
+name: '№11 — read-only probe: видно ли раннеру вентиляторы (hwmon)'
+# ЦЕЛЬ: только чтение. Никаких записей в /sys, никаких установок, никаких изменяющих sudo-команд.
+# timeout 5 минут, permissions: contents: read. Запуск: workflow_dispatch.
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: si1c-hwmon-readonly
+  cancel-in-progress: false
+jobs:
+  probe:
+    runs-on: [self-hosted, Linux, X64, si1c]
+    timeout-minutes: 5
+    steps:
+      - name: Read-only hwmon/thermal visibility and permissions probe
+        shell: bash
+        run: |
+          set -uo pipefail
+          echo "PROBE_SCOPE=Read-only inside runner environment; results describe the container/runner, not necessarily the host desktop."
+          id
+          uname -a
+          echo "--- virtualization/container markers ---"
+          command -v systemd-detect-virt >/dev/null && echo "detect-virt=$(systemd-detect-virt 2>&1)"
+          cat /proc/1/cgroup 2>/dev/null | head -5
+          for m in /.dockerenv /run/.containerenv; do [ -e "$m" ] && echo "PRESENT:$m"; done
+          head -3 /proc/1/comm 2>/dev/null
+          echo "--- capabilities of this job (read-only) ---"
+          grep -E '^(Cap|Seccomp|NoNewPrivs)' /proc/self/status 2>/dev/null
+          command -v capsh >/dev/null && capsh --print 2>/dev/null | head -6
+          echo "--- mounts of /sys and /sys/class/hwmon (ro/rw) ---"
+          findmnt -no TARGET,SOURCE,FSTYPE,OPTIONS /sys 2>/dev/null || grep ' /sys ' /proc/mounts
+          ls -ld /sys /sys/class/hwmon 2>&1
+          echo "--- hwmon chips ---"
+          ls -1 /sys/class/hwmon 2>&1 | head -20
+          for c in /sys/class/hwmon/hwmon*; do
+            [ -d "$c" ] || continue
+            printf 'chip=%s name=%s\n' "${c##*/}" "$(cat "$c/name" 2>/dev/null)"
+            for f in "$c"/fan*_input "$c"/fan*_label "$c"/pwm[0-9]* "$c"/temp*_input; do
+              [ -e "$f" ] || continue
+              if [ -w "$f" ]; then w=WRITABLE; else w=read-only; fi
+              printf '  %-18s %-24s %s\n' "${f##*/}" "$(cat "$f" 2>/dev/null)" "$w"
+            done
+          done
+          echo "--- thermal zones ---"
+          for z in /sys/class/thermal/thermal_zone*; do
+            [ -d "$z" ] || continue
+            printf '%s type=%s temp=%s\n' "${z##*/}" "$(cat "$z/type" 2>/dev/null)" "$(cat "$z/temp" 2>/dev/null)"
+          done
+          echo "--- fan control tools present? (no installs) ---"
+          for x in sensors pwmconfig fancontrol thinkfan ipmitool smartctl dmidecode systemctl sudo; do
+            printf '%s=%s\n' "$x" "$(command -v "$x" || echo ABSENT)"
+          done
+          echo "--- passwordless sudo? (test only; nothing executed as root) ---"
+          if command -v sudo >/dev/null; then
+            if sudo -n true 2>/dev/null; then echo "SUDO_NOPASSWD=yes"; sudo -n -l 2>/dev/null | tail -8; else echo "SUDO_NOPASSWD=no"; fi
+          else
+            echo "SUDO_NOPASSWD=n/a"
+          fi
+          echo "--- is the runner a service on the host or a container process? ---"
+          ps -eo pid,comm,args --no-headers 2>/dev/null | grep -iE 'Runner.Listener|run.sh|docker|podman|lxc' | grep -v grep | head -6
+          echo "--- resources ---"
+          nproc; free -m | head -2; cat /proc/loadavg; df -h / "$HOME" 2>/dev/null | head -4
+          echo "PROBE_DONE_NO_CHANGES=true"
