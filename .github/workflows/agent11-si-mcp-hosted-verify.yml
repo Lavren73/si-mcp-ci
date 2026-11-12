@@ -93,19 +93,25 @@ jobs:
         run: |
           set -uo pipefail
           cd "$RUNNER_TEMP/src/client"
-          "$RUNNER_TEMP/venv/bin/python" -m pytest -q -rs --tb=short -p no:cacheprovider \
+          set +e
+          "$RUNNER_TEMP/venv/bin/python" -m pytest -q -rf -rs --tb=short -p no:cacheprovider \
             tests/test_review_2026_11_12.py tests/test_windows_install_shortcuts_16.py \
-            --junitxml="$RUNNER_TEMP/focused.xml" | tail -15
-          echo "FOCUSED_EXIT=${PIPESTATUS[0]}"
+            --junitxml="$RUNNER_TEMP/focused.xml" > "$RUNNER_TEMP/focused.log" 2>&1
+          code=$?
+          set -e
+          echo "FOCUSED_EXIT=$code"; tail -15 "$RUNNER_TEMP/focused.log"
 
       - name: 6. Полный client/tests с JUnit XML
         if: env.SCOPE == 'client' || env.SCOPE == 'both'
         run: |
           set -uo pipefail
           cd "$RUNNER_TEMP/src/client"
-          "$RUNNER_TEMP/venv/bin/python" -m pytest -q -rs --tb=short -p no:cacheprovider tests \
+          set +e
+          "$RUNNER_TEMP/venv/bin/python" -m pytest -q -rf -rs --tb=short -p no:cacheprovider tests \
             --junitxml="$RUNNER_TEMP/client-junit.xml" > "$RUNNER_TEMP/client-pytest.log" 2>&1
-          echo "CLIENT_EXIT=$?"
+          code=$?
+          set -e
+          echo "CLIENT_EXIT=$code"
           tail -25 "$RUNNER_TEMP/client-pytest.log"
           sha256sum "$RUNNER_TEMP/client-junit.xml"
           "$RUNNER_TEMP/venv/bin/python" - <<'PY'
@@ -128,9 +134,12 @@ jobs:
           set -uo pipefail
           cd "$RUNNER_TEMP/src"
           if [ -d server/scripts/tests ]; then
+            set +e
             "$RUNNER_TEMP/venv/bin/python" -m pytest -q -rf -rs --tb=line -p no:cacheprovider server/scripts/tests \
               --junitxml="$RUNNER_TEMP/scripts-junit.xml" > "$RUNNER_TEMP/scripts-pytest.log" 2>&1
-            echo "SCRIPTS_EXIT=$?"
+            code=$?
+            set -e
+            echo "SCRIPTS_EXIT=$code"
             echo "--- FAILED/ERROR имена ---"
             grep -E '^(FAILED|ERROR)' "$RUNNER_TEMP/scripts-pytest.log" || true
             echo "--- последние 30 строк ---"
@@ -145,7 +154,7 @@ jobs:
           set -uo pipefail
           echo "TARGET_SHA=$TARGET_SHA"
           echo "SCOPE=$SCOPE"
-          for f in client-pytest.log installer.log text-gate.log; do
+          for f in client-pytest.log focused.log scripts-pytest.log installer.log text-gate.log; do
             [ -f "$RUNNER_TEMP/$f" ] && echo "--- $f (tail) ---" && tail -6 "$RUNNER_TEMP/$f"
           done
           for f in client-junit.xml focused.xml scripts-junit.xml; do
