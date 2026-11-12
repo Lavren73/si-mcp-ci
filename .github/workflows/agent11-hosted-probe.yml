@@ -1,4 +1,4 @@
-name: '№14 — fast oform.tests & snakeyaml --jar diagnostic'
+name: '№14 — full default verify + oform coordinate & run-gates'
 on:
   workflow_dispatch:
     inputs:
@@ -11,10 +11,10 @@ permissions:
   contents: read
 
 jobs:
-  oform-and-snakeyaml-probe:
-    name: 'Maven verify -fae -pl !server.tests + snakeyaml --jar check'
+  full-default-and-coords:
+    name: 'Maven verify -fae (13 modules) + oform fail coords + run-gates.sh + snakeyaml --jar'
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    timeout-minutes: 45
     env:
       LANG: C.UTF-8
       LC_ALL: C.UTF-8
@@ -64,7 +64,7 @@ jobs:
           python3 -m venv "$RUNNER_TEMP/venv"
           "$RUNNER_TEMP/venv/bin/pip" install -q --disable-pip-version-check 'pytest==9.0.3' 'pytest-subtests==0.14.2'
 
-      - name: Run oform.tests + snakeyaml --jar (numeric/sanitized coordinates only)
+      - name: Run full mvn -fae + numeric coordinates + run-gates.sh + snakeyaml --jar
         shell: bash
         env:
           MAVEN_OPTS: -Xmx3g -Dfile.encoding=UTF-8
@@ -72,65 +72,76 @@ jobs:
           set -euo pipefail
           export VENV_PY="$RUNNER_TEMP/venv/bin/python"
           "$VENV_PY" - <<'PY'
-          import os, pathlib, subprocess, sys, xml.etree.ElementTree as ET, zipfile
+          import importlib.util, os, pathlib, subprocess, sys, xml.etree.ElementTree as ET, zipfile
 
           root = pathlib.Path(os.environ['GITHUB_WORKSPACE']) / 'project'
           srv = root / 'server'
           tmp = pathlib.Path(os.environ['RUNNER_TEMP'])
           py = os.environ['VENV_PY']
 
-          mvn_log = tmp / 'mvn-oform.log'
+          mvn_log = tmp / 'mvn-full.log'
           with mvn_log.open('wb') as f:
               r = subprocess.run(
-                  ['xvfb-run', '-a', 'mvn', '-B', '-fae', '-ntp', '-Dstyle.color=never',
-                   '-pl', '!tests/si.edt.mcp.server.tests', 'verify'],
-                  cwd=srv, stdout=f, stderr=subprocess.STDOUT, timeout=1200,
+                  ['xvfb-run', '-a', 'mvn', '-B', '-fae', '-ntp', '-Dstyle.color=never', 'verify'],
+                  cwd=srv, stdout=f, stderr=subprocess.STDOUT, timeout=2400,
               )
-          print(f'MVN_OFORM_EXIT={r.returncode}', flush=True)
+          print(f'MVN_FULL_EXIT={r.returncode}', flush=True)
 
-          # Map sorted *Test.java in git to XML index without exposing names in public log
-          test_javas = sorted((srv / 'tests/si.edt.mcp.oform.tests/src').rglob('*Test.java'))
-          print(f'OFORM_TEST_JAVA_COUNT={len(test_javas)}', flush=True)
-          xml_files = sorted((srv / 'tests/si.edt.mcp.oform.tests').glob('**/surefire-reports/TEST-*.xml'))
-          print(f'OFORM_XML_COUNT={len(xml_files)}', flush=True)
+          # Report per-module XML totals + numeric coordinates of ANY failures/errors (zero private names/messages printed!)
+          for mod in ('si.edt.mcp.server.tests', 'si.edt.mcp.oform.tests'):
+              test_javas = sorted((srv / 'tests' / mod / 'src').rglob('*Test.java'))
+              xml_files = sorted((srv / 'tests' / mod).glob('**/surefire-reports/TEST-*.xml'))
+              tot = [0, 0, 0, 0]
+              coords = []
+              for xidx, xp in enumerate(xml_files):
+                  x = ET.parse(xp).getroot()
+                  tot = [a + int(x.get(k, '0')) for a, k in zip(tot, ('tests', 'failures', 'errors', 'skipped'))]
+                  cls_stem = xp.stem.replace('TEST-', '').rsplit('.', 1)[-1]
+                  java_idx = next((i for i, p in enumerate(test_javas) if p.stem == cls_stem), -1)
+                  for tc_idx, tc in enumerate(x.findall('testcase')):
+                      bad = tc.find('failure') or tc.find('error')
+                      if bad is not None:
+                          text = bad.text or ''
+                          line_nums = []
+                          for ln in text.splitlines():
+                              if cls_stem + '.java:' in ln:
+                                  line_nums.append(ln.split('.java:', 1)[1].split(')', 1)[0])
+                          kind = 'F' if tc.find('failure') is not None else 'E'
+                          exc_short = (bad.attrib.get('type', '') or '').rsplit('.', 1)[-1]
+                          coords.append(f'({xidx},{java_idx},{tc_idx},{kind},{exc_short},{line_nums[:2]})')
+              print(f'MOD {mod} javas={len(test_javas)} xmls={len(xml_files)} tests={tot[0]} F={tot[1]} E={tot[2]} S={tot[3]}', flush=True)
+              if coords:
+                  print(f'COORDS {mod}: ' + ' ; '.join(coords), flush=True)
 
-          tot = [0, 0, 0, 0]
-          for xidx, xp in enumerate(xml_files):
-              x = ET.parse(xp).getroot()
-              tot = [a + int(x.get(k, '0')) for a, k in zip(tot, ('tests', 'failures', 'errors', 'skipped'))]
-              cls_stem = xp.stem.replace('TEST-', '').rsplit('.', 1)[-1]
-              java_idx = next((i for i, p in enumerate(test_javas) if p.stem == cls_stem), -1)
-              for tc_idx, tc in enumerate(x.findall('testcase')):
-                  bad = tc.find('failure') or tc.find('error')
-                  if bad is not None:
-                      text = bad.text or ''
-                      line_nums = []
-                      for ln in text.splitlines():
-                          if cls_stem + '.java:' in ln:
-                              line_nums.append(ln.split('.java:', 1)[1].split(')', 1)[0])
-                      kind = 'failure' if tc.find('failure') is not None else 'error'
-                      exc_short = (bad.attrib.get('type', '') or '').rsplit('.', 1)[-1]
-                      print(f'OFORM_BAD_COORD xml_idx={xidx} java_idx={java_idx} tc_idx={tc_idx} kind={kind} exc={exc_short} lines={line_nums[:3]}', flush=True)
+          # Compare server.tests log indices against эталон-красных-2026-11-07.txt (numeric indices only!)
+          spec = importlib.util.spec_from_file_location('sk', srv / 'scripts/сторож-красных.py')
+          sk = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(sk)
+          etalon_path = root / 'docs/отчёты-проверок/эталон-красных-2026-11-07.txt'
+          etalon_lines = [l.strip() for l in etalon_path.read_text(encoding='utf-8').splitlines() if l.strip() and not l.strip().startswith('#')]
+          etalon_keys = [l.split(' | ', 1)[0] for l in etalon_lines]
+          log_items, total_runs = sk.разобрать_текст(mvn_log.read_text(encoding='utf-8', errors='replace'))
+          log_keys = {it.split(' | ', 1)[0] for it in log_items}
+          kept_idx = [i for i, k in enumerate(etalon_keys) if k in log_keys]
+          gone_idx = [i for i, k in enumerate(etalon_keys) if k not in log_keys]
+          extra_count = len(log_keys - set(etalon_keys))
+          print(f'ETALON_COMPARE total_log={len(log_keys)} etalon={len(etalon_keys)} kept={len(kept_idx)} gone={len(gone_idx)} extra={extra_count} max_suite={total_runs}', flush=True)
+          print(f'ETALON_KEPT_INDICES={kept_idx}', flush=True)
+          print(f'ETALON_GONE_INDICES={gone_idx}', flush=True)
 
-          print(f'OFORM_XML_TOTALS tests={tot[0]} failures={tot[1]} errors={tot[2]} skipped={tot[3]}', flush=True)
+          # Official run-gates.sh (non-verbose)
+          rg = subprocess.run(['bash', 'scripts/run-gates.sh'], cwd=srv, capture_output=True, text=True)
+          print(f'RUN_GATES_SH_EXIT={rg.returncode}', flush=True)
+          for ln in rg.stdout.splitlines():
+              if 'проверок по существу:' in ln:
+                  print('  RUN_GATES_SUMMARY:', ln.strip(), flush=True)
 
-          # Check SnakeYAML with --jar flag on both repository plugin jar and bundle target jar!
+          # SnakeYAML --jar on repository jar
           repo_jars = list((srv / 'repositories/si.edt.mcp.server.repository/target/repository/plugins').glob('si.edt.mcp.server_*.jar'))
-          bundle_jars = [j for j in (srv / 'bundles/si.edt.mcp.server/target').glob('si.edt.mcp.server-*.jar') if not j.name.endswith('-sources.jar')]
-          print(f'REPO_JARS={len(repo_jars)} BUNDLE_JARS={len(bundle_jars)}', flush=True)
-          for tag, jlist in [('REPO', repo_jars), ('BUNDLE', bundle_jars)]:
-              if not jlist:
-                  continue
-              jp = jlist[0]
-              with zipfile.ZipFile(jp) as z:
-                  names = z.namelist()
-                  root_yaml = sum(1 for n in names if n.startswith('org/yaml/') and n.endswith('.class'))
-                  emb_yaml = any(n.startswith('lib/snakeyaml') for n in names)
+          if repo_jars:
+              jp = repo_jars[0]
               sy = subprocess.run([py, 'tools/проверка-snakeyaml.py', '--jar', str(jp)], cwd=root, capture_output=True, text=True)
-              env_sy = os.environ.copy()
-              env_sy['SI_EDT_PLUGIN_JAR'] = str(jp)
-              tsy = subprocess.run([py, '-m', 'pytest', 'tests/test_snakeyaml_v_feature.py', '-q'], cwd=root / 'client', env=env_sy, capture_output=True, text=True)
-              print(f'JAR_{tag} root_yaml_classes={root_yaml} embedded_snakeyaml_jar={emb_yaml} tool_exit={sy.returncode} pytest_exit={tsy.returncode}', flush=True)
+              print(f'SNAKEYAML_JAR_EXIT={sy.returncode}', flush=True)
 
           print('ARTIFACTS_UPLOADED=0', flush=True)
           PY
