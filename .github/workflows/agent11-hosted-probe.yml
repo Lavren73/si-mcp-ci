@@ -1,4 +1,4 @@
-name: '№14 — full default verify + oform coordinate & run-gates'
+name: '№14 — oform flake hunt + ZD-09 root unpack experiment'
 on:
   workflow_dispatch:
     inputs:
@@ -11,10 +11,10 @@ permissions:
   contents: read
 
 jobs:
-  full-default-and-coords:
-    name: 'Maven verify -fae (13 modules) + oform fail coords + run-gates.sh + snakeyaml --jar'
+  oform-flake-hunt:
+    name: 'Oform 8x repeat flake hunt (8eebaa35)'
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 30
     env:
       LANG: C.UTF-8
       LC_ALL: C.UTF-8
@@ -36,10 +36,117 @@ jobs:
         run: |
           set -euo pipefail
           git checkout -q --detach "$TARGET_SHA"
-          ACTUAL=$(git rev-parse HEAD)
-          echo "TARGET_SHA=$TARGET_SHA"
-          echo "ACTUAL_SHA=$ACTUAL"
-          test "$ACTUAL" = "$TARGET_SHA"
+          test "$(git rev-parse HEAD)" = "$TARGET_SHA"
+
+      - name: Install Xvfb & GTK3
+        run: |
+          sudo apt-get update -qq >/dev/null
+          sudo apt-get install -y -qq xvfb xauth libgtk-3-0 >/dev/null
+
+      - name: Setup JDK 17 (Temurin)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install Maven 3.9.9
+        run: |
+          curl -fsSL https://archive.apache.org/dist/maven/maven-3/3.9.9/binaries/apache-maven-3.9.9-bin.tar.gz -o /tmp/mvn.tgz
+          sudo tar -xzf /tmp/mvn.tgz -C /opt
+          rm -f /tmp/mvn.tgz
+          echo "/opt/apache-maven-3.9.9/bin" >> "$GITHUB_PATH"
+
+      - name: Repeat oform.tests up to 8 times to isolate flaky failure coordinates
+        shell: bash
+        env:
+          MAVEN_OPTS: -Xmx3g -Dfile.encoding=UTF-8
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os, pathlib, shutil, subprocess, time, xml.etree.ElementTree as ET
+
+          srv = pathlib.Path(os.environ['GITHUB_WORKSPACE']) / 'project/server'
+          test_javas = sorted((srv / 'tests/si.edt.mcp.oform.tests/src').rglob('*Test.java'))
+          t0 = time.monotonic()
+
+          # Initial compile + cache warm-up (excluding server.tests)
+          p0 = subprocess.run(
+              ['mvn', '-B', '-ntp', '-Dstyle.color=never', '-pl', '!tests/si.edt.mcp.server.tests', '-DskipTests', 'test-compile'],
+              cwd=srv, capture_output=True, text=True, timeout=900,
+          )
+          print(f'WARMUP_EXIT={p0.returncode} elapsed={time.monotonic()-t0:.1f}s', flush=True)
+          if p0.returncode != 0:
+              raise SystemExit(1)
+
+          any_fail = 0
+          runs_done = 0
+          for idx in range(1, 9):
+              if time.monotonic() - t0 > 1200:
+                  print(f'BUDGET_STOP after {runs_done} runs', flush=True)
+                  break
+              it0 = time.monotonic()
+              for sr in (srv / 'tests/si.edt.mcp.oform.tests').glob('**/surefire-reports'):
+                  shutil.rmtree(sr, ignore_errors=True)
+              # Use -o after warmup? Keep online just in case surefire runtime bundle needs anything on iteration 1; use -o on iter >=2
+              cmd = ['xvfb-run', '-a', 'mvn', '-B', '-ntp', '-Dstyle.color=never', '-pl', '!tests/si.edt.mcp.server.tests', 'verify']
+              if idx >= 2:
+                  cmd.insert(4, '-o')
+              r = subprocess.run(cmd, cwd=srv, capture_output=True, text=True, timeout=600)
+              runs_done += 1
+              xml_files = sorted((srv / 'tests/si.edt.mcp.oform.tests').glob('**/surefire-reports/TEST-*.xml'))
+              tot = [0, 0, 0, 0]
+              coords = []
+              for xidx, xp in enumerate(xml_files):
+                  x = ET.parse(xp).getroot()
+                  tot = [a + int(x.get(k, '0')) for a, k in zip(tot, ('tests', 'failures', 'errors', 'skipped'))]
+                  cls_stem = xp.stem.replace('TEST-', '').rsplit('.', 1)[-1]
+                  java_idx = next((i for i, p in enumerate(test_javas) if p.stem == cls_stem), -1)
+                  for tc_idx, tc in enumerate(x.findall('testcase')):
+                      bad = tc.find('failure')
+                      if bad is None:
+                          bad = tc.find('error')
+                      if bad is not None:
+                          any_fail += 1
+                          kind = 'F' if tc.find('failure') is not None else 'E'
+                          exc_short = (bad.attrib.get('type', '') or '').rsplit('.', 1)[-1]
+                          line_nums = []
+                          for ln in (bad.text or '').splitlines():
+                              if cls_stem + '.java:' in ln:
+                                  line_nums.append(ln.split('.java:', 1)[1].split(')', 1)[0])
+                          coords.append(f'({xidx},{java_idx},{tc_idx},{kind},{exc_short},{line_nums[:3]})')
+              dt = time.monotonic() - it0
+              print(f'ITER {idx}: exit={r.returncode} dt={dt:.1f}s xmls={len(xml_files)} tests={tot[0]} F={tot[1]} E={tot[2]} S={tot[3]}', flush=True)
+              if coords:
+                  print(f'ITER {idx} COORDS: ' + ' ; '.join(coords), flush=True)
+          print(f'HUNT_SUMMARY runs={runs_done} total_bad={any_fail} ARTIFACTS_UPLOADED=0', flush=True)
+          PY
+
+  zd09-unpack-experiment:
+    name: 'ZD-09 root unpack experiment (full verify -fae + snakeyaml guards)'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    env:
+      LANG: C.UTF-8
+      LC_ALL: C.UTF-8
+      TARGET_SHA: ${{ inputs.sha }}
+    steps:
+      - name: Checkout SI-MCP branch without persisting credentials
+        uses: actions/checkout@v4
+        with:
+          repository: Lavren73/SI-MCP
+          ref: agent/obmen-20261102
+          fetch-depth: 30
+          token: ${{ secrets.SI_MCP_TOKEN }}
+          persist-credentials: false
+          path: project
+
+      - name: Pin exact target SHA
+        working-directory: project
+        shell: bash
+        run: |
+          set -euo pipefail
+          git checkout -q --detach "$TARGET_SHA"
+          test "$(git rev-parse HEAD)" = "$TARGET_SHA"
 
       - name: Install Xvfb & GTK3
         run: |
@@ -64,7 +171,7 @@ jobs:
           python3 -m venv "$RUNNER_TEMP/venv"
           "$RUNNER_TEMP/venv/bin/pip" install -q --disable-pip-version-check 'pytest==9.0.3' 'pytest-subtests==0.14.2'
 
-      - name: Run full mvn -fae + numeric coordinates + run-gates.sh + snakeyaml --jar
+      - name: Patch server bundle pom.xml in memory workspace, verify -fae, run guards
         shell: bash
         env:
           MAVEN_OPTS: -Xmx3g -Dfile.encoding=UTF-8
@@ -72,76 +179,109 @@ jobs:
           set -euo pipefail
           export VENV_PY="$RUNNER_TEMP/venv/bin/python"
           "$VENV_PY" - <<'PY'
-          import importlib.util, os, pathlib, subprocess, sys, xml.etree.ElementTree as ET, zipfile
+          import importlib.util, os, pathlib, subprocess, xml.etree.ElementTree as ET, zipfile
 
           root = pathlib.Path(os.environ['GITHUB_WORKSPACE']) / 'project'
           srv = root / 'server'
           tmp = pathlib.Path(os.environ['RUNNER_TEMP'])
           py = os.environ['VENV_PY']
 
-          mvn_log = tmp / 'mvn-full.log'
+          pom = srv / 'bundles/si.edt.mcp.server/pom.xml'
+          txt = pom.read_text(encoding='utf-8')
+          snippet = '''    <plugins>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-antrun-plugin</artifactId>
+        <version>3.1.0</version>
+        <executions>
+          <execution>
+            <id>unpack-snakeyaml-root</id>
+            <phase>process-classes</phase>
+            <goals>
+              <goal>run</goal>
+            </goals>
+            <configuration>
+              <target>
+                <unzip src="${project.basedir}/lib/snakeyaml-2.2.jar" dest="${project.build.outputDirectory}">
+                  <patternset>
+                    <include name="org/yaml/**/*.class"/>
+                  </patternset>
+                </unzip>
+              </target>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+    </plugins>
+    <pluginManagement>'''
+          assert '    <pluginManagement>' in txt
+          pom.write_text(txt.replace('    <pluginManagement>', snippet, 1), encoding='utf-8')
+
+          mvn_log = tmp / 'mvn-zd09.log'
           with mvn_log.open('wb') as f:
               r = subprocess.run(
                   ['xvfb-run', '-a', 'mvn', '-B', '-fae', '-ntp', '-Dstyle.color=never', 'verify'],
-                  cwd=srv, stdout=f, stderr=subprocess.STDOUT, timeout=2400,
+                  cwd=srv, stdout=f, stderr=subprocess.STDOUT, timeout=2100,
               )
-          print(f'MVN_FULL_EXIT={r.returncode}', flush=True)
+          print(f'MVN_ZD09_EXIT={r.returncode}', flush=True)
 
-          # Report per-module XML totals + numeric coordinates of ANY failures/errors (zero private names/messages printed!)
           for mod in ('si.edt.mcp.server.tests', 'si.edt.mcp.oform.tests'):
-              test_javas = sorted((srv / 'tests' / mod / 'src').rglob('*Test.java'))
               xml_files = sorted((srv / 'tests' / mod).glob('**/surefire-reports/TEST-*.xml'))
               tot = [0, 0, 0, 0]
-              coords = []
-              for xidx, xp in enumerate(xml_files):
+              for xp in xml_files:
                   x = ET.parse(xp).getroot()
                   tot = [a + int(x.get(k, '0')) for a, k in zip(tot, ('tests', 'failures', 'errors', 'skipped'))]
-                  cls_stem = xp.stem.replace('TEST-', '').rsplit('.', 1)[-1]
-                  java_idx = next((i for i, p in enumerate(test_javas) if p.stem == cls_stem), -1)
-                  for tc_idx, tc in enumerate(x.findall('testcase')):
-                      bad = tc.find('failure') or tc.find('error')
-                      if bad is not None:
-                          text = bad.text or ''
-                          line_nums = []
-                          for ln in text.splitlines():
-                              if cls_stem + '.java:' in ln:
-                                  line_nums.append(ln.split('.java:', 1)[1].split(')', 1)[0])
-                          kind = 'F' if tc.find('failure') is not None else 'E'
-                          exc_short = (bad.attrib.get('type', '') or '').rsplit('.', 1)[-1]
-                          coords.append(f'({xidx},{java_idx},{tc_idx},{kind},{exc_short},{line_nums[:2]})')
-              print(f'MOD {mod} javas={len(test_javas)} xmls={len(xml_files)} tests={tot[0]} F={tot[1]} E={tot[2]} S={tot[3]}', flush=True)
-              if coords:
-                  print(f'COORDS {mod}: ' + ' ; '.join(coords), flush=True)
+              print(f'MOD {mod} xmls={len(xml_files)} tests={tot[0]} F={tot[1]} E={tot[2]} S={tot[3]}', flush=True)
 
-          # Compare server.tests log indices against эталон-красных-2026-11-07.txt (numeric indices only!)
+          # Check YamlBundleLoadingTest specifically (safe hardcoded public test name)
+          yxml = list((srv / 'tests/si.edt.mcp.server.tests').glob('**/surefire-reports/TEST-*YamlBundleLoadingTest.xml'))
+          if yxml:
+              yx = ET.parse(yxml[0]).getroot()
+              print(f'YAML_BUNDLE_TEST tests={yx.get("tests")} F={yx.get("failures")} E={yx.get("errors")} S={yx.get("skipped")}', flush=True)
+
+          # Compare server.tests log indices against эталон using разобрать_сводки
           spec = importlib.util.spec_from_file_location('sk', srv / 'scripts/сторож-красных.py')
           sk = importlib.util.module_from_spec(spec)
           spec.loader.exec_module(sk)
           etalon_path = root / 'docs/отчёты-проверок/эталон-красных-2026-11-07.txt'
           etalon_lines = [l.strip() for l in etalon_path.read_text(encoding='utf-8').splitlines() if l.strip() and not l.strip().startswith('#')]
           etalon_keys = [l.split(' | ', 1)[0] for l in etalon_lines]
-          log_items, total_runs = sk.разобрать_текст(mvn_log.read_text(encoding='utf-8', errors='replace'))
+          log_items, итоги, errs = sk.разобрать_сводки(mvn_log.read_text(encoding='utf-8', errors='replace'))
           log_keys = {it.split(' | ', 1)[0] for it in log_items}
           kept_idx = [i for i, k in enumerate(etalon_keys) if k in log_keys]
           gone_idx = [i for i, k in enumerate(etalon_keys) if k not in log_keys]
           extra_count = len(log_keys - set(etalon_keys))
-          print(f'ETALON_COMPARE total_log={len(log_keys)} etalon={len(etalon_keys)} kept={len(kept_idx)} gone={len(gone_idx)} extra={extra_count} max_suite={total_runs}', flush=True)
-          print(f'ETALON_KEPT_INDICES={kept_idx}', flush=True)
-          print(f'ETALON_GONE_INDICES={gone_idx}', flush=True)
+          print(f'ETALON_COMPARE errs={len(errs)} total_log={len(log_keys)} etalon={len(etalon_keys)} kept={len(kept_idx)} gone={len(gone_idx)} extra={extra_count}', flush=True)
 
-          # Official run-gates.sh (non-verbose)
-          rg = subprocess.run(['bash', 'scripts/run-gates.sh'], cwd=srv, capture_output=True, text=True)
-          print(f'RUN_GATES_SH_EXIT={rg.returncode}', flush=True)
-          for ln in rg.stdout.splitlines():
-              if 'проверок по существу:' in ln:
-                  print('  RUN_GATES_SUMMARY:', ln.strip(), flush=True)
+          # Inspect built jar + create site zip + run all SnakeYAML guards!
+          repo_dir = srv / 'repositories/si.edt.mcp.server.repository/target/repository'
+          repo_jars = list((repo_dir / 'plugins').glob('si.edt.mcp.server_*.jar'))
+          assert len(repo_jars) == 1, f'expected 1 jar, got {len(repo_jars)}'
+          jp = repo_jars[0]
+          with zipfile.ZipFile(jp) as z:
+              names = z.namelist()
+              root_cls = [n for n in names if n.startswith('org/yaml/') and n.endswith('.class')]
+              nested = any(n.startswith('lib/snakeyaml') for n in names)
+              print(f'JAR_INSPECT root_yaml_classes={len(root_cls)} embedded_jar={nested}', flush=True)
 
-          # SnakeYAML --jar on repository jar
-          repo_jars = list((srv / 'repositories/si.edt.mcp.server.repository/target/repository/plugins').glob('si.edt.mcp.server_*.jar'))
-          if repo_jars:
-              jp = repo_jars[0]
-              sy = subprocess.run([py, 'tools/проверка-snakeyaml.py', '--jar', str(jp)], cwd=root, capture_output=True, text=True)
-              print(f'SNAKEYAML_JAR_EXIT={sy.returncode}', flush=True)
+          site_zip = tmp / 'site.zip'
+          with zipfile.ZipFile(site_zip, 'w') as zf:
+              for fp in repo_dir.rglob('*'):
+                  if fp.is_file():
+                      zf.write(fp, fp.relative_to(repo_dir))
 
+          sy_jar = subprocess.run([py, 'tools/проверка-snakeyaml.py', '--jar', str(jp)], cwd=root, capture_output=True, text=True)
+          sy_site = subprocess.run([py, 'tools/проверка-snakeyaml.py', '--сайт', str(site_zip)], cwd=root, capture_output=True, text=True)
+          env = os.environ.copy()
+          env['SI_EDT_PLUGIN_JAR'] = str(jp)
+          pt = subprocess.run([py, '-m', 'pytest', 'tests/test_snakeyaml_v_feature.py', '-v'], cwd=root / 'client', env=env, capture_output=True, text=True)
+          print(f'SNAKEYAML_JAR_EXIT={sy_jar.returncode}', flush=True)
+          print(f'SNAKEYAML_SITE_EXIT={sy_site.returncode}', flush=True)
+          print(f'PYTEST_SNAKEYAML_EXIT={pt.returncode}', flush=True)
+          for ln in pt.stdout.splitlines():
+              if 'passed' in ln or 'failed' in ln or 'skipped' in ln:
+                  print('  PYTEST_SUMMARY:', ln.strip(), flush=True)
           print('ARTIFACTS_UPLOADED=0', flush=True)
+          if sy_jar.returncode != 0 or sy_site.returncode != 0 or pt.returncode != 0 or extra_count > 0:
+              raise SystemExit(1)
           PY
