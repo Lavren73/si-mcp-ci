@@ -136,7 +136,7 @@ jobs:
           cd "$RUNNER_TEMP/src"
           if [ -d server/scripts/tests ]; then
             set +e
-            "$RUNNER_TEMP/venv/bin/python" -m pytest -q -rf -rs --tb=line -p no:cacheprovider server/scripts/tests \
+            "$RUNNER_TEMP/venv/bin/python" -m pytest -q -rf -rs --tb=short -p no:cacheprovider server/scripts/tests \
               --junitxml="$RUNNER_TEMP/scripts-junit.xml" > "$RUNNER_TEMP/scripts-pytest.log" 2>&1
             code=$?
             set -e
