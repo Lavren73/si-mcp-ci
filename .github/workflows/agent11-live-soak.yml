@@ -292,6 +292,13 @@ jobs:
             check('read_only_tool_not_error',result.get('isError') is not True)
             content=result.get('content');check('tool_content_list',isinstance(content,list))
             texts=[x['text'] for x in content if isinstance(x,dict) and x.get('type')=='text' and isinstance(x.get('text'),str)]
+            # Embedded markdown resources are content, not URLs to fetch. Never follow
+            # resource links or dump project paths into evidence.
+            texts += [x['resource']['text'] for x in content if isinstance(x,dict)
+                      and x.get('type')=='resource' and isinstance(x.get('resource'),dict)
+                      and isinstance(x['resource'].get('text'),str)
+                      and x['resource'].get('mimeType')=='text/markdown']
+            SUMMARY['project_response_content_types']=[x.get('type') for x in content if isinstance(x,dict)]
             text='\n'.join(texts)
             check('empty_workspace_project_count',bool(re.search(r'\*\*Project count:\*\*\s*0\s+projects',text)))
             check('no_project_files_created',not any(WS.glob('*/.project')))
