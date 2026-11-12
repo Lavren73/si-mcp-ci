@@ -1,0 +1,69 @@
+name: '№11 — read-only probe: готовность раннера к MCP-EDT'
+# ТОЛЬКО ЧТЕНИЕ: ничего не устанавливает, не запускает EDT/MCP/1C, не меняет файлы.
+# Цель: понять, что уже есть на машине для связки «раннер -> MCP-EDT».
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: si1c-edt-availability
+  cancel-in-progress: false
+jobs:
+  probe:
+    runs-on: [self-hosted, Linux, X64, si1c]
+    timeout-minutes: 8
+    steps:
+      - name: Read-only EDT / 1C / toolchain availability probe
+        shell: bash
+        run: |
+          set -uo pipefail
+          echo "PROBE_SCOPE=Read-only inside runner container; nothing started, nothing modified."
+          id; uname -r; nproc; free -m | head -2; df -h / "$HOME" /opt 2>/dev/null | head -6
+          echo "--- 1) EDT installation ---"
+          for d in /opt/si-edt /opt/edt /opt/1cedt "$HOME/si-edt"; do
+            if [ -d "$d" ]; then echo "PRESENT: $d"; ls -ld "$d"; du -sh --apparent-size "$d" 2>/dev/null; else echo "absent: $d"; fi
+          done
+          EDT1=$(find /opt "$HOME" -maxdepth 6 -type f -name 1cedt -print -quit 2>/dev/null)
+          echo "first_1cedt_found=${EDT1:-NONE}"
+          if [ -n "${EDT1:-}" ]; then
+            ROOT=$(dirname "$EDT1")
+            echo "EDT_ROOT=$ROOT"
+            ls -1 "$ROOT" | head -12
+            JAVA=$(find "$ROOT" -type f -path '*/bin/java' -print -quit 2>/dev/null)
+            echo "EDT_BUNDLED_JAVA=${JAVA:-NONE}"
+            [ -n "${JAVA:-}" ] && "$JAVA" -version 2>&1 | head -3
+            for v in "$ROOT"/version.properties "$ROOT"/eclipse/.eclipseproduct "$ROOT"/../version*; do
+              [ -f "$v" ] && { echo "--- $v"; head -6 "$v"; }
+            done
+            echo "--- наши плагины в EDT ---"
+            ls -1 "$ROOT"/plugins/si.edt.mcp.* 2>/dev/null | head -10 || echo "нет si.edt.mcp.* в plugins"
+            for j in "$ROOT"/plugins/si.edt.mcp.*jar; do [ -f "$j" ] && sha256sum "$j"; done 2>/dev/null | head -6
+          fi
+          echo "--- 2) platform 1C ---"
+          ls -1d /opt/1cv8/x86_64/* 2>/dev/null | head -5
+          for x in /opt/1cv8/x86_64/*/1cv8; do [ -x "$x" ] && echo "executable: $x"; done
+          echo "--- 3) toolchain в контейнере ---"
+          for c in java javac mvn python3 pip3 git curl xvfb-run Xvfb xauth flock timeout nice ionice cp sha256sum; do
+            printf '%s=%s\n' "$c" "$(command -v "$c" || echo ABSENT)"
+          done
+          python3 -c 'import sys;print("PYTHON",sys.version.split()[0])'
+          for m in pytest venv pip jsonschema yaml lxml; do
+            python3 -c "import importlib.util,sys;print('MODULE_$m',importlib.util.find_spec('$m') is not None)"
+          done
+          echo "--- 4) заготовки предыдущих прогонов (не трогаем) ---"
+          B="$HOME/si1c-team-tests"
+          if [ -d "$B" ]; then
+            echo "PRESENT: $B"; cat "$B/OWNER.txt" 2>/dev/null
+            du -sh "$B" 2>/dev/null; ls -1 "$B" | head -10; ls -1 "$B/runs" 2>/dev/null | tail -8
+            SITE=$(find "$B/runs" -maxdepth 6 -type d -path '*si.edt.mcp.server.repository/target/repository' -print -quit 2>/dev/null)
+            echo "P2_SITE=${SITE:-NONE}"
+            [ -n "${SITE:-}" ] && { ls -1 "$SITE" | head -6; ls -1 "$SITE/plugins" 2>/dev/null | head -6; }
+            find "$B/runs" -maxdepth 3 -type d -name edt -print 2>/dev/null | head -4
+          else
+            echo "absent: $B"
+          fi
+          echo "--- 5) идут ли сейчас чужие процессы EDT/1C (не трогать) ---"
+          ps -eo pid,etime,comm --no-headers 2>/dev/null | grep -iE '1cedt|1cv8|rphost|ragent|rmngr|ras|java' | grep -v grep | head -10 || echo "нет"
+          echo "--- 6) секреты/доступ к приватному SI-MCP (только факт наличия) ---"
+          echo "SOURCE_READ_KEY_CONFIGURED=${{ secrets.SI_MCP_DEPLOY_KEY != '' }}"
+          echo "PROBE_DONE_NO_CHANGES=true"
