@@ -128,9 +128,13 @@ jobs:
           set -uo pipefail
           cd "$RUNNER_TEMP/src"
           if [ -d server/scripts/tests ]; then
-            "$RUNNER_TEMP/venv/bin/python" -m pytest -q -rs --tb=short -p no:cacheprovider server/scripts/tests \
-              --junitxml="$RUNNER_TEMP/scripts-junit.xml" | tail -12
-            echo "SCRIPTS_EXIT=${PIPESTATUS[0]}"
+            "$RUNNER_TEMP/venv/bin/python" -m pytest -q -rf -rs --tb=line -p no:cacheprovider server/scripts/tests \
+              --junitxml="$RUNNER_TEMP/scripts-junit.xml" > "$RUNNER_TEMP/scripts-pytest.log" 2>&1
+            echo "SCRIPTS_EXIT=$?"
+            echo "--- FAILED/ERROR имена ---"
+            grep -E '^(FAILED|ERROR)' "$RUNNER_TEMP/scripts-pytest.log" || true
+            echo "--- последние 30 строк ---"
+            tail -30 "$RUNNER_TEMP/scripts-pytest.log"
           else
             echo "SCRIPTS_EXIT=skipped (нет server/scripts/tests)"
           fi
