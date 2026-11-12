@@ -1,0 +1,21 @@
+name: '№11 — hosted runner probe (public repo check)'
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Confirm GitHub-hosted runner starts and report toolchain
+        shell: bash
+        run: |
+          set -uo pipefail
+          echo "HOSTED_PROBE=ok"
+          echo "runner_os=$RUNNER_OS runner_name=$RUNNER_NAME"
+          uname -a; id; nproc; free -m | head -2; df -h / | tail -1
+          for x in java javac mvn python3 pip3 xvfb-run git curl; do printf '%s=%s\n' "$x" "$(command -v $x || echo ABSENT)"; done
+          java -version 2>&1 | head -2 || true
+          mvn -version 2>&1 | head -1 || true
+          python3 -V
