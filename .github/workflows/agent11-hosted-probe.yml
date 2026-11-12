@@ -185,32 +185,34 @@ jobs:
 
           pom = srv / 'bundles/si.edt.mcp.server/pom.xml'
           txt = pom.read_text(encoding='utf-8')
-          snippet = '''    <plugins>
-      <plugin>
-        <groupId>org.apache.maven.plugins</groupId>
-        <artifactId>maven-antrun-plugin</artifactId>
-        <version>3.1.0</version>
-        <executions>
-          <execution>
-            <id>unpack-snakeyaml-root</id>
-            <phase>process-classes</phase>
-            <goals>
-              <goal>run</goal>
-            </goals>
-            <configuration>
-              <target>
-                <unzip src="${project.basedir}/lib/snakeyaml-2.2.jar" dest="${project.build.outputDirectory}">
-                  <patternset>
-                    <include name="org/yaml/**/*.class"/>
-                  </patternset>
-                </unzip>
-              </target>
-            </configuration>
-          </execution>
-        </executions>
-      </plugin>
-    </plugins>
-    <pluginManagement>'''
+          snippet = (
+              '    <plugins>\n'
+              '      <plugin>\n'
+              '        <groupId>org.apache.maven.plugins</groupId>\n'
+              '        <artifactId>maven-antrun-plugin</artifactId>\n'
+              '        <version>3.1.0</version>\n'
+              '        <executions>\n'
+              '          <execution>\n'
+              '            <id>unpack-snakeyaml-root</id>\n'
+              '            <phase>process-classes</phase>\n'
+              '            <goals>\n'
+              '              <goal>run</goal>\n'
+              '            </goals>\n'
+              '            <configuration>\n'
+              '              <target>\n'
+              '                <unzip src="${project.basedir}/lib/snakeyaml-2.2.jar" dest="${project.build.outputDirectory}">\n'
+              '                  <patternset>\n'
+              '                    <include name="org/yaml/**/*.class"/>\n'
+              '                  </patternset>\n'
+              '                </unzip>\n'
+              '              </target>\n'
+              '            </configuration>\n'
+              '          </execution>\n'
+              '        </executions>\n'
+              '      </plugin>\n'
+              '    </plugins>\n'
+              '    <pluginManagement>'
+          )
           assert '    <pluginManagement>' in txt
           pom.write_text(txt.replace('    <pluginManagement>', snippet, 1), encoding='utf-8')
 
