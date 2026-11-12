@@ -1,21 +1,90 @@
-name: '№11 — hosted runner probe (public repo check)'
+name: '№13 — isolated hosted client and scripts integration checks'
 on:
   workflow_dispatch:
 permissions:
   contents: read
 jobs:
-  probe:
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      LANG: C.UTF-8
+      LC_ALL: C.UTF-8
+      PYTHONDONTWRITEBYTECODE: '1'
     steps:
-      - name: Confirm GitHub-hosted runner starts and report toolchain
+      - name: Checkout exact private integration without persisting credentials
+        uses: actions/checkout@v4
+        with:
+          repository: Lavren73/SI-MCP
+          ref: f6f7ea6a592fa4eb2945972b361b56a9c3918431
+          token: ${{ secrets.SI_MCP_TOKEN }}
+          persist-credentials: false
+          path: project
+          fetch-depth: 1
+      - name: Prepare isolated Python test environment
         shell: bash
         run: |
-          set -uo pipefail
-          echo "HOSTED_PROBE=ok"
-          echo "runner_os=$RUNNER_OS runner_name=$RUNNER_NAME"
-          uname -a; id; nproc; free -m | head -2; df -h / | tail -1
-          for x in java javac mvn python3 pip3 xvfb-run git curl; do printf '%s=%s\n' "$x" "$(command -v $x || echo ABSENT)"; done
-          java -version 2>&1 | head -2 || true
-          mvn -version 2>&1 | head -1 || true
-          python3 -V
+          set -euo pipefail
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/python" -m pip install --disable-pip-version-check \
+            'pytest==8.4.2' 'pytest-subtests==0.14.2' 'jsonschema==4.25.1' 'PyYAML==6.0.3' \
+            > "$RUNNER_TEMP/private-install.log" 2>&1
+          echo "SETUP_OK=1"
+      - name: Run pinned offline suite and publish counts only
+        shell: bash
+        run: |
+          set -euo pipefail
+          export P="$RUNNER_TEMP/venv/bin/python"
+          python3 - <<'PY'
+          import os, pathlib, re, subprocess, sys, xml.etree.ElementTree as ET
+          root = pathlib.Path(os.environ['GITHUB_WORKSPACE']) / 'project'
+          tmp = pathlib.Path(os.environ['RUNNER_TEMP'])
+          py = os.environ['P']
+          sha = subprocess.run(['git','rev-parse','HEAD'], cwd=root, text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=True).stdout.strip()
+          expected = 'f6f7ea6a592fa4eb2945972b361b56a9c3918431'
+          print('SOURCE_SHA=' + sha, flush=True)
+          if sha != expected:
+              print('SHA_MISMATCH=1', flush=True)
+              sys.exit(1)
+          def run(label, args, cwd, timeout=900):
+              path = tmp / ('private-' + label + '.log')
+              with path.open('wb') as out:
+                  try:
+                      result = subprocess.run(args, cwd=cwd, stdout=out, stderr=subprocess.STDOUT, timeout=timeout)
+                      rc = result.returncode
+                  except subprocess.TimeoutExpired:
+                      rc = 124
+              print(label.upper() + '_EXIT=' + str(rc), flush=True)
+              return rc, path
+          def report_xml(label):
+              path = tmp / (label+'.xml')
+              try:
+                  top = ET.parse(path).getroot()
+                  suites = [top] if top.tag == 'testsuite' else list(top.findall('testsuite'))
+                  if not suites: raise ValueError()
+                  sums = [0,0,0,0]
+                  for suite in suites:
+                      n = [int(suite.attrib[k]) for k in ('tests','failures','errors','skipped')]
+                      if min(n) < 0 or sum(n[1:]) > n[0]: raise ValueError()
+                      sums = [a+b for a,b in zip(sums,n)]
+                  print('%s_XML tests=%d failures=%d errors=%d skipped=%d' % (label.upper(),*sums), flush=True)
+                  return sums[0] > 0 and sums[1] == 0 and sums[2] == 0
+              except (ET.ParseError, OSError, ValueError, KeyError):
+                  print(label.upper()+'_XML_INVALID=1',flush=True)
+                  return False
+          rc_build,_ = run('build',[py,'make_installer.py'],root/'client')
+          rc_client,_ = run('client',[py,'-m','pytest','tests','-q','--disable-warnings','--junitxml='+str(tmp/'client.xml')],root/'client')
+          client_xml = report_xml('client')
+          rc_scripts,_ = run('scripts',[py,'-m','pytest','server/scripts/tests','-q','--disable-warnings','--junitxml='+str(tmp/'scripts.xml')],root)
+          scripts_xml = report_xml('scripts')
+          rc_bench, bench_log = run('benchmark',[py,'прогнать-тесты.py','--benchmarks'],root/'client',1200)
+          text = bench_log.read_text(encoding='utf-8',errors='replace')
+          matches = re.findall(r'Итог: PASS (\d+); FAIL (\d+); SKIP (\d+)',text)
+          if matches:
+              p,f,s = map(int,matches[-1]); print('BENCHMARK_STEPS passed=%d failed=%d skipped=%d' % (p,f,s),flush=True)
+          else:
+              p,f,s = 0,1,0; print('BENCHMARK_SUMMARY_MISSING=1',flush=True)
+          print('ARTIFACTS_UPLOADED=0',flush=True)
+          if any((rc_build,rc_client,rc_scripts,rc_bench)) or not client_xml or not scripts_xml or p == 0 or f or s:
+              sys.exit(1)
+          PY
