@@ -12,7 +12,7 @@ permissions:
 
 jobs:
   oform-and-snakeyaml-probe:
-    name: 'Maven verify -fae on oform.tests + snakeyaml --jar check'
+    name: 'Maven verify -fae -pl !server.tests + snakeyaml --jar check'
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     env:
@@ -83,7 +83,7 @@ jobs:
           with mvn_log.open('wb') as f:
               r = subprocess.run(
                   ['xvfb-run', '-a', 'mvn', '-B', '-fae', '-ntp', '-Dstyle.color=never',
-                   '-pl', 'tests/si.edt.mcp.oform.tests', '-am', 'verify'],
+                   '-pl', '!tests/si.edt.mcp.server.tests', 'verify'],
                   cwd=srv, stdout=f, stderr=subprocess.STDOUT, timeout=1200,
               )
           print(f'MVN_OFORM_EXIT={r.returncode}', flush=True)
@@ -103,7 +103,6 @@ jobs:
               for tc_idx, tc in enumerate(x.findall('testcase')):
                   bad = tc.find('failure') or tc.find('error')
                   if bad is not None:
-                      # Also extract just line number inside the test class if present in stacktrace
                       text = bad.text or ''
                       line_nums = []
                       for ln in text.splitlines():
@@ -115,23 +114,23 @@ jobs:
 
           print(f'OFORM_XML_TOTALS tests={tot[0]} failures={tot[1]} errors={tot[2]} skipped={tot[3]}', flush=True)
 
-          # Check SnakeYAML with --jar flag!
-          jar = list((srv / 'bundles/si.edt.mcp.server/target').glob('si.edt.mcp.server-*.jar'))
-          jar = [j for j in jar if not j.name.endswith('-sources.jar')]
-          print(f'BUILT_JAR_FOUND={len(jar)}', flush=True)
-          if jar:
-              jp = jar[0]
+          # Check SnakeYAML with --jar flag on both repository plugin jar and bundle target jar!
+          repo_jars = list((srv / 'repositories/si.edt.mcp.server.repository/target/repository/plugins').glob('si.edt.mcp.server_*.jar'))
+          bundle_jars = [j for j in (srv / 'bundles/si.edt.mcp.server/target').glob('si.edt.mcp.server-*.jar') if not j.name.endswith('-sources.jar')]
+          print(f'REPO_JARS={len(repo_jars)} BUNDLE_JARS={len(bundle_jars)}', flush=True)
+          for tag, jlist in [('REPO', repo_jars), ('BUNDLE', bundle_jars)]:
+              if not jlist:
+                  continue
+              jp = jlist[0]
               with zipfile.ZipFile(jp) as z:
                   names = z.namelist()
                   root_yaml = sum(1 for n in names if n.startswith('org/yaml/') and n.endswith('.class'))
                   emb_yaml = any(n.startswith('lib/snakeyaml') for n in names)
-              print(f'JAR_INSPECT root_yaml_classes={root_yaml} embedded_snakeyaml_jar={emb_yaml}', flush=True)
               sy = subprocess.run([py, 'tools/проверка-snakeyaml.py', '--jar', str(jp)], cwd=root, capture_output=True, text=True)
-              print(f'SNAKEYAML_TOOL_JAR_EXIT={sy.returncode}', flush=True)
               env_sy = os.environ.copy()
               env_sy['SI_EDT_PLUGIN_JAR'] = str(jp)
               tsy = subprocess.run([py, '-m', 'pytest', 'tests/test_snakeyaml_v_feature.py', '-q'], cwd=root / 'client', env=env_sy, capture_output=True, text=True)
-              print(f'TEST_SNAKEYAML_V_FEATURE_EXIT={tsy.returncode}', flush=True)
+              print(f'JAR_{tag} root_yaml_classes={root_yaml} embedded_snakeyaml_jar={emb_yaml} tool_exit={sy.returncode} pytest_exit={tsy.returncode}', flush=True)
 
           print('ARTIFACTS_UPLOADED=0', flush=True)
           PY
