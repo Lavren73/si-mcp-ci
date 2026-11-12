@@ -1,21 +1,87 @@
-name: '№11 — hosted runner probe (public repo check)'
+name: '№13 — isolated hosted OSGi sweep check'
 on:
   workflow_dispatch:
 permissions:
   contents: read
 jobs:
-  probe:
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    env:
+      LANG: C.UTF-8
+      LC_ALL: C.UTF-8
+      MAVEN_OPTS: -Xmx3g
     steps:
-      - name: Confirm GitHub-hosted runner starts and report toolchain
+      - name: Checkout exact private candidate without persisting credentials
+        uses: actions/checkout@v4
+        with:
+          repository: Lavren73/SI-MCP
+          ref: 40028bee69f84c085eb4837b324519d774673f9b
+          token: ${{ secrets.SI_MCP_TOKEN }}
+          persist-credentials: false
+          path: project
+          fetch-depth: 1
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Prepare ephemeral hosted dependencies
         shell: bash
         run: |
+          set -euo pipefail
+          sudo apt-get update -qq > "$RUNNER_TEMP/setup.log" 2>&1
+          sudo apt-get install -y -qq xvfb xauth libgtk-3-0 >> "$RUNNER_TEMP/setup.log" 2>&1
+          curl -fsSL https://archive.apache.org/dist/maven/maven-3/3.9.9/binaries/apache-maven-3.9.9-bin.tar.gz -o "$RUNNER_TEMP/maven.tar.gz"
+          tar -xzf "$RUNNER_TEMP/maven.tar.gz" -C "$RUNNER_TEMP"
+          echo "SETUP_OK=1"
+      - name: Test exact candidate and publish aggregate counts only
+        shell: bash
+        working-directory: project/server
+        run: |
           set -uo pipefail
-          echo "HOSTED_PROBE=ok"
-          echo "runner_os=$RUNNER_OS runner_name=$RUNNER_NAME"
-          uname -a; id; nproc; free -m | head -2; df -h / | tail -1
-          for x in java javac mvn python3 pip3 xvfb-run git curl; do printf '%s=%s\n' "$x" "$(command -v $x || echo ABSENT)"; done
-          java -version 2>&1 | head -2 || true
-          mvn -version 2>&1 | head -1 || true
-          python3 -V
+          actual=$(git -C .. rev-parse HEAD)
+          if [ "$actual" != 40028bee69f84c085eb4837b324519d774673f9b ]; then
+            echo "SHA_MISMATCH=1"
+            exit 1
+          fi
+          echo "SOURCE_SHA=$actual"
+          set +e
+          xvfb-run -a "$RUNNER_TEMP/apache-maven-3.9.9/bin/mvn" -B -fae -ntp \
+            -pl targets/default,bundles/si.edt.mcp.server,tests/si.edt.mcp.server.tests -am \
+            '-Dtest=*Sweep*Test,*Upkeep*Test,*Release*Test' verify > "$RUNNER_TEMP/private-maven.log" 2>&1
+          result=$?
+          set -e
+          echo "MAVEN_EXIT=$result"
+          python3 - "$result" <<'PY'
+          import pathlib, sys, xml.etree.ElementTree as ET
+          maven_exit = int(sys.argv[1])
+          files = list(pathlib.Path('.').glob('**/target/surefire-reports/TEST-*.xml'))
+          totals = [0, 0, 0, 0]
+          seen = {}
+          malformed = 0
+          for f in files:
+              try:
+                  suite = ET.parse(f).getroot()
+                  if suite.tag != 'testsuite':
+                      raise ValueError('unexpected format')
+                  nums = [int(suite.attrib[k]) for k in ('tests', 'failures', 'errors', 'skipped')]
+                  if min(nums) < 0 or sum(nums[1:]) > nums[0]:
+                      raise ValueError('invalid counts')
+                  totals = [a + b for a,b in zip(totals, nums)]
+                  name = suite.get('name', '')
+                  for cls in ('ReleaseSweepTest', 'ReleaseSweepFailClosedRegressionTest'):
+                      if name.rsplit('.',1)[-1] == cls:
+                          if cls in seen:
+                              raise ValueError('duplicate suite')
+                          seen[cls] = nums
+              except (ET.ParseError, KeyError, ValueError):
+                  malformed += 1
+          print('XML_FILES=%d TESTS=%d FAILURES=%d ERRORS=%d SKIPPED=%d MALFORMED=%d' % (len(files), *totals, malformed))
+          valid_focused = (seen.get('ReleaseSweepTest') == [22,0,0,0] and
+                           seen.get('ReleaseSweepFailClosedRegressionTest') == [1,0,0,0])
+          print('FOCUSED_COUNT_OK=%d' % int(valid_focused))
+          print('ARTIFACTS_UPLOADED=0')
+          if maven_exit != 0 or malformed or not valid_focused or totals[0] < 23 or any(totals[i] for i in (1,2,3)):
+              sys.exit(1)
+          PY
