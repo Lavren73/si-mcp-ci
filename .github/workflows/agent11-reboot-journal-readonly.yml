@@ -1,0 +1,59 @@
+name: SI-MCP — read-only previous boot journal categories (11)
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: si1c-team-test-stand
+  cancel-in-progress: false
+jobs:
+  diagnostic:
+    runs-on: [self-hosted, Linux, X64, si1c]
+    timeout-minutes: 5
+    steps:
+      - name: Observe only bounded journal categories; do not expose raw entries
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import collections,datetime,json,re,shutil,subprocess
+          exe=shutil.which('journalctl')
+          out={'command_available':bool(exe),'read_scope':'Runner container journal view only; not a host-wide audit.',
+               'previous_boot':'not_attempted','entries_sampled':0,'categories':{},
+               'limitations':'Last 5000 entries only; raw messages, hostnames, users, IP/MAC and boot IDs are not published. A missing category proves nothing.'}
+          patterns={
+              'kernel_panic':r'kernel panic|not syncing:|Oops:|BUG: unable to handle',
+              'lockup_watchdog':r'soft lockup|hard lockup|watchdog.*(?:lockup|timeout)',
+              'oom':r'out of memory|oom-kill|invoked oom-killer',
+              'hardware_thermal':r'hardware error|thermal shutdown|critical temperature',
+              'clean_reboot_shutdown':r'system is rebooting|restarting system|reached target.*(?:reboot|shutdown)|systemd-shutdown.*reboot',
+              'power_button':r'power key pressed|power button pressed',
+              'scheduled_restart':r'shutdown scheduled|scheduled.*reboot|automatic reboot',
+          }
+          if exe:
+              try:
+                  p=subprocess.run([exe,'--boot=-1','--no-pager','--lines=5000','--output=json'],stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,timeout=25)
+                  err=p.stderr.lower()
+                  out['journal_return_code']=p.returncode
+                  out['previous_boot']='readable' if p.returncode==0 and p.stdout.strip() else ('permission_denied' if 'permission denied' in err or 'access denied' in err else 'unavailable_or_empty')
+                  cat=collections.Counter();last={}
+                  for line in p.stdout.splitlines():
+                      try: item=json.loads(line)
+                      except json.JSONDecodeError:continue
+                      out['entries_sampled']+=1
+                      msg=item.get('MESSAGE','')
+                      if not isinstance(msg,str):continue
+                      for name,pattern in patterns.items():
+                          if re.search(pattern,msg,re.I):
+                              cat[name]+=1
+                              try:
+                                  ts=int(item.get('__REALTIME_TIMESTAMP','0'))/1000000
+                                  if ts:last[name]=datetime.datetime.fromtimestamp(ts,datetime.timezone.utc).isoformat()
+                              except (ValueError,OverflowError,OSError):pass
+                  out['categories']={name:{'count':count,'last_utc':last.get(name)} for name,count in cat.items()}
+              except subprocess.TimeoutExpired:
+                  out['previous_boot']='timed_out'
+              except OSError:
+                  out['previous_boot']='could_not_execute'
+          print('SAFE_JOURNAL_JSON='+json.dumps(out,sort_keys=True))
+          PY
