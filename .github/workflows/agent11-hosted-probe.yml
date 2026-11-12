@@ -1,40 +1,38 @@
-name: '№14 — verify 3 PR branches at exact HEAD SHAs'
+name: Agent 14 Hosted PR176 Verify
 on:
   push:
-    branches: [agent/14-hosted-full-verify]
+    branches:
+      - agent/14-hosted-full-verify
   workflow_dispatch:
-
 permissions:
   contents: read
+concurrency:
+  group: agent14-hosted-verify
+  cancel-in-progress: true
 
 jobs:
-  pr1-oform-race-fix:
-    name: 'PR1: oform POSIX race fix (415 full + 25x stress)'
+  pr176_sweep_and_mutation:
+    name: "PR176: Exact 40028bee OSGi (23 + 139 + guard mutation)"
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     env:
       LANG: C.UTF-8
       LC_ALL: C.UTF-8
-      TARGET_SHA: '2e3853f107f8cd599caf99ea0e2d414ae6362531'
+      MAVEN_OPTS: -Xmx3g
     steps:
-      - name: Checkout PR1 branch
-        uses: actions/checkout@v4
-        with:
-          repository: Lavren73/SI-MCP
-          ref: agent/14-fix-oform-cancel-posix-race
-          fetch-depth: 10
-          token: ${{ secrets.SI_MCP_TOKEN }}
-          persist-credentials: false
-          path: project
-
-      - name: Verify exact SHA
-        working-directory: project
-        run: test "$(git rev-parse HEAD)" = "$TARGET_SHA"
-
-      - name: Install Xvfb & GTK3
+      - name: Fetch exact PR #176 SHA 40028bee69f84c085eb4837b324519d774673f9b
+        shell: bash
         run: |
-          sudo apt-get update -qq >/dev/null
-          sudo apt-get install -y -qq xvfb xauth libgtk-3-0 >/dev/null
+          set -euo pipefail
+          mkdir -p "$HOME/.ssh" && chmod 700 "$HOME/.ssh"
+          printf '%s\n' "${{ secrets.SI_MCP_DEPLOY_KEY }}" > "$HOME/.ssh/si_mcp_key"
+          chmod 600 "$HOME/.ssh/si_mcp_key"
+          export GIT_SSH_COMMAND="ssh -i $HOME/.ssh/si_mcp_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"
+          git init -q src
+          git -C src remote add origin git@github.com:Lavren73/SI-MCP.git
+          git -C src fetch -q --depth=1 origin 40028bee69f84c085eb4837b324519d774673f9b
+          git -C src checkout -q FETCH_HEAD
+          echo "PR176_SHA=$(git -C src rev-parse HEAD)"
 
       - name: Setup JDK 17
         uses: actions/setup-java@v4
@@ -42,220 +40,86 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Install Maven 3.9.9
-        run: |
-          curl -fsSL https://archive.apache.org/dist/maven/maven-3/3.9.9/binaries/apache-maven-3.9.9-bin.tar.gz -o /tmp/mvn.tgz
-          sudo tar -xzf /tmp/mvn.tgz -C /opt
-          rm -f /tmp/mvn.tgz
-          echo "/opt/apache-maven-3.9.9/bin" >> "$GITHUB_PATH"
-
-      - name: Full oform.tests (415) + 25x stress under CPU contention
-        env:
-          MAVEN_OPTS: -Xmx3g -Dfile.encoding=UTF-8
+      - name: Install Maven 3.9.9 & Xvfb
+        shell: bash
         run: |
           set -euo pipefail
-          python3 - <<'PY'
-          import hashlib, multiprocessing, os, pathlib, shutil, subprocess, time, xml.etree.ElementTree as ET
-          srv = pathlib.Path(os.environ['GITHUB_WORKSPACE']) / 'project/server'
-          r_full = subprocess.run(
-              ['xvfb-run', '-a', 'mvn', '-B', '-ntp', '-Dstyle.color=never', '-pl', '!tests/si.edt.mcp.server.tests', 'verify'],
-              cwd=srv, capture_output=True, text=True, timeout=900,
-          )
-          xmls = sorted((srv / 'tests/si.edt.mcp.oform.tests').glob('**/surefire-reports/TEST-*.xml'))
-          tot = [0, 0, 0, 0]
-          for xp in xmls:
-              x = ET.parse(xp).getroot()
-              tot = [a + int(x.get(k, '0')) for a, k in zip(tot, ('tests', 'failures', 'errors', 'skipped'))]
-          print(f'PR1_FULL_OFORM exit={r_full.returncode} xmls={len(xmls)} tests={tot[0]} F={tot[1]} E={tot[2]} S={tot[3]}', flush=True)
-          assert r_full.returncode == 0 and tot[1] == 0 and tot[2] == 0
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq xvfb xauth libgtk-3-0 >/dev/null
+          curl -fsSL https://archive.apache.org/dist/maven/maven-3/3.9.9/binaries/apache-maven-3.9.9-bin.tar.gz -o /tmp/mvn.tgz
+          sudo tar -xzf /tmp/mvn.tgz -C /opt
+          echo "/opt/apache-maven-3.9.9/bin" >> "$GITHUB_PATH"
 
-          def cpu_burner(stop_ev):
-              data = b'x' * 4096
-              while not stop_ev.is_set():
-                  hashlib.sha256(data).digest()
-          stop_ev = multiprocessing.Event()
-          burners = [multiprocessing.Process(target=cpu_burner, args=(stop_ev,)) for _ in range(4)]
-          for pr in burners: pr.start()
-          bad = 0
-          runs = 0
+      - name: Run probe, 23 focused, 139 group, and guard mutation
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY_INNER'
+          import pathlib, subprocess, xml.etree.ElementTree as ET
+
+          src = pathlib.Path("src")
+          srv = src / "server"
+
+          def parse_xmls(root):
+              xmls = sorted(root.rglob("TEST-*.xml"))
+              tot = [0, 0, 0, 0]
+              for xp in xmls:
+                  r = ET.fromstring(xp.read_text(encoding="utf-8", errors="replace"))
+                  tot[0] += int(r.attrib.get("tests", 0))
+                  tot[1] += int(r.attrib.get("failures", 0))
+                  tot[2] += int(r.attrib.get("errors", 0))
+                  tot[3] += int(r.attrib.get("skipped", 0))
+              return len(xmls), tot
+
+          def clean_xmls(root):
+              for xp in root.rglob("TEST-*.xml"):
+                  xp.unlink()
+
+          r_probe = subprocess.run(["python3", "tools/З-04-schedule-probe-13.py", "."], cwd=src, capture_output=True, text=True)
+          print(f"PR176_PROBE exit={r_probe.returncode}", flush=True)
+          assert r_probe.returncode == 0
+
+          # 1. Focused 23
+          clean_xmls(srv)
+          r23 = subprocess.run([
+              "xvfb-run", "-a", "mvn", "-B", "-ntp", "-Dstyle.color=never",
+              "-pl", "targets/default,bundles/si.edt.mcp.server,tests/si.edt.mcp.server.tests", "-am",
+              "-Dtest=ReleaseSweepTest,ReleaseSweepFailClosedRegressionTest", "verify"
+          ], cwd=srv, capture_output=True, text=True)
+          x23, t23 = parse_xmls(srv)
+          print(f"PR176_FOCUSED23 exit={r23.returncode} xmls={x23} tests={t23[0]} F={t23[1]} E={t23[2]} S={t23[3]}", flush=True)
+          assert r23.returncode == 0 and t23[0] == 23 and t23[1:] == [0, 0, 0]
+
+          # 2. Group 139
+          clean_xmls(srv)
+          r139 = subprocess.run([
+              "xvfb-run", "-a", "mvn", "-B", "-ntp", "-Dstyle.color=never",
+              "-pl", "targets/default,bundles/si.edt.mcp.server,tests/si.edt.mcp.server.tests", "-am",
+              "-Dtest=*Sweep*Test,*Upkeep*Test,*Release*Test", "verify"
+          ], cwd=srv, capture_output=True, text=True)
+          x139, t139 = parse_xmls(srv)
+          print(f"PR176_GROUP139 exit={r139.returncode} xmls={x139} tests={t139[0]} F={t139[1]} E={t139[2]} S={t139[3]}", flush=True)
+          assert r139.returncode == 0 and t139[0] >= 139 and t139[1:] == [0, 0, 0]
+
+          # 3. Guard mutation control on ReleaseSweep.java
+          rs = src / "server/bundles/si.edt.mcp.server/src/si/edt/mcp/server/upkeep/ReleaseSweep.java"
+          orig = rs.read_text(encoding="utf-8")
+          old = "if (store == null || !PrefKeys.UPDATES_FROM_NETWORK)"
+          new = "if (store == null)"
+          assert old in orig
+          rs.write_text(orig.replace(old, new, 1), encoding="utf-8")
           try:
-              for idx in range(1, 26):
-                  for sr in (srv / 'tests/si.edt.mcp.oform.tests').glob('**/surefire-reports'):
-                      shutil.rmtree(sr, ignore_errors=True)
-                  r = subprocess.run(
-                      ['xvfb-run', '-a', 'mvn', '-B', '-o', '-ntp', '-Dstyle.color=never', '-pl', '!tests/si.edt.mcp.server.tests', '-Dtest=AnOrdinaryFormIsPulledFromTheInfobaseTest', 'verify'],
-                      cwd=srv, capture_output=True, text=True, timeout=300,
-                  )
-                  runs += 1
-                  it_tot = [0, 0, 0, 0]
-                  for xp in sorted((srv / 'tests/si.edt.mcp.oform.tests').glob('**/surefire-reports/TEST-*.xml')):
-                      x = ET.parse(xp).getroot()
-                      it_tot = [a + int(x.get(k, '0')) for a, k in zip(it_tot, ('tests', 'failures', 'errors', 'skipped'))]
-                  if r.returncode != 0 or it_tot[1] or it_tot[2]:
-                      bad += 1
-                  print(f'STRESS {idx}: exit={r.returncode} tests={it_tot[0]} F={it_tot[1]} E={it_tot[2]} S={it_tot[3]}', flush=True)
+              clean_xmls(srv)
+              rmut = subprocess.run([
+                  "xvfb-run", "-a", "mvn", "-B", "-ntp", "-Dstyle.color=never",
+                  "-pl", "targets/default,bundles/si.edt.mcp.server,tests/si.edt.mcp.server.tests", "-am",
+                  "-Dtest=ReleaseSweepTest,ReleaseSweepFailClosedRegressionTest", "verify"
+              ], cwd=srv, capture_output=True, text=True)
+              xmut, tmut = parse_xmls(srv)
+              print(f"PR176_MUTATION exit={rmut.returncode} xmls={xmut} tests={tmut[0]} F={tmut[1]} E={tmut[2]} S={tmut[3]}", flush=True)
+              assert rmut.returncode != 0 and (tmut[1] + tmut[2]) >= 2
           finally:
-              stop_ev.set()
-              for pr in burners:
-                  pr.join(timeout=2)
-                  if pr.is_alive(): pr.terminate()
-          print(f'PR1_STRESS_SUMMARY runs={runs} total_bad={bad} ARTIFACTS_UPLOADED=0', flush=True)
-          assert bad == 0
-          PY
+              rs.write_text(orig, encoding="utf-8")
 
-  pr2-installer-docstring-fix:
-    name: 'PR2: installer launcher docstring + client tests'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    env:
-      LANG: C.UTF-8
-      LC_ALL: C.UTF-8
-      TARGET_SHA: '4253222fcca10a719c17fd666a9b1786101652d1'
-    steps:
-      - name: Checkout PR2 branch
-        uses: actions/checkout@v4
-        with:
-          repository: Lavren73/SI-MCP
-          ref: agent/14-fix-installer-launcher-docstring
-          fetch-depth: 10
-          token: ${{ secrets.SI_MCP_TOKEN }}
-          persist-credentials: false
-          path: project
-
-      - name: Verify exact SHA
-        working-directory: project
-        run: test "$(git rev-parse HEAD)" = "$TARGET_SHA"
-
-      - name: Setup Python venv & run all client/tool checks
-        run: |
-          set -euo pipefail
-          python3 -m venv "$RUNNER_TEMP/venv"
-          "$RUNNER_TEMP/venv/bin/pip" install -q --disable-pip-version-check 'pytest==9.0.3' 'pytest-subtests==0.14.2' 'jsonschema>=4.0'
-          export VENV_PY="$RUNNER_TEMP/venv/bin/python"
-          "$VENV_PY" - <<'PY'
-          import os, pathlib, shutil, subprocess, tempfile
-          root = pathlib.Path(os.environ['GITHUB_WORKSPACE']) / 'project'
-          py = os.environ['VENV_PY']
-
-          for cmd, cwd in [
-              ([py, 'tools/З-15-текст-установщика-13.py', '.'], root),
-              ([py, 'tools/проверка-текста.py'], root),
-              ([py, 'tools/искать-ложнозелёные.py'], root),
-              ([py, 'tools/проверка-Р-1-№16.py', 'client'], root),
-              ([py, 'make_installer.py'], root / 'client'),
-          ]:
-              r = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True)
-              print(f'CMD {" ".join(cmd[1:])}: exit={r.returncode}', flush=True)
-              assert r.returncode == 0, r.stdout + r.stderr
-
-          with tempfile.TemporaryDirectory() as td:
-              dep = pathlib.Path(td) / 'deployed'
-              r1 = subprocess.run([py, str(root / 'si-agent-setup.py'), '--папка', str(dep), '--yes', '--без-сборки', '--без-проверки'], capture_output=True, text=True)
-              assert r1.returncode == 0, r1.stdout + r1.stderr
-              r2 = subprocess.run([py, 'проверка-поставки.py'], cwd=dep / 'si-agent', capture_output=True, text=True)
-              print(f'DEPLOY+POSTAVKA: deploy={r1.returncode} postavka={r2.returncode}', flush=True)
-              assert r2.returncode == 0, r2.stdout + r2.stderr
-
-          r_py = subprocess.run([py, '-m', 'pytest', '-q'], cwd=root / 'client', capture_output=True, text=True)
-          print(f'PR2_PYTEST exit={r_py.returncode} last={r_py.stdout.strip().splitlines()[-1]}', flush=True)
-          assert r_py.returncode == 0
-
-          r_bm = subprocess.run([py, 'прогнать-тесты.py', '--benchmarks'], cwd=root / 'client', capture_output=True, text=True)
-          print(f'PR2_BENCHMARKS exit={r_bm.returncode} last={r_bm.stdout.strip().splitlines()[-2:]}', flush=True)
-          assert r_bm.returncode == 0
-          print('PR2_ALL_GREEN ARTIFACTS_UPLOADED=0', flush=True)
-          PY
-
-  pr3-zd09-snakeyaml:
-    name: 'PR3: ZD-09 full -fae + run-gates + snakeyaml'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 25
-    env:
-      LANG: C.UTF-8
-      LC_ALL: C.UTF-8
-      TARGET_SHA: 'f3a5458e626356718330ef087bcbcab6920479fd'
-    steps:
-      - name: Checkout PR3 branch
-        uses: actions/checkout@v4
-        with:
-          repository: Lavren73/SI-MCP
-          ref: agent/14-zd09-snakeyaml-root-unpack
-          fetch-depth: 10
-          token: ${{ secrets.SI_MCP_TOKEN }}
-          persist-credentials: false
-          path: project
-
-      - name: Verify exact SHA
-        working-directory: project
-        run: test "$(git rev-parse HEAD)" = "$TARGET_SHA"
-
-      - name: Install Xvfb & GTK3
-        run: |
-          sudo apt-get update -qq >/dev/null
-          sudo apt-get install -y -qq xvfb xauth libgtk-3-0 >/dev/null
-
-      - name: Setup JDK 17
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: '17'
-
-      - name: Install Maven 3.9.9
-        run: |
-          curl -fsSL https://archive.apache.org/dist/maven/maven-3/3.9.9/binaries/apache-maven-3.9.9-bin.tar.gz -o /tmp/mvn.tgz
-          sudo tar -xzf /tmp/mvn.tgz -C /opt
-          rm -f /tmp/mvn.tgz
-          echo "/opt/apache-maven-3.9.9/bin" >> "$GITHUB_PATH"
-
-      - name: Setup Python venv
-        run: |
-          python3 -m venv "$RUNNER_TEMP/venv"
-          "$RUNNER_TEMP/venv/bin/pip" install -q --disable-pip-version-check 'pytest==9.0.3' 'pytest-subtests==0.14.2'
-
-      - name: Full -fae verify + snakeyaml + run-gates.sh
-        env:
-          MAVEN_OPTS: -Xmx3g -Dfile.encoding=UTF-8
-        run: |
-          set -euo pipefail
-          export VENV_PY="$RUNNER_TEMP/venv/bin/python"
-          "$VENV_PY" - <<'PY'
-          import os, pathlib, subprocess, xml.etree.ElementTree as ET, zipfile
-          root = pathlib.Path(os.environ['GITHUB_WORKSPACE']) / 'project'
-          srv = root / 'server'
-          py = os.environ['VENV_PY']
-
-          r = subprocess.run(['xvfb-run', '-a', 'mvn', '-B', '-ntp', '-Dstyle.color=never', '-fae', 'verify'], cwd=srv, capture_output=True, text=True, timeout=1200)
-          print(f'PR3_MVN_FAE_EXIT={r.returncode}', flush=True)
-
-          srv_tot = [0, 0, 0, 0]
-          for xp in sorted((srv / 'tests/si.edt.mcp.server.tests').glob('**/surefire-reports/TEST-*.xml')):
-              x = ET.parse(xp).getroot()
-              srv_tot = [a + int(x.get(k, '0')) for a, k in zip(srv_tot, ('tests', 'failures', 'errors', 'skipped'))]
-          of_tot = [0, 0, 0, 0]
-          for xp in sorted((srv / 'tests/si.edt.mcp.oform.tests').glob('**/surefire-reports/TEST-*.xml')):
-              x = ET.parse(xp).getroot()
-              of_tot = [a + int(x.get(k, '0')) for a, k in zip(of_tot, ('tests', 'failures', 'errors', 'skipped'))]
-          print(f'PR3_SERVER tests={srv_tot[0]} F={srv_tot[1]} E={srv_tot[2]} S={srv_tot[3]}', flush=True)
-          print(f'PR3_OFORM tests={of_tot[0]} F={of_tot[1]} E={of_tot[2]} S={of_tot[3]}', flush=True)
-
-          jar = sorted((srv / 'repositories/si.edt.mcp.server.repository/target/repository/plugins').glob('si.edt.mcp.server_*.jar'))
-          site = sorted((srv / 'repositories/si.edt.mcp.server.repository/target').glob('*.zip'))
-          assert len(jar) == 1 and len(site) == 1
-          with zipfile.ZipFile(jar[0]) as zf:
-              yaml_cls = [n for n in zf.namelist() if n.startswith('org/yaml/') and n.endswith('.class')]
-              has_emb = 'lib/snakeyaml-2.2.jar' in zf.namelist()
-          print(f'PR3_JAR root_yaml_classes={len(yaml_cls)} embedded_jar={has_emb}', flush=True)
-
-          jres = subprocess.run([py, 'tools/проверка-snakeyaml.py', '--jar', str(jar[0])], cwd=root, capture_output=True, text=True)
-          sres = subprocess.run([py, 'tools/проверка-snakeyaml.py', '--сайт', str(site[0])], cwd=root, capture_output=True, text=True)
-          pres = subprocess.run([py, '-m', 'pytest', 'tests/test_snakeyaml_v_feature.py', '-v'], cwd=root / 'client', env={**os.environ, 'SI_EDT_PLUGIN_JAR': str(jar[0])}, capture_output=True, text=True)
-          rg = subprocess.run(['bash', 'scripts/run-gates.sh'], cwd=srv, capture_output=True, text=True)
-          print(f'PR3_GATES jar={jres.returncode} site={sres.returncode} pytest={pres.returncode} run_gates={rg.returncode}', flush=True)
-          for ln in rg.stdout.splitlines():
-              if 'проверок по существу' in ln:
-                  print(' ', ln.strip(), flush=True)
-          assert len(yaml_cls) == 229 and has_emb
-          assert jres.returncode == 0 and sres.returncode == 0 and pres.returncode == 0 and rg.returncode == 0
-          assert srv_tot[1] + srv_tot[2] == 19 and of_tot[1] + of_tot[2] == 0
-          print('PR3_ALL_GREEN ARTIFACTS_UPLOADED=0', flush=True)
-          PY
+          print("PR176_SUMMARY=ALL_GREEN_AND_MUTATION_KILLED ARTIFACTS_UPLOADED=0", flush=True)
+          PY_INNER
