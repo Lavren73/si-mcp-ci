@@ -1,0 +1,870 @@
+name: SI-MCP — targeted unsaved, mock, journal, UI order and security checks (11)
+'on':
+  workflow_dispatch: {}
+permissions:
+  contents: read
+concurrency:
+  group: si1c-team-test-stand
+  cancel-in-progress: false
+jobs:
+  batch:
+    runs-on:
+    - self-hosted
+    - Linux
+    - X64
+    - si1c
+    timeout-minutes: 180
+    env:
+      LANG: C.UTF-8
+      LC_ALL: C.UTF-8
+      RUNNER_TOOL_CACHE: /home/runner/si1c-team-tests/toolcache
+      AGENT_TOOLSDIRECTORY: /home/runner/si1c-team-tests/toolcache
+      CANDIDATE_MANIFEST: '{"common":"8344d369acb005b093e5f42777fa9fa0dfb393c6","probes":"da263accc413d24be2bbf3057324bebf7f9ff3f3","old162":"63b1dfa6d9009517b5e7d1313dcd1b4dc4286aa3","old174":"a3a989e91715673a4246239570fdec9fbc685d25","old175":"900059921b8b06a5cdefe8435aa401d6bb8ac18e","pr153":"99d6dd52f72f856f8b2d5471a89c4474db0b7384","pr156":"033ae6531573af6a1665e3c8048481115d636025","pr162":"7fbc1e69ae172d3cde38b073479a19b04bfb340a","pr169":"8e0e756dc973a46265f028a334ff303e8232b904","pr172":"e4f6959d859122d7f305a00e12a0a2206a06d507","pr174":"bde4d95de599cac472fde1f220b00744e66fae88","pr175":"f043239424ff2b91351c9eb280a0595a95674110"}'
+    steps:
+    - name: Create owned isolated batch; no infobase or original EDT changes
+      shell: bash
+      run: 'set -euo pipefail
+
+        umask 077
+
+        BASE="$HOME/si1c-team-tests"
+
+        test -d "$BASE" && test ! -L "$BASE" && test -O "$BASE"
+
+        test "$(cat "$BASE/OWNER.txt")" = ''SI-MCP team test stand; provisioned by agent 11''
+
+        RUN="$BASE/runs/$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+
+        test ! -e "$RUN"
+
+        mkdir -m 700 "$RUN"
+
+        mkdir "$RUN/reports" "$RUN/sources"
+
+        echo "TEAM_BASE=$BASE" >> "$GITHUB_ENV"
+
+        echo "TEAM_RUN=$RUN" >> "$GITHUB_ENV"
+
+        test "$(df -Pk "$BASE" | awk ''NR==2 {print $4}'')" -gt 15728640
+
+        '
+    - name: Prepare setup-python@v5 in team toolcache
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+    - name: Prepare setup-node@v4 in team toolcache
+      uses: actions/setup-node@v4
+      with:
+        node-version: '22'
+    - name: Prepare setup-java@v4 in team toolcache
+      uses: actions/setup-java@v4
+      with:
+        distribution: temurin
+        java-version: '17'
+    - name: Remember JDK17 without changing system alternatives
+      shell: bash
+      run: 'echo "JAVA17_HOME=$JAVA_HOME" >> "$GITHUB_ENV"
+
+        '
+    - name: Prepare JDK25 for active target2026.2
+      uses: actions/setup-java@v4
+      with:
+        distribution: temurin
+        java-version: '25'
+    - name: Remember JDK25 and use existing private SSH client
+      shell: bash
+      run: "set -euo pipefail\necho \"JAVA25_HOME=$JAVA_HOME\" >> \"$GITHUB_ENV\"\nif ! command -v ssh >/dev/null; then\n\
+        \  test -x \"$TEAM_BASE/tools/openssh/usr/bin/ssh\"\n  \"$TEAM_BASE/tools/openssh/usr/bin/ssh\" -V\n  echo \"$TEAM_BASE/tools/openssh/usr/bin\"\
+        \ >> \"$GITHUB_PATH\"\nfi\ntest -x \"$TEAM_BASE/tools/python-tests/bin/python\"\ntest -x \"$TEAM_BASE/tools/apache-maven-3.9.9/bin/mvn\"\
+        \ntest -x \"$TEAM_BASE/tools/powershell-7.4.13/pwsh\"\ncommand -v xvfb-run\n"
+    - name: Checkout pinned common without retained credentials
+      uses: actions/checkout@v4
+      with:
+        repository: Lavren73/SI-MCP
+        ref: 8344d369acb005b093e5f42777fa9fa0dfb393c6
+        ssh-key: ${{ secrets.SI_MCP_DEPLOY_KEY }}
+        persist-credentials: false
+        fetch-depth: 1
+        path: acc-common-${{ github.run_id }}
+    - name: Checkout pinned probes without retained credentials
+      uses: actions/checkout@v4
+      with:
+        repository: Lavren73/SI-MCP
+        ref: da263accc413d24be2bbf3057324bebf7f9ff3f3
+        ssh-key: ${{ secrets.SI_MCP_DEPLOY_KEY }}
+        persist-credentials: false
+        fetch-depth: 1
+        path: acc-probes-${{ github.run_id }}
+    - name: Checkout pinned old162 without retained credentials
+      uses: actions/checkout@v4
+      with:
+        repository: Lavren73/SI-MCP
+        ref: 63b1dfa6d9009517b5e7d1313dcd1b4dc4286aa3
+        ssh-key: ${{ secrets.SI_MCP_DEPLOY_KEY }}
+        persist-credentials: false
+        fetch-depth: 1
+        path: acc-old162-${{ github.run_id }}
+    - name: Checkout pinned old174 without retained credentials
+      uses: actions/checkout@v4
+      with:
+        repository: Lavren73/SI-MCP
+        ref: a3a989e91715673a4246239570fdec9fbc685d25
+        ssh-key: ${{ secrets.SI_MCP_DEPLOY_KEY }}
+        persist-credentials: false
+        fetch-depth: 1
+        path: acc-old174-${{ github.run_id }}
+    - name: Checkout pinned old175 without retained credentials
+      uses: actions/checkout@v4
+      with:
+        repository: Lavren73/SI-MCP
+        ref: 900059921b8b06a5cdefe8435aa401d6bb8ac18e
+        ssh-key: ${{ secrets.SI_MCP_DEPLOY_KEY }}
+        persist-credentials: false
+        fetch-depth: 1
+        path: acc-old175-${{ github.run_id }}
+    - name: Checkout pinned pr153 without retained credentials
+      uses: actions/checkout@v4
+      with:
+        repository: Lavren73/SI-MCP
+        ref: 99d6dd52f72f856f8b2d5471a89c4474db0b7384
+        ssh-key: ${{ secrets.SI_MCP_DEPLOY_KEY }}
+        persist-credentials: false
+        fetch-depth: 1
+        path: acc-pr153-${{ github.run_id }}
+    - name: Checkout pinned pr156 without retained credentials
+      uses: actions/checkout@v4
+      with:
+        repository: Lavren73/SI-MCP
+        ref: 033ae6531573af6a1665e3c8048481115d636025
+        ssh-key: ${{ secrets.SI_MCP_DEPLOY_KEY }}
+        persist-credentials: false
+        fetch-depth: 1
+        path: acc-pr156-${{ github.run_id }}
+    - name: Checkout pinned pr162 without retained credentials
+      uses: actions/checkout@v4
+      with:
+        repository: Lavren73/SI-MCP
+        ref: 7fbc1e69ae172d3cde38b073479a19b04bfb340a
+        ssh-key: ${{ secrets.SI_MCP_DEPLOY_KEY }}
+        persist-credentials: false
+        fetch-depth: 1
+        path: acc-pr162-${{ github.run_id }}
+    - name: Checkout pinned pr169 without retained credentials
+      uses: actions/checkout@v4
+      with:
+        repository: Lavren73/SI-MCP
+        ref: 8e0e756dc973a46265f028a334ff303e8232b904
+        ssh-key: ${{ secrets.SI_MCP_DEPLOY_KEY }}
+        persist-credentials: false
+        fetch-depth: 1
+        path: acc-pr169-${{ github.run_id }}
+    - name: Checkout pinned pr172 without retained credentials
+      uses: actions/checkout@v4
+      with:
+        repository: Lavren73/SI-MCP
+        ref: e4f6959d859122d7f305a00e12a0a2206a06d507
+        ssh-key: ${{ secrets.SI_MCP_DEPLOY_KEY }}
+        persist-credentials: false
+        fetch-depth: 1
+        path: acc-pr172-${{ github.run_id }}
+    - name: Checkout pinned pr174 without retained credentials
+      uses: actions/checkout@v4
+      with:
+        repository: Lavren73/SI-MCP
+        ref: bde4d95de599cac472fde1f220b00744e66fae88
+        ssh-key: ${{ secrets.SI_MCP_DEPLOY_KEY }}
+        persist-credentials: false
+        fetch-depth: 1
+        path: acc-pr174-${{ github.run_id }}
+    - name: Checkout pinned pr175 without retained credentials
+      uses: actions/checkout@v4
+      with:
+        repository: Lavren73/SI-MCP
+        ref: f043239424ff2b91351c9eb280a0595a95674110
+        ssh-key: ${{ secrets.SI_MCP_DEPLOY_KEY }}
+        persist-credentials: false
+        fetch-depth: 1
+        path: acc-pr175-${{ github.run_id }}
+    - name: Offline precise candidates, fake controls and synthetic guard overlay
+      shell: bash
+      run: |
+        set -euo pipefail
+        umask 077
+        exec 9>"$TEAM_BASE/locks/live-tests.lock"
+        echo 'Waiting for shared test lock; never cancel others'
+        flock -w 600 9
+        python3 - fast <<'PYDRIVER'
+        """Pinned independent candidates, sequential runner-only tests; no merge/EDT installation."""
+        import os,sys,json,time,pathlib,subprocess,signal,shutil,xml.etree.ElementTree as ET,zipfile,struct,collections,re,importlib.util,hashlib
+        P=pathlib.Path
+        BASE=P(os.environ['TEAM_BASE']);RUN=P(os.environ['TEAM_RUN']);REPORT=RUN/'reports';SOURCES=RUN/'sources'
+        MANIFEST=json.loads(os.environ['CANDIDATE_MANIFEST']);PHASE=sys.argv[1];RESULTS=[]
+        VENV=BASE/'tools/python-tests/bin';PY=str(VENV/'python');MAVEN=str(BASE/'tools/apache-maven-3.9.9/bin/mvn')
+
+        def safety():
+            busy=[]
+            for p in P('/proc').iterdir():
+                if not p.name.isdecimal():continue
+                try:
+                    n=(p/'comm').read_text().strip()
+                    if n in ('java','javaw','1cedt','1cedtcli','1cv8','1cv8c','rphost','ragent','rmngr','ras'):busy.append({'pid':int(p.name),'name':n})
+                except OSError:pass
+            mem={x.split(':')[0]:int(x.split()[1])*1024 for x in P('/proc/meminfo').read_text().splitlines() if x.startswith(('MemAvailable:','MemTotal:'))}
+            report={'phase':PHASE,'visible_sessions':busy,'memory':mem,'kernel':os.uname().release,'scope':'Container PID namespace only; no host-wide session claim'}
+            (REPORT/(PHASE+'-preflight.json')).write_text(json.dumps(report,indent=2))
+            if busy:raise RuntimeError('Visible EDT/Java/1C session: stop without killing')
+            if mem.get('MemAvailable',0)<6*1024**3:raise RuntimeError('Below 6GiB available memory')
+            if os.uname().release!='5.15.0-203-generic':raise RuntimeError('Kernel changed; inspect before proceeding')
+            for root,used,limit in [('/sys/fs/cgroup','memory.current','memory.max'),('/sys/fs/cgroup/memory','memory.usage_in_bytes','memory.limit_in_bytes')]:
+                a=P(root)/used;b=P(root)/limit
+                if a.exists() and b.exists():
+                    v=b.read_text().strip()
+                    if v!='max' and int(v)-int(a.read_text())<5*1024**3:raise RuntimeError('Below 5GiB cgroup headroom')
+                    break
+            if shutil.disk_usage(RUN).free<10*1024**3:raise RuntimeError('Below 10GiB free disk')
+
+        def source(label):return SOURCES/label
+
+        def env_for(label,jdk='17'):
+            e=os.environ.copy();home=RUN/('home-'+label);tmp=RUN/('tmp-'+label)
+            home.mkdir(exist_ok=True,mode=0o700);tmp.mkdir(exist_ok=True,mode=0o700)
+            java=e['JAVA'+jdk+'_HOME']
+            e.update({'HOME':str(home),'XDG_CONFIG_HOME':str(home/'.config'),'XDG_CACHE_HOME':str(home/'.cache'),'XDG_DATA_HOME':str(home/'.local/share'),'TMPDIR':str(tmp),'TMP':str(tmp),'TEMP':str(tmp),'JAVA_HOME':java,'PATH':str(VENV)+':'+java+'/bin:'+str(BASE/'tools/apache-maven-3.9.9/bin')+':'+str(BASE/'tools/powershell-7.4.13')+':'+e['PATH'],'NODE_PATH':str(BASE/'tools/node-tests/node_modules'),'PYTHONDONTWRITEBYTECODE':'1','MAVEN_OPTS':'-Xmx3g -XX:ActiveProcessorCount=4 -Dfile.encoding=UTF-8 -Duser.home='+str(home),'JAVA_TOOL_OPTIONS':'-XX:ActiveProcessorCount=4 -Dfile.encoding=UTF-8'})
+            return e
+
+        def store():
+            (REPORT/(PHASE+'-results.json')).write_text(json.dumps({'phase':PHASE,'sources':MANIFEST,'results':RESULTS,'limitations':['Independent exact candidates, not integration RC','Linux-only: no real Windows/COM/ACL','No live infobase, no model API or privileged host access','Baseline unchanged; expected red controls are not product PASS']},ensure_ascii=False,indent=2))
+
+        def notrun(name,reason):
+            RESULTS.append({'name':name,'status':'NOT_RUN','reason':reason});print('NOT_RUN',name,reason,flush=True);store()
+
+        def run(name,args,cwd,label,limit=300,expected=(0,),jdk='17',mask=0o077,extra=None):
+            safety();env=env_for(label,jdk)
+            if extra:env.update(extra)
+            t=time.monotonic();out=REPORT/(name+'.log');code=125
+            with out.open('w') as f:
+                cmd=['timeout','--signal=TERM','--kill-after=30s',str(limit)+'s','nice','-n','10','ionice','-c2','-n7']+list(map(str,args))
+                p=subprocess.Popen(cmd,cwd=cwd,env=env,stdout=f,stderr=subprocess.STDOUT,start_new_session=True,umask=mask)
+                try:
+                    while True:
+                        try:code=p.wait(timeout=20);break
+                        except subprocess.TimeoutExpired:
+                            avail=next((x.split()[1] for x in P('/proc/meminfo').read_text().splitlines() if x.startswith('MemAvailable:')),'?')
+                            print('HEARTBEAT',name,'elapsed',round(time.monotonic()-t),'s MemAvailableKiB',avail,flush=True)
+                finally:
+                    if p.poll() is None:
+                        os.killpg(p.pid,signal.SIGTERM)
+                        try:p.wait(timeout=30)
+                        except subprocess.TimeoutExpired:os.killpg(p.pid,signal.SIGKILL);p.wait()
+                    # Close only this process group if a test left a child behind.
+                    try:os.killpg(p.pid,signal.SIGTERM)
+                    except ProcessLookupError:pass
+            row={'name':name,'source_label':label,'source_sha':MANIFEST.get(label),'command':list(map(str,args)),'exit':code,'expected_exits':list(expected),'seconds':round(time.monotonic()-t,2),'status':('PASS' if code==0 else 'EXPECTED_RED') if code in expected else 'FAIL'}
+            RESULTS.append(row);(REPORT/(name+'.exit')).write_text(str(code)+'\n');store()
+            print('RESULT',json.dumps(row,ensure_ascii=False),flush=True)
+            print(out.read_text(errors='replace')[-4500:],flush=True)
+            return code
+
+        def summarize_maven(label,name):
+            root=source(label);files=list(root.glob('server/**/surefire-reports/TEST-*.xml'));tot={k:0 for k in ('tests','failures','errors','skipped')};bad=[];malformed=[];classes=collections.Counter()
+            for file in files:
+                try:
+                    x=ET.parse(file).getroot()
+                    for k in tot:tot[k]+=int(x.get(k,'0'))
+                    for c in x.findall('testcase'):
+                        if c.find('skipped') is None:classes[c.get('classname','').rsplit('.',1)[-1]]+=1
+                        if c.find('failure') is not None or c.find('error') is not None:bad.append(c.get('classname','')+'#'+c.get('name',''))
+                except Exception:malformed.append(str(file.relative_to(root)))
+            o={'source':MANIFEST[label],'report_files':len(files),'totals':tot,'failed_tests':bad,'malformed':malformed,'classes_executed':dict(classes)}
+            (REPORT/(name+'-xml-summary.json')).write_text(json.dumps(o,ensure_ascii=False,indent=2));print('XML',name,json.dumps(o,ensure_ascii=False),flush=True)
+            if not files or tot['tests']-tot['skipped']<=0 or malformed:
+                RESULTS.append({'name':name+'-test-evidence','status':'FAIL','reason':'No non-skipped tests in valid XML reports'});store()
+
+        def mvn(label,name,tests=None,profile=None,mask=0o077,limit=1800,goal='verify',expected=(0,),evidence_tests=None):
+            root=source(label)
+            for p in root.glob('server/**/surefire-reports/TEST-*.xml'):p.unlink()
+            args=['xvfb-run','-a',MAVEN,'-B','-fae','-ntp','-Dstyle.color=never','-Dmaven.repo.local='+str(BASE/'cache/m2')]
+            if profile:args+=['-P'+profile]
+            if tests:args+=['-pl','targets/default,bundles/si.edt.mcp.server,bundles/si.edt.mcp.oform,tests/si.edt.mcp.server.tests','-am','-Dtest='+','.join(tests),'-DfailIfNoTests=false','-Dsurefire.failIfNoSpecifiedTests=false','-Dsurefire.runOrder=alphabetical']
+            args+=[goal];code=run(name,args,root/'server',label,limit,expected,'25' if profile else '17',mask)
+            summarize_maven(label,name)
+            summary=json.loads((REPORT/(name+'-xml-summary.json')).read_text())
+            if code==0 and (summary['totals']['failures'] or summary['totals']['errors']):
+                RESULTS.append({'name':name+'-test-evidence','status':'FAIL','reason':'Zero exit contradicts XML failures/errors'});store()
+            if tests:
+                missing=sorted(set(evidence_tests or tests)-set(summary['classes_executed']))
+                RESULTS.append({'name':name+'-requested-class-coverage','status':'FAIL' if missing else 'PASS','missing_or_only_skipped':missing});store()
+            if name=='pilot-atomic-negative-common-077':
+                expected_case='si.edt.mcp.server.support.AtomicFileReplaceTest#anAtomicReplaceRetainsExistingPosixPermissions'
+                proof=(code==1 and summary['failed_tests']==[expected_case] and summary['totals']['failures']==1 and summary['totals']['errors']==0)
+                RESULTS.append({'name':name+'-negative-proof','status':'PASS' if proof else 'FAIL','expected_case':expected_case,'actual_failed_cases':summary['failed_tests']});store()
+            return code
+
+        def bytecode(label):
+            items=[]
+            for module in ['si.edt.mcp.server','si.edt.mcp.oform']:
+                jars=list((source(label)/'server/bundles'/module/'target').glob(module+'-*.jar'))
+                for p in jars:
+                    with zipfile.ZipFile(p) as z:
+                        counts=collections.Counter(struct.unpack('>H',z.read(n)[6:8])[0] for n in z.namelist() if n.endswith('.class'))
+                        manifest=z.read('META-INF/MANIFEST.MF').decode(errors='replace')
+                    items.append({'module':module,'jar':p.name,'class_major_counts':dict(counts),'all_major61':bool(counts) and set(counts)=={61},'manifest_ee_lines':[l for l in manifest.splitlines() if 'osgi.ee' in l or 'Build-Jdk' in l]})
+            (REPORT/(label+'-bytecode.json')).write_text(json.dumps(items,indent=2))
+
+
+        THOUGHT_PROBE='"""Six actual-main mock failures injected into Agent.ask; no live model/EDT."""\nimport contextlib, importlib.util, io, json, pathlib, sys\nroot=pathlib.Path(sys.argv[1]).resolve()\nsys.path.insert(0,str(root/\'client\'));sys.path.insert(0,str(root/\'client/tests\'))\npath=root/\'client/tests/thought_process.py\'\nspec=importlib.util.spec_from_file_location(\'agent11_thought_probe\',path)\nmod=importlib.util.module_from_spec(spec);sys.modules[spec.name]=mod;spec.loader.exec_module(mod)\noriginal=mod.build_agent;original_argv=sys.argv[:];results=[]\nfor kind_index in (0,1):\n for mode in (\'exception\',\'empty\',\'whitespace\'):\n    build_count=[0]\n    def patched(*args,**kwargs):\n        agent=original(*args,**kwargs);index=build_count[0];build_count[0]+=1\n        if index==kind_index:\n            def ask(_task):\n                if mode==\'exception\':raise RuntimeError(\'synthetic injected exception\')\n                return \'\' if mode==\'empty\' else \'   \'\n            agent.ask=ask\n        return agent\n    mod.build_agent=patched;sys.argv=[str(path),\'--mock\',\'--only\',\'method_only\'];out=io.StringIO()\n    try:\n        with contextlib.redirect_stdout(out),contextlib.redirect_stderr(out):code=mod.main()\n    finally:\n        mod.build_agent=original;sys.argv=original_argv[:]\n    text=out.getvalue();good=(code==3 and build_count[0]==2 and \'[СБОЙ]\' in text and \'качество Grader не установлено\' in text and \'Grader различает\' not in text)\n    results.append({\'kind\':(\'careless\',\'careful\')[kind_index],\'mode\':mode,\'main_exit\':code,\'both_agents_built\':build_count[0]==2,\'safe_failure\':good})\nprint(json.dumps({\'cases\':results,\'scope\':\'loopback mock, not live model or EDT\'},ensure_ascii=False,indent=2))\nraise SystemExit(0 if len(results)==6 and all(x[\'safe_failure\'] for x in results) else 1)\n'
+        JOURNAL_PROBE='"""Independent disposable O-190 gate probe: no source tree modification."""\nimport contextlib, importlib.util, io, json, os, pathlib, sys, tempfile\nfrom unittest import mock\nroot = pathlib.Path(sys.argv[1]).resolve()\nscript = root / \'server/scripts/check-no-file-journals.py\'\nspec = importlib.util.spec_from_file_location(\'journal_probe_target\', script)\nmod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)\n\ndef invoke(tree, inaccessible=None):\n    mod.ДЕРЕВО = str(tree)\n    original_scandir = os.scandir\n    def guarded(p):\n        if inaccessible is not None and pathlib.Path(p) == pathlib.Path(inaccessible):\n            raise PermissionError(\'synthetic failure: do not report content\')\n        return original_scandir(p)\n    with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()), mock.patch.object(mod.os, \'scandir\', side_effect=guarded):\n        return mod.main()\n\nwith tempfile.TemporaryDirectory(prefix=\'a11-journal-probe-\') as td:\n    base = pathlib.Path(td); rootdir = base / \'tree\'; rootdir.mkdir()\n    states = rootdir / \'ОБСУЖДЕНИЕ\'; states.mkdir()\n    for n in range(11,17): (states / f\'№{n}.md\').write_text(\'synthetic\',encoding=\'utf8\')\n    observed = {\'six_states\': invoke(rootdir), \'root_permission_error\': invoke(rootdir, rootdir)}\n    nested = rootdir/\'closed\'; nested.mkdir(); (nested/\'№17.md\').write_text(\'synthetic\',encoding=\'utf8\')\n    observed[\'nested_permission_error\'] = invoke(rootdir, nested)\n    observed[\'new_journal\'] = invoke(rootdir)\n    (nested/\'№17.md\').unlink(); nested.rmdir()\n    target = base/\'outside\'; target.mkdir(); (target/\'№17.md\').write_text(\'synthetic\',encoding=\'utf8\')\n    directory_link = rootdir/\'foreign\'; directory_link.symlink_to(target, target_is_directory=True)\n    observed[\'directory_symlink\'] = invoke(rootdir); directory_link.unlink()\n    root_link=base/\'root-link\';root_link.symlink_to(rootdir,target_is_directory=True)\n    observed[\'root_symlink\'] = invoke(root_link)\n    quarantine = rootdir/\'карантин-ссылка\'; quarantine.symlink_to(target,target_is_directory=True)\n    observed[\'quarantine_link_not_followed\'] = invoke(rootdir)\n    observed[\'missing_root\'] = invoke(base/\'missing\')\nexpected = {\'six_states\':0,\'root_permission_error\':2,\'nested_permission_error\':2,\'new_journal\':1,\'directory_symlink\':2,\'root_symlink\':2,\'quarantine_link_not_followed\':0,\'missing_root\':2}\nwrong = {k:{\'expected\':v,\'observed\':observed[k]} for k,v in expected.items() if observed[k]!=v}\nprint(json.dumps({\'expected\':expected,\'observed\':observed,\'mismatches\':wrong,\'scope\':\'synthetic, local temp files; no Discussions mirror or TOCTOU proof\'},ensure_ascii=False,indent=2))\nraise SystemExit(1 if wrong else 0)\n'
+        safety();REPORT.mkdir(exist_ok=True)
+        for label,sha in MANIFEST.items():
+            root=source(label)
+            if not root.exists():
+                checkout=P(os.environ['GITHUB_WORKSPACE'])/('acc-'+label+'-'+os.environ['GITHUB_RUN_ID'])
+                assert subprocess.check_output(['git','-C',str(checkout),'rev-parse','HEAD'],text=True).strip()==sha
+                subprocess.run(['git','clone','--no-hardlinks',str(checkout),str(root)],check=True,stdout=subprocess.DEVNULL)
+                subprocess.run(['git','-C',str(root),'remote','set-url','origin','https://github.com/Lavren73/SI-MCP.git'],check=True)
+            assert subprocess.check_output(['git','-C',str(root),'rev-parse','HEAD'],text=True).strip()==sha
+            (REPORT/(label+'-sha.txt')).write_text(sha+'\n')
+        C=source('common')
+
+        # Persist only explicit evidence rows; a green exit is insufficient when coverage is unknown.
+        def evidence(name,ok,**details):
+            RESULTS.append({'name':name,'status':'PASS' if ok else 'FAIL',**details});store();print('EVIDENCE',name,ok,details,flush=True)
+
+        def check_pytest_xml(name,minimum,required_failures=(),expected_failed=False):
+            p=REPORT/(name+'.xml')
+            try:
+                tree=ET.parse(p);cases=tree.findall('.//testcase')
+                failed=[c.get('name','') for c in cases if c.find('failure') is not None or c.find('error') is not None]
+                ran=[c for c in cases if c.find('skipped') is None]
+                required=all(any(x in n for n in failed) for x in required_failures)
+                ok=len(ran)>=minimum and required and (bool(failed) if expected_failed else not failed)
+                evidence(name+'-xml-evidence',ok,testcases=len(cases),non_skipped=len(ran),failed=failed)
+            except Exception as exc:evidence(name+'-xml-evidence',False,reason=type(exc).__name__)
+
+        def observed_scenarios(name):
+            text=(REPORT/(name+'.log')).read_text(errors='replace')
+            return re.findall(r'^\[(?:OK\s|ЛОЖЬ|СБОЙ)\]\s+(\S+)\s+(careless|careful)\b',text,re.M)
+
+        if PHASE=='fast':
+            # Updated #162: independent old-new wire/unsaved control and full client.
+            parent=source('old162');new=source('pr162');probe_test=parent/'client/tests/test_rollback_unsaved_agent11.py'
+            shutil.copyfile(new/'client/tests/test_rollback_snapshot_cut.py',probe_test)
+            selector='test_unsaved_editor_wire_refuses_before_any_write_with_clear_reason or test_passed_unsaved_snapshot_refuses_even_if_capped_false or test_unsaved_text_inside_numbered_module_is_not_editor_metadata'
+            for label,name,expected in [('old162','r1-unsaved-parent-negative',(1,)),('pr162','r1-unsaved-new',(0,))]:
+                f='tests/test_rollback_unsaved_agent11.py' if label=='old162' else 'tests/test_rollback_snapshot_cut.py'
+                code=run(name,[PY,'-m','pytest','-q',f,'-k',selector,'--junitxml='+str(REPORT/(name+'.xml'))],source(label)/'client',label,300,expected=expected)
+                req=['test_unsaved_editor_wire_refuses_before_any_write_with_clear_reason','test_passed_unsaved_snapshot_refuses_even_if_capped_false'] if label=='old162' else []
+                check_pytest_xml(name,4,req,expected_failed=label=='old162')
+            code=run('r1-new-installer',[PY,'make_installer.py'],new/'client','pr162')
+            generated=new/'si-agent-setup.py';evidence('r1-new-installer-file',code==0 and generated.is_file(),sha256=hashlib.sha256(generated.read_bytes()).hexdigest() if generated.is_file() else None,scope='diagnostic only')
+            run('r1-new-full-client',[PY,'прогнать-тесты.py'],new/'client','pr162',1500)
+            run('r1-new-focused',[PY,'-m','pytest','-q','tests/test_rollback.py','tests/test_rollback_snapshot_cut.py','tests/test_diagnostics_failclosed.py','tests/test_edt_stand.py','--junitxml='+str(REPORT/'r1-new-focused.xml')],new/'client','pr162',600)
+            check_pytest_xml('r1-new-focused',75)
+            run('r1-new-agent16-6000',[PY,'tools/проверка-Р-1-№16.py','client'],new,'pr162')
+            r1p=source('probes')/'tools/диагностика-№15/rollback_parser_probe.py'
+            code=run('r1-new-agent15-5cases',[PY,r1p,new],new,'pr162');text=(REPORT/'r1-new-agent15-5cases.log').read_text(errors='replace')
+            evidence('r1-new-agent15-5cases-proof',code==0 and 'Ran 5 tests' in text)
+
+            # #174 mock harness: false-green on parent, positive + multiple negative controls.
+            parent=source('old174');new=source('pr174');oldreport=REPORT/'thought-parent-report.md'
+            code=run('thought-parent-mock-negative',[PY,'tests/thought_process.py','--mock','--report',oldreport],parent/'client','old174',300,expected=(3,))
+            oldtext=oldreport.read_text(errors='replace') if oldreport.exists() else ''
+            evidence('thought-parent-crash-proved',code==3 and '_SilentStreamer() takes no arguments' in oldtext)
+            code=run('thought-parent-unknown-falsegreen',[PY,'tests/thought_process.py','--mock','--only','definitely-not-a-scenario'],parent/'client','old174',300,expected=(0,))
+            text=(REPORT/'thought-parent-unknown-falsegreen.log').read_text(errors='replace')
+            falsegreen=code==0 and 'Grader различает' in text and not observed_scenarios('thought-parent-unknown-falsegreen')
+            RESULTS[-1]['status']='EXPECTED_RED' if falsegreen else 'FAIL';RESULTS[-1]['reason']='parent returns success with zero scenarios' if falsegreen else 'parent control did not reproduce';store()
+            code=run('thought-new-installer',[PY,'make_installer.py'],new/'client','pr174')
+            generated=new/'si-agent-setup.py';evidence('thought-new-installer-file',code==0 and generated.is_file(),sha256=hashlib.sha256(generated.read_bytes()).hexdigest() if generated.is_file() else None,scope='diagnostic only')
+            run('thought-new-focused',[PY,'-m','pytest','-q','tests/test_merge_remaining_features.py','--junitxml='+str(REPORT/'thought-new-focused.xml')],new/'client','pr174',300)
+            check_pytest_xml('thought-new-focused',13)
+            code=run('thought-new-mock',[PY,'tests/thought_process.py','--mock','--report',REPORT/'thought-new-report.md'],new/'client','pr174',300)
+            cases=observed_scenarios('thought-new-mock');evidence('thought-new-mock-12-scenarios',code==0 and len(cases)==12 and len(set(cases))==12,cases=cases)
+            for key,value in [('unknown','definitely-not-a-scenario'),('mixed','method_only,definitely-not-a-scenario'),('empty',''),('duplicate','method_only,method_only')]:
+                name='thought-new-selector-'+key;code=run(name,[PY,'tests/thought_process.py','--mock','--only',value],new/'client','pr174',300,expected=(2,))
+                text=(REPORT/(name+'.log')).read_text(errors='replace')
+                evidence(name+'-proof',code==2 and not observed_scenarios(name) and 'Grader различает' not in text)
+            code=run('thought-new-selector-valid',[PY,'tests/thought_process.py','--mock','--only','method_only,syntax'],new/'client','pr174',300)
+            cases=observed_scenarios('thought-new-selector-valid');evidence('thought-new-selector-valid-proof',code==0 and set(cases)=={('method_only','careless'),('method_only','careful'),('syntax','careless'),('syntax','careful')},cases=cases)
+            tp=RUN/'thought-injection-probe-11.py';tp.write_text(THOUGHT_PROBE)
+            run('thought-new-agent-ask-injections',[PY,tp,new],new/'client','pr174',600)
+            run('thought-new-full-client-with-benchmarks',[PY,'прогнать-тесты.py','--benchmarks'],new/'client','pr174',1800)
+
+            # O-190: separate independent probe and old/new injection controls.
+            jp=RUN/'journal-probe-11.py';jp.write_text(JOURNAL_PROBE)
+            for label,name,expected in [('old175','journal-parent-negative',(1,)),('pr175','journal-new-independent',(0,))]:
+                code=run(name,[PY,jp,source(label)],source(label),label,300,expected=expected)
+                try:
+                    obj=json.loads((REPORT/(name+'.log')).read_text(errors='replace'));bad=obj['mismatches']
+                    ok=(code==1 and {'root_permission_error','nested_permission_error','directory_symlink'}<=set(bad)) if label=='old175' else (code==0 and not bad and len(obj['observed'])==8)
+                    evidence(name+'-proof',ok,mismatches=bad)
+                except Exception as exc:evidence(name+'-proof',False,reason=type(exc).__name__)
+            new=source('pr175')
+            run('journal-new-focused',[PY,'-m','pytest','-q','server/scripts/tests/test_no_file_journals.py','--junitxml='+str(REPORT/'journal-new-focused.xml')],new,'pr175',300)
+            check_pytest_xml('journal-new-focused',11)
+            run('journal-new-gate-real-tree',[PY,'server/scripts/check-no-file-journals.py'],new,'pr175',300)
+
+            # Explicit local ref: Git branch -r must see the actual pinned common SHA.
+            # This is a disposable source overlay, not an integration commit or release.
+            combo=source('combo175172')
+            if not combo.exists():subprocess.run(['git','clone','--no-hardlinks',str(source('pr175')),str(combo)],check=True,stdout=subprocess.DEVNULL)
+            subprocess.run(['git','-C',str(combo),'remote','set-url','origin','https://github.com/Lavren73/SI-MCP.git'],check=True)
+            for f in ('server/scripts/сторож-красных.py','server/scripts/tests/test_storozh_krasnyh.py'):
+                shutil.copyfile(source('pr172')/f,combo/f)
+                assert hashlib.sha256((source('pr172')/f).read_bytes()).digest()==hashlib.sha256((combo/f).read_bytes()).digest()
+            # Always use a named remote-tracking ref, not HEAD or an invented branch SHA.
+            subprocess.run(['git','-C',str(combo),'config','--local','--replace-all','remote.origin.fetch','+refs/heads/*:refs/remotes/origin/*'],check=True)
+            subprocess.run(['git','-C',str(combo),'fetch',str(C),'HEAD'],check=True,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+            subprocess.run(['git','-C',str(combo),'update-ref','refs/remotes/origin/agent/obmen-20261102',MANIFEST['common']],check=True)
+            e=env_for('pr175');ref=subprocess.run(['git','-C',str(combo),'branch','-r','--list','origin/agent/obmen-20261102'],capture_output=True,text=True,env=e)
+            refsha=subprocess.run(['git','-C',str(combo),'rev-parse','refs/remotes/origin/agent/obmen-20261102'],capture_output=True,text=True,env=e)
+            status=subprocess.check_output(['git','-C',str(combo),'diff','--name-only'],text=True,env=e).splitlines()
+            diag={'pin':MANIFEST['common'],'branch_exit':ref.returncode,'branch_output':ref.stdout.strip(),'ref_exit':refsha.returncode,'ref_sha':refsha.stdout.strip(),'changed_files':status,'base':MANIFEST['pr175'],'overlay':MANIFEST['pr172'],'scope':'uncommitted synthetic overlay, not integration SHA'}
+            (REPORT/'journal-guard-overlay-ref.json').write_text(json.dumps(diag,ensure_ascii=False,indent=2))
+            refok=ref.returncode==0 and 'origin/agent/obmen-20261102' in ref.stdout and refsha.returncode==0 and refsha.stdout.strip()==MANIFEST['common']
+            evidence('watcher-ref-preflight',refok,ref_sha=refsha.stdout.strip())
+            expected_files={'server/scripts/сторож-красных.py','server/scripts/tests/test_storozh_krasnyh.py'}
+            # Git may quote non-ASCII paths unless core.quotePath is disabled.
+            changed=set(subprocess.check_output(['git','-C',str(combo),'-c','core.quotepath=false','diff','--name-only'],text=True,env=e).splitlines())
+            evidence('overlay-only-expected-two-files',changed==expected_files,changed=sorted(changed))
+            if refok:
+                run('watcher-ref-focused',[PY,'-m','pytest','-q','server/scripts/tests/test_watcher_repo.py','--junitxml='+str(REPORT/'watcher-ref-focused.xml')],combo,'pr175',300)
+                check_pytest_xml('watcher-ref-focused',7)
+                run('journal-guard-synthetic-overlay-full-scripts',[PY,'-m','pytest','-q','server/scripts/tests','--junitxml='+str(REPORT/'journal-guard-synthetic-overlay-full-scripts.xml')],combo,'pr175',900)
+                RESULTS[-1]['synthetic_overlay']={'base':MANIFEST['pr175'],'guard':MANIFEST['pr172'],'common_ref':MANIFEST['common']};store()
+                check_pytest_xml('journal-guard-synthetic-overlay-full-scripts',250)
+            else:notrun('journal-guard-synthetic-overlay-full-scripts','Exact remote-tracking ref preflight failed')
+
+            # Synthetic extracted-Java probes, not live services or an external IB.
+            run('pr156-independent-binding-probe',[PY,C/'tools/ЗД-154-независимый-тест-13.py',source('pr156')],C,'pr156',300)
+            run('pr153-redaction-author-probe',[PY,'tools/infobase_redaction_probe_16.py','.'],source('pr153'),'pr153',300)
+            run('pr153-independent-exception-leak',[PY,C/'tools/ЗД-152-ошибка-службы-тест-13.py',source('pr153')],C,'pr153',300)
+            for n,reason in [('real-Windows-COM-ACL','Linux/ synthetic is not real Windows'),('real-EDT-unsaved-recovery','No approved disposable live writer semantics'),('O181-live','security scenario prohibited'),('single-integration-verify','no approved integration SHA')]:notrun(n,reason)
+        elif PHASE=='ui':
+            srcroot=source('pr169')/'server/tests/si.edt.mcp.server.tests/src'
+            ui=sorted(p.stem for p in srcroot.rglob('*Test.java') if re.search(r'\b(?:AToolsTabOnAShell|AGeneralTabOnAShell)\b',p.read_text()))
+            expected=['AGroupTickUnderAQuerySparesWhatItHidesTest','AKeptSetOutlivesThePresetChangeTest','APresetChangeRepaintsTheHiddenMarksTest','AQueryBringsBackTheTicksItShowsTest','ARejectedUpdateSiteIsNotSavedAndSaysWhyTest','ARejectedUpdateSiteLeavesTheWholeTabAloneTest','CandidateDisclosureSettingsTest','DefaultsDoNotCommitBeforeOkTest','LateResultDisclosureSettingsTest','RestoreDefaultsKeepsTheTokenInForceTest','RestoringDefaultsClearsTheVanessaFieldsTest','RestoringToolDefaultsGivesTheShippedPresetTest','TheGeneralTabOnAScreenTest','TheNextOkStartsAServerAFailedRestartStoppedTest','ThePortFieldSaysWhenAChangeTakesEffectTest','TheToolsPageOffersThreeRightsModesTest','TheToolsTabOnAScreenTest']
+            (REPORT/'pr169-ui-requested-classes.json').write_text(json.dumps({'actual':ui,'expected':expected,'selection':'reference to helper anywhere in test source, not only extends'},indent=2))
+            evidence('pr169-ui-17-selection',ui==expected,actual=ui)
+            if ui==expected:
+                mvn('common','common-current-ui-17',ui,limit=2400)
+                mvn('pr169','pr169-ui-17',ui,limit=2400)
+                # Tycho did not honor surefire.runOrder in the previous log. Use a
+                # generated JUnit Suite runner to force and observe the actual order.
+                A='AGroupTickUnderAQuerySparesWhatItHidesTest';B='AKeptSetOutlivesThePresetChangeTest'
+                suites=[('Agent11OrderABTest',[A,B],'pr169orderAB'),('Agent11OrderBATest',[B,A],'pr169orderBA')]
+                for suite,order,label in suites:
+                    # Separate clean clone and HOME/TMP per order: do not reuse UI state.
+                    fresh=source(label);assert not fresh.exists()
+                    subprocess.run(['git','clone','--no-hardlinks',str(source('pr169')),str(fresh)],check=True,stdout=subprocess.DEVNULL)
+                    subprocess.run(['git','-C',str(fresh),'remote','set-url','origin','https://github.com/Lavren73/SI-MCP.git'],check=True)
+                    MANIFEST[label]=MANIFEST['pr169']
+                    assert subprocess.check_output(['git','-C',str(fresh),'rev-parse','HEAD'],text=True).strip()==MANIFEST['pr169']
+                    package=fresh/'server/tests/si.edt.mcp.server.tests/src/si/edt/mcp/server/settings'
+                    java=('package si.edt.mcp.server.settings;\n'
+                          'import org.junit.runner.RunWith;\nimport org.junit.runner.Runner;\n'
+                          'import org.junit.runner.notification.RunNotifier;\nimport org.junit.runners.Suite;\n'
+                          'import org.junit.runners.model.InitializationError;\n'
+                          '@RunWith('+suite+'.Ordered.class)\npublic class '+suite+' {\n'
+                          ' public static class Ordered extends Suite {\n'
+                          '  public Ordered(Class<?> klass) throws InitializationError { super(klass, new Class<?>[]{'+','.join(x+'.class' for x in order)+'}); }\n'
+                          '  @Override protected void runChild(Runner runner, RunNotifier notifier) {\n'
+                          '   System.out.println("AGENT11_EXECUTING_CLASS="+runner.getDescription().getClassName());\n'
+                          '   super.runChild(runner, notifier);\n  }\n }\n}\n')
+                    f=package/(suite+'.java');assert not f.exists();f.write_text(java);(REPORT/(suite+'.java')).write_text(java)
+                    name='pr169-ui-order-'+('AB' if order[0]==A else 'BA')
+                    mvn(label,name,[suite],limit=1200,evidence_tests=order)
+                    log=(REPORT/(name+'.log')).read_text(errors='replace')
+                    actual=[x.rsplit('.',1)[-1] for x in re.findall(r'AGENT11_EXECUTING_CLASS=([A-Za-z0-9_.$]+)',log)]
+                    evidence(name+'-observed-order',actual==order,actual=actual,expected=order,scope='generated test-only suite; not an unmodified candidate')
+                try:
+                    ab=json.loads((REPORT/'pr169-ui-order-AB-xml-summary.json').read_text());ba=json.loads((REPORT/'pr169-ui-order-BA-xml-summary.json').read_text())
+                    RESULTS.append({'name':'pr169-ui-two-order-comparison','status':'OBSERVATION','same_failed_case_set':set(ab['failed_tests'])==set(ba['failed_tests']),'AB_failures':ab['failed_tests'],'BA_failures':ba['failed_tests'],'scope':'only two selected classes; generated JUnit suites; not a general isolation PASS'});store()
+                except Exception as exc:evidence('pr169-ui-two-order-comparison',False,reason=type(exc).__name__)
+            mvn('pr153','pr153-redaction-osgi',['InfobaseParametersRedaction16Test','RegisteredInfobasesReaderTest'],limit=1800)
+            mvn('pr156','pr156-binding-osgi',['RegisteredInfobasesReaderTest'],limit=1800)
+        else:raise SystemExit('Unknown phase')
+        store();print('PHASE_FINISHED',PHASE,collections.Counter(x['status'] for x in RESULTS),flush=True)
+        raise SystemExit(1 if any(x['status']=='FAIL' for x in RESULTS) else 0)
+
+        PYDRIVER
+      continue-on-error: true
+      id: fast
+    - name: Sanitize allowlisted fast reports before upload
+      shell: bash
+      run: |
+        set -euo pipefail
+        python3 - <<'PY'
+        import pathlib,os,re,json
+        root=pathlib.Path(os.environ['TEAM_RUN'])/'reports';hits=[]
+        for p in root.rglob('*'):
+            if not p.is_file() or p.is_symlink():continue
+            text=p.read_text(errors='replace');original=text
+            text=re.sub(r'-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----.*?-----END (?:RSA |EC |OPENSSH )?PRIVATE KEY-----','<redacted-private-key>',text,flags=re.S)
+            text=re.sub(r'\bgh[pousr]_[A-Za-z0-9]{20,}|\bgithub_pat_[A-Za-z0-9_]{30,}','<redacted-token>',text)
+            text=re.sub(r'(?i)(Authorization:\s*Bearer\s+)[A-Za-z0-9._-]{20,}',r'\1<redacted>',text)
+            if text!=original:p.write_text(text);hits.append(p.name)
+        (root/'artifact-sanitization.json').write_text(json.dumps({'heuristic_not_full_audit':True,'files_redacted':hits},indent=2));print('REDACTED_FILES',len(hits))
+        PY
+      if: always() && env.TEAM_RUN != ''
+    - name: Upload allowlisted fast reports only
+      if: always() && env.TEAM_RUN != ''
+      uses: actions/upload-artifact@v4
+      with:
+        name: targeted11-fast-${{ github.run_id }}-${{ github.run_attempt }}
+        path: ${{ env.TEAM_RUN }}/reports/
+        retention-days: 7
+    - name: Actual OSGi UI order suites and security candidates
+      shell: bash
+      run: |
+        set -euo pipefail
+        umask 077
+        exec 9>"$TEAM_BASE/locks/live-tests.lock"
+        echo 'Waiting for shared test lock; never cancel others'
+        flock -w 600 9
+        python3 - ui <<'PYDRIVER'
+        """Pinned independent candidates, sequential runner-only tests; no merge/EDT installation."""
+        import os,sys,json,time,pathlib,subprocess,signal,shutil,xml.etree.ElementTree as ET,zipfile,struct,collections,re,importlib.util,hashlib
+        P=pathlib.Path
+        BASE=P(os.environ['TEAM_BASE']);RUN=P(os.environ['TEAM_RUN']);REPORT=RUN/'reports';SOURCES=RUN/'sources'
+        MANIFEST=json.loads(os.environ['CANDIDATE_MANIFEST']);PHASE=sys.argv[1];RESULTS=[]
+        VENV=BASE/'tools/python-tests/bin';PY=str(VENV/'python');MAVEN=str(BASE/'tools/apache-maven-3.9.9/bin/mvn')
+
+        def safety():
+            busy=[]
+            for p in P('/proc').iterdir():
+                if not p.name.isdecimal():continue
+                try:
+                    n=(p/'comm').read_text().strip()
+                    if n in ('java','javaw','1cedt','1cedtcli','1cv8','1cv8c','rphost','ragent','rmngr','ras'):busy.append({'pid':int(p.name),'name':n})
+                except OSError:pass
+            mem={x.split(':')[0]:int(x.split()[1])*1024 for x in P('/proc/meminfo').read_text().splitlines() if x.startswith(('MemAvailable:','MemTotal:'))}
+            report={'phase':PHASE,'visible_sessions':busy,'memory':mem,'kernel':os.uname().release,'scope':'Container PID namespace only; no host-wide session claim'}
+            (REPORT/(PHASE+'-preflight.json')).write_text(json.dumps(report,indent=2))
+            if busy:raise RuntimeError('Visible EDT/Java/1C session: stop without killing')
+            if mem.get('MemAvailable',0)<6*1024**3:raise RuntimeError('Below 6GiB available memory')
+            if os.uname().release!='5.15.0-203-generic':raise RuntimeError('Kernel changed; inspect before proceeding')
+            for root,used,limit in [('/sys/fs/cgroup','memory.current','memory.max'),('/sys/fs/cgroup/memory','memory.usage_in_bytes','memory.limit_in_bytes')]:
+                a=P(root)/used;b=P(root)/limit
+                if a.exists() and b.exists():
+                    v=b.read_text().strip()
+                    if v!='max' and int(v)-int(a.read_text())<5*1024**3:raise RuntimeError('Below 5GiB cgroup headroom')
+                    break
+            if shutil.disk_usage(RUN).free<10*1024**3:raise RuntimeError('Below 10GiB free disk')
+
+        def source(label):return SOURCES/label
+
+        def env_for(label,jdk='17'):
+            e=os.environ.copy();home=RUN/('home-'+label);tmp=RUN/('tmp-'+label)
+            home.mkdir(exist_ok=True,mode=0o700);tmp.mkdir(exist_ok=True,mode=0o700)
+            java=e['JAVA'+jdk+'_HOME']
+            e.update({'HOME':str(home),'XDG_CONFIG_HOME':str(home/'.config'),'XDG_CACHE_HOME':str(home/'.cache'),'XDG_DATA_HOME':str(home/'.local/share'),'TMPDIR':str(tmp),'TMP':str(tmp),'TEMP':str(tmp),'JAVA_HOME':java,'PATH':str(VENV)+':'+java+'/bin:'+str(BASE/'tools/apache-maven-3.9.9/bin')+':'+str(BASE/'tools/powershell-7.4.13')+':'+e['PATH'],'NODE_PATH':str(BASE/'tools/node-tests/node_modules'),'PYTHONDONTWRITEBYTECODE':'1','MAVEN_OPTS':'-Xmx3g -XX:ActiveProcessorCount=4 -Dfile.encoding=UTF-8 -Duser.home='+str(home),'JAVA_TOOL_OPTIONS':'-XX:ActiveProcessorCount=4 -Dfile.encoding=UTF-8'})
+            return e
+
+        def store():
+            (REPORT/(PHASE+'-results.json')).write_text(json.dumps({'phase':PHASE,'sources':MANIFEST,'results':RESULTS,'limitations':['Independent exact candidates, not integration RC','Linux-only: no real Windows/COM/ACL','No live infobase, no model API or privileged host access','Baseline unchanged; expected red controls are not product PASS']},ensure_ascii=False,indent=2))
+
+        def notrun(name,reason):
+            RESULTS.append({'name':name,'status':'NOT_RUN','reason':reason});print('NOT_RUN',name,reason,flush=True);store()
+
+        def run(name,args,cwd,label,limit=300,expected=(0,),jdk='17',mask=0o077,extra=None):
+            safety();env=env_for(label,jdk)
+            if extra:env.update(extra)
+            t=time.monotonic();out=REPORT/(name+'.log');code=125
+            with out.open('w') as f:
+                cmd=['timeout','--signal=TERM','--kill-after=30s',str(limit)+'s','nice','-n','10','ionice','-c2','-n7']+list(map(str,args))
+                p=subprocess.Popen(cmd,cwd=cwd,env=env,stdout=f,stderr=subprocess.STDOUT,start_new_session=True,umask=mask)
+                try:
+                    while True:
+                        try:code=p.wait(timeout=20);break
+                        except subprocess.TimeoutExpired:
+                            avail=next((x.split()[1] for x in P('/proc/meminfo').read_text().splitlines() if x.startswith('MemAvailable:')),'?')
+                            print('HEARTBEAT',name,'elapsed',round(time.monotonic()-t),'s MemAvailableKiB',avail,flush=True)
+                finally:
+                    if p.poll() is None:
+                        os.killpg(p.pid,signal.SIGTERM)
+                        try:p.wait(timeout=30)
+                        except subprocess.TimeoutExpired:os.killpg(p.pid,signal.SIGKILL);p.wait()
+                    # Close only this process group if a test left a child behind.
+                    try:os.killpg(p.pid,signal.SIGTERM)
+                    except ProcessLookupError:pass
+            row={'name':name,'source_label':label,'source_sha':MANIFEST.get(label),'command':list(map(str,args)),'exit':code,'expected_exits':list(expected),'seconds':round(time.monotonic()-t,2),'status':('PASS' if code==0 else 'EXPECTED_RED') if code in expected else 'FAIL'}
+            RESULTS.append(row);(REPORT/(name+'.exit')).write_text(str(code)+'\n');store()
+            print('RESULT',json.dumps(row,ensure_ascii=False),flush=True)
+            print(out.read_text(errors='replace')[-4500:],flush=True)
+            return code
+
+        def summarize_maven(label,name):
+            root=source(label);files=list(root.glob('server/**/surefire-reports/TEST-*.xml'));tot={k:0 for k in ('tests','failures','errors','skipped')};bad=[];malformed=[];classes=collections.Counter()
+            for file in files:
+                try:
+                    x=ET.parse(file).getroot()
+                    for k in tot:tot[k]+=int(x.get(k,'0'))
+                    for c in x.findall('testcase'):
+                        if c.find('skipped') is None:classes[c.get('classname','').rsplit('.',1)[-1]]+=1
+                        if c.find('failure') is not None or c.find('error') is not None:bad.append(c.get('classname','')+'#'+c.get('name',''))
+                except Exception:malformed.append(str(file.relative_to(root)))
+            o={'source':MANIFEST[label],'report_files':len(files),'totals':tot,'failed_tests':bad,'malformed':malformed,'classes_executed':dict(classes)}
+            (REPORT/(name+'-xml-summary.json')).write_text(json.dumps(o,ensure_ascii=False,indent=2));print('XML',name,json.dumps(o,ensure_ascii=False),flush=True)
+            if not files or tot['tests']-tot['skipped']<=0 or malformed:
+                RESULTS.append({'name':name+'-test-evidence','status':'FAIL','reason':'No non-skipped tests in valid XML reports'});store()
+
+        def mvn(label,name,tests=None,profile=None,mask=0o077,limit=1800,goal='verify',expected=(0,),evidence_tests=None):
+            root=source(label)
+            for p in root.glob('server/**/surefire-reports/TEST-*.xml'):p.unlink()
+            args=['xvfb-run','-a',MAVEN,'-B','-fae','-ntp','-Dstyle.color=never','-Dmaven.repo.local='+str(BASE/'cache/m2')]
+            if profile:args+=['-P'+profile]
+            if tests:args+=['-pl','targets/default,bundles/si.edt.mcp.server,bundles/si.edt.mcp.oform,tests/si.edt.mcp.server.tests','-am','-Dtest='+','.join(tests),'-DfailIfNoTests=false','-Dsurefire.failIfNoSpecifiedTests=false','-Dsurefire.runOrder=alphabetical']
+            args+=[goal];code=run(name,args,root/'server',label,limit,expected,'25' if profile else '17',mask)
+            summarize_maven(label,name)
+            summary=json.loads((REPORT/(name+'-xml-summary.json')).read_text())
+            if code==0 and (summary['totals']['failures'] or summary['totals']['errors']):
+                RESULTS.append({'name':name+'-test-evidence','status':'FAIL','reason':'Zero exit contradicts XML failures/errors'});store()
+            if tests:
+                missing=sorted(set(evidence_tests or tests)-set(summary['classes_executed']))
+                RESULTS.append({'name':name+'-requested-class-coverage','status':'FAIL' if missing else 'PASS','missing_or_only_skipped':missing});store()
+            if name=='pilot-atomic-negative-common-077':
+                expected_case='si.edt.mcp.server.support.AtomicFileReplaceTest#anAtomicReplaceRetainsExistingPosixPermissions'
+                proof=(code==1 and summary['failed_tests']==[expected_case] and summary['totals']['failures']==1 and summary['totals']['errors']==0)
+                RESULTS.append({'name':name+'-negative-proof','status':'PASS' if proof else 'FAIL','expected_case':expected_case,'actual_failed_cases':summary['failed_tests']});store()
+            return code
+
+        def bytecode(label):
+            items=[]
+            for module in ['si.edt.mcp.server','si.edt.mcp.oform']:
+                jars=list((source(label)/'server/bundles'/module/'target').glob(module+'-*.jar'))
+                for p in jars:
+                    with zipfile.ZipFile(p) as z:
+                        counts=collections.Counter(struct.unpack('>H',z.read(n)[6:8])[0] for n in z.namelist() if n.endswith('.class'))
+                        manifest=z.read('META-INF/MANIFEST.MF').decode(errors='replace')
+                    items.append({'module':module,'jar':p.name,'class_major_counts':dict(counts),'all_major61':bool(counts) and set(counts)=={61},'manifest_ee_lines':[l for l in manifest.splitlines() if 'osgi.ee' in l or 'Build-Jdk' in l]})
+            (REPORT/(label+'-bytecode.json')).write_text(json.dumps(items,indent=2))
+
+
+        THOUGHT_PROBE='"""Six actual-main mock failures injected into Agent.ask; no live model/EDT."""\nimport contextlib, importlib.util, io, json, pathlib, sys\nroot=pathlib.Path(sys.argv[1]).resolve()\nsys.path.insert(0,str(root/\'client\'));sys.path.insert(0,str(root/\'client/tests\'))\npath=root/\'client/tests/thought_process.py\'\nspec=importlib.util.spec_from_file_location(\'agent11_thought_probe\',path)\nmod=importlib.util.module_from_spec(spec);sys.modules[spec.name]=mod;spec.loader.exec_module(mod)\noriginal=mod.build_agent;original_argv=sys.argv[:];results=[]\nfor kind_index in (0,1):\n for mode in (\'exception\',\'empty\',\'whitespace\'):\n    build_count=[0]\n    def patched(*args,**kwargs):\n        agent=original(*args,**kwargs);index=build_count[0];build_count[0]+=1\n        if index==kind_index:\n            def ask(_task):\n                if mode==\'exception\':raise RuntimeError(\'synthetic injected exception\')\n                return \'\' if mode==\'empty\' else \'   \'\n            agent.ask=ask\n        return agent\n    mod.build_agent=patched;sys.argv=[str(path),\'--mock\',\'--only\',\'method_only\'];out=io.StringIO()\n    try:\n        with contextlib.redirect_stdout(out),contextlib.redirect_stderr(out):code=mod.main()\n    finally:\n        mod.build_agent=original;sys.argv=original_argv[:]\n    text=out.getvalue();good=(code==3 and build_count[0]==2 and \'[СБОЙ]\' in text and \'качество Grader не установлено\' in text and \'Grader различает\' not in text)\n    results.append({\'kind\':(\'careless\',\'careful\')[kind_index],\'mode\':mode,\'main_exit\':code,\'both_agents_built\':build_count[0]==2,\'safe_failure\':good})\nprint(json.dumps({\'cases\':results,\'scope\':\'loopback mock, not live model or EDT\'},ensure_ascii=False,indent=2))\nraise SystemExit(0 if len(results)==6 and all(x[\'safe_failure\'] for x in results) else 1)\n'
+        JOURNAL_PROBE='"""Independent disposable O-190 gate probe: no source tree modification."""\nimport contextlib, importlib.util, io, json, os, pathlib, sys, tempfile\nfrom unittest import mock\nroot = pathlib.Path(sys.argv[1]).resolve()\nscript = root / \'server/scripts/check-no-file-journals.py\'\nspec = importlib.util.spec_from_file_location(\'journal_probe_target\', script)\nmod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)\n\ndef invoke(tree, inaccessible=None):\n    mod.ДЕРЕВО = str(tree)\n    original_scandir = os.scandir\n    def guarded(p):\n        if inaccessible is not None and pathlib.Path(p) == pathlib.Path(inaccessible):\n            raise PermissionError(\'synthetic failure: do not report content\')\n        return original_scandir(p)\n    with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()), mock.patch.object(mod.os, \'scandir\', side_effect=guarded):\n        return mod.main()\n\nwith tempfile.TemporaryDirectory(prefix=\'a11-journal-probe-\') as td:\n    base = pathlib.Path(td); rootdir = base / \'tree\'; rootdir.mkdir()\n    states = rootdir / \'ОБСУЖДЕНИЕ\'; states.mkdir()\n    for n in range(11,17): (states / f\'№{n}.md\').write_text(\'synthetic\',encoding=\'utf8\')\n    observed = {\'six_states\': invoke(rootdir), \'root_permission_error\': invoke(rootdir, rootdir)}\n    nested = rootdir/\'closed\'; nested.mkdir(); (nested/\'№17.md\').write_text(\'synthetic\',encoding=\'utf8\')\n    observed[\'nested_permission_error\'] = invoke(rootdir, nested)\n    observed[\'new_journal\'] = invoke(rootdir)\n    (nested/\'№17.md\').unlink(); nested.rmdir()\n    target = base/\'outside\'; target.mkdir(); (target/\'№17.md\').write_text(\'synthetic\',encoding=\'utf8\')\n    directory_link = rootdir/\'foreign\'; directory_link.symlink_to(target, target_is_directory=True)\n    observed[\'directory_symlink\'] = invoke(rootdir); directory_link.unlink()\n    root_link=base/\'root-link\';root_link.symlink_to(rootdir,target_is_directory=True)\n    observed[\'root_symlink\'] = invoke(root_link)\n    quarantine = rootdir/\'карантин-ссылка\'; quarantine.symlink_to(target,target_is_directory=True)\n    observed[\'quarantine_link_not_followed\'] = invoke(rootdir)\n    observed[\'missing_root\'] = invoke(base/\'missing\')\nexpected = {\'six_states\':0,\'root_permission_error\':2,\'nested_permission_error\':2,\'new_journal\':1,\'directory_symlink\':2,\'root_symlink\':2,\'quarantine_link_not_followed\':0,\'missing_root\':2}\nwrong = {k:{\'expected\':v,\'observed\':observed[k]} for k,v in expected.items() if observed[k]!=v}\nprint(json.dumps({\'expected\':expected,\'observed\':observed,\'mismatches\':wrong,\'scope\':\'synthetic, local temp files; no Discussions mirror or TOCTOU proof\'},ensure_ascii=False,indent=2))\nraise SystemExit(1 if wrong else 0)\n'
+        safety();REPORT.mkdir(exist_ok=True)
+        for label,sha in MANIFEST.items():
+            root=source(label)
+            if not root.exists():
+                checkout=P(os.environ['GITHUB_WORKSPACE'])/('acc-'+label+'-'+os.environ['GITHUB_RUN_ID'])
+                assert subprocess.check_output(['git','-C',str(checkout),'rev-parse','HEAD'],text=True).strip()==sha
+                subprocess.run(['git','clone','--no-hardlinks',str(checkout),str(root)],check=True,stdout=subprocess.DEVNULL)
+                subprocess.run(['git','-C',str(root),'remote','set-url','origin','https://github.com/Lavren73/SI-MCP.git'],check=True)
+            assert subprocess.check_output(['git','-C',str(root),'rev-parse','HEAD'],text=True).strip()==sha
+            (REPORT/(label+'-sha.txt')).write_text(sha+'\n')
+        C=source('common')
+
+        # Persist only explicit evidence rows; a green exit is insufficient when coverage is unknown.
+        def evidence(name,ok,**details):
+            RESULTS.append({'name':name,'status':'PASS' if ok else 'FAIL',**details});store();print('EVIDENCE',name,ok,details,flush=True)
+
+        def check_pytest_xml(name,minimum,required_failures=(),expected_failed=False):
+            p=REPORT/(name+'.xml')
+            try:
+                tree=ET.parse(p);cases=tree.findall('.//testcase')
+                failed=[c.get('name','') for c in cases if c.find('failure') is not None or c.find('error') is not None]
+                ran=[c for c in cases if c.find('skipped') is None]
+                required=all(any(x in n for n in failed) for x in required_failures)
+                ok=len(ran)>=minimum and required and (bool(failed) if expected_failed else not failed)
+                evidence(name+'-xml-evidence',ok,testcases=len(cases),non_skipped=len(ran),failed=failed)
+            except Exception as exc:evidence(name+'-xml-evidence',False,reason=type(exc).__name__)
+
+        def observed_scenarios(name):
+            text=(REPORT/(name+'.log')).read_text(errors='replace')
+            return re.findall(r'^\[(?:OK\s|ЛОЖЬ|СБОЙ)\]\s+(\S+)\s+(careless|careful)\b',text,re.M)
+
+        if PHASE=='fast':
+            # Updated #162: independent old-new wire/unsaved control and full client.
+            parent=source('old162');new=source('pr162');probe_test=parent/'client/tests/test_rollback_unsaved_agent11.py'
+            shutil.copyfile(new/'client/tests/test_rollback_snapshot_cut.py',probe_test)
+            selector='test_unsaved_editor_wire_refuses_before_any_write_with_clear_reason or test_passed_unsaved_snapshot_refuses_even_if_capped_false or test_unsaved_text_inside_numbered_module_is_not_editor_metadata'
+            for label,name,expected in [('old162','r1-unsaved-parent-negative',(1,)),('pr162','r1-unsaved-new',(0,))]:
+                f='tests/test_rollback_unsaved_agent11.py' if label=='old162' else 'tests/test_rollback_snapshot_cut.py'
+                code=run(name,[PY,'-m','pytest','-q',f,'-k',selector,'--junitxml='+str(REPORT/(name+'.xml'))],source(label)/'client',label,300,expected=expected)
+                req=['test_unsaved_editor_wire_refuses_before_any_write_with_clear_reason','test_passed_unsaved_snapshot_refuses_even_if_capped_false'] if label=='old162' else []
+                check_pytest_xml(name,4,req,expected_failed=label=='old162')
+            code=run('r1-new-installer',[PY,'make_installer.py'],new/'client','pr162')
+            generated=new/'si-agent-setup.py';evidence('r1-new-installer-file',code==0 and generated.is_file(),sha256=hashlib.sha256(generated.read_bytes()).hexdigest() if generated.is_file() else None,scope='diagnostic only')
+            run('r1-new-full-client',[PY,'прогнать-тесты.py'],new/'client','pr162',1500)
+            run('r1-new-focused',[PY,'-m','pytest','-q','tests/test_rollback.py','tests/test_rollback_snapshot_cut.py','tests/test_diagnostics_failclosed.py','tests/test_edt_stand.py','--junitxml='+str(REPORT/'r1-new-focused.xml')],new/'client','pr162',600)
+            check_pytest_xml('r1-new-focused',75)
+            run('r1-new-agent16-6000',[PY,'tools/проверка-Р-1-№16.py','client'],new,'pr162')
+            r1p=source('probes')/'tools/диагностика-№15/rollback_parser_probe.py'
+            code=run('r1-new-agent15-5cases',[PY,r1p,new],new,'pr162');text=(REPORT/'r1-new-agent15-5cases.log').read_text(errors='replace')
+            evidence('r1-new-agent15-5cases-proof',code==0 and 'Ran 5 tests' in text)
+
+            # #174 mock harness: false-green on parent, positive + multiple negative controls.
+            parent=source('old174');new=source('pr174');oldreport=REPORT/'thought-parent-report.md'
+            code=run('thought-parent-mock-negative',[PY,'tests/thought_process.py','--mock','--report',oldreport],parent/'client','old174',300,expected=(3,))
+            oldtext=oldreport.read_text(errors='replace') if oldreport.exists() else ''
+            evidence('thought-parent-crash-proved',code==3 and '_SilentStreamer() takes no arguments' in oldtext)
+            code=run('thought-parent-unknown-falsegreen',[PY,'tests/thought_process.py','--mock','--only','definitely-not-a-scenario'],parent/'client','old174',300,expected=(0,))
+            text=(REPORT/'thought-parent-unknown-falsegreen.log').read_text(errors='replace')
+            falsegreen=code==0 and 'Grader различает' in text and not observed_scenarios('thought-parent-unknown-falsegreen')
+            RESULTS[-1]['status']='EXPECTED_RED' if falsegreen else 'FAIL';RESULTS[-1]['reason']='parent returns success with zero scenarios' if falsegreen else 'parent control did not reproduce';store()
+            code=run('thought-new-installer',[PY,'make_installer.py'],new/'client','pr174')
+            generated=new/'si-agent-setup.py';evidence('thought-new-installer-file',code==0 and generated.is_file(),sha256=hashlib.sha256(generated.read_bytes()).hexdigest() if generated.is_file() else None,scope='diagnostic only')
+            run('thought-new-focused',[PY,'-m','pytest','-q','tests/test_merge_remaining_features.py','--junitxml='+str(REPORT/'thought-new-focused.xml')],new/'client','pr174',300)
+            check_pytest_xml('thought-new-focused',13)
+            code=run('thought-new-mock',[PY,'tests/thought_process.py','--mock','--report',REPORT/'thought-new-report.md'],new/'client','pr174',300)
+            cases=observed_scenarios('thought-new-mock');evidence('thought-new-mock-12-scenarios',code==0 and len(cases)==12 and len(set(cases))==12,cases=cases)
+            for key,value in [('unknown','definitely-not-a-scenario'),('mixed','method_only,definitely-not-a-scenario'),('empty',''),('duplicate','method_only,method_only')]:
+                name='thought-new-selector-'+key;code=run(name,[PY,'tests/thought_process.py','--mock','--only',value],new/'client','pr174',300,expected=(2,))
+                text=(REPORT/(name+'.log')).read_text(errors='replace')
+                evidence(name+'-proof',code==2 and not observed_scenarios(name) and 'Grader различает' not in text)
+            code=run('thought-new-selector-valid',[PY,'tests/thought_process.py','--mock','--only','method_only,syntax'],new/'client','pr174',300)
+            cases=observed_scenarios('thought-new-selector-valid');evidence('thought-new-selector-valid-proof',code==0 and set(cases)=={('method_only','careless'),('method_only','careful'),('syntax','careless'),('syntax','careful')},cases=cases)
+            tp=RUN/'thought-injection-probe-11.py';tp.write_text(THOUGHT_PROBE)
+            run('thought-new-agent-ask-injections',[PY,tp,new],new/'client','pr174',600)
+            run('thought-new-full-client-with-benchmarks',[PY,'прогнать-тесты.py','--benchmarks'],new/'client','pr174',1800)
+
+            # O-190: separate independent probe and old/new injection controls.
+            jp=RUN/'journal-probe-11.py';jp.write_text(JOURNAL_PROBE)
+            for label,name,expected in [('old175','journal-parent-negative',(1,)),('pr175','journal-new-independent',(0,))]:
+                code=run(name,[PY,jp,source(label)],source(label),label,300,expected=expected)
+                try:
+                    obj=json.loads((REPORT/(name+'.log')).read_text(errors='replace'));bad=obj['mismatches']
+                    ok=(code==1 and {'root_permission_error','nested_permission_error','directory_symlink'}<=set(bad)) if label=='old175' else (code==0 and not bad and len(obj['observed'])==8)
+                    evidence(name+'-proof',ok,mismatches=bad)
+                except Exception as exc:evidence(name+'-proof',False,reason=type(exc).__name__)
+            new=source('pr175')
+            run('journal-new-focused',[PY,'-m','pytest','-q','server/scripts/tests/test_no_file_journals.py','--junitxml='+str(REPORT/'journal-new-focused.xml')],new,'pr175',300)
+            check_pytest_xml('journal-new-focused',11)
+            run('journal-new-gate-real-tree',[PY,'server/scripts/check-no-file-journals.py'],new,'pr175',300)
+
+            # Explicit local ref: Git branch -r must see the actual pinned common SHA.
+            # This is a disposable source overlay, not an integration commit or release.
+            combo=source('combo175172')
+            if not combo.exists():subprocess.run(['git','clone','--no-hardlinks',str(source('pr175')),str(combo)],check=True,stdout=subprocess.DEVNULL)
+            subprocess.run(['git','-C',str(combo),'remote','set-url','origin','https://github.com/Lavren73/SI-MCP.git'],check=True)
+            for f in ('server/scripts/сторож-красных.py','server/scripts/tests/test_storozh_krasnyh.py'):
+                shutil.copyfile(source('pr172')/f,combo/f)
+                assert hashlib.sha256((source('pr172')/f).read_bytes()).digest()==hashlib.sha256((combo/f).read_bytes()).digest()
+            # Always use a named remote-tracking ref, not HEAD or an invented branch SHA.
+            subprocess.run(['git','-C',str(combo),'config','--local','--replace-all','remote.origin.fetch','+refs/heads/*:refs/remotes/origin/*'],check=True)
+            subprocess.run(['git','-C',str(combo),'fetch',str(C),'HEAD'],check=True,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+            subprocess.run(['git','-C',str(combo),'update-ref','refs/remotes/origin/agent/obmen-20261102',MANIFEST['common']],check=True)
+            e=env_for('pr175');ref=subprocess.run(['git','-C',str(combo),'branch','-r','--list','origin/agent/obmen-20261102'],capture_output=True,text=True,env=e)
+            refsha=subprocess.run(['git','-C',str(combo),'rev-parse','refs/remotes/origin/agent/obmen-20261102'],capture_output=True,text=True,env=e)
+            status=subprocess.check_output(['git','-C',str(combo),'diff','--name-only'],text=True,env=e).splitlines()
+            diag={'pin':MANIFEST['common'],'branch_exit':ref.returncode,'branch_output':ref.stdout.strip(),'ref_exit':refsha.returncode,'ref_sha':refsha.stdout.strip(),'changed_files':status,'base':MANIFEST['pr175'],'overlay':MANIFEST['pr172'],'scope':'uncommitted synthetic overlay, not integration SHA'}
+            (REPORT/'journal-guard-overlay-ref.json').write_text(json.dumps(diag,ensure_ascii=False,indent=2))
+            refok=ref.returncode==0 and 'origin/agent/obmen-20261102' in ref.stdout and refsha.returncode==0 and refsha.stdout.strip()==MANIFEST['common']
+            evidence('watcher-ref-preflight',refok,ref_sha=refsha.stdout.strip())
+            expected_files={'server/scripts/сторож-красных.py','server/scripts/tests/test_storozh_krasnyh.py'}
+            # Git may quote non-ASCII paths unless core.quotePath is disabled.
+            changed=set(subprocess.check_output(['git','-C',str(combo),'-c','core.quotepath=false','diff','--name-only'],text=True,env=e).splitlines())
+            evidence('overlay-only-expected-two-files',changed==expected_files,changed=sorted(changed))
+            if refok:
+                run('watcher-ref-focused',[PY,'-m','pytest','-q','server/scripts/tests/test_watcher_repo.py','--junitxml='+str(REPORT/'watcher-ref-focused.xml')],combo,'pr175',300)
+                check_pytest_xml('watcher-ref-focused',7)
+                run('journal-guard-synthetic-overlay-full-scripts',[PY,'-m','pytest','-q','server/scripts/tests','--junitxml='+str(REPORT/'journal-guard-synthetic-overlay-full-scripts.xml')],combo,'pr175',900)
+                RESULTS[-1]['synthetic_overlay']={'base':MANIFEST['pr175'],'guard':MANIFEST['pr172'],'common_ref':MANIFEST['common']};store()
+                check_pytest_xml('journal-guard-synthetic-overlay-full-scripts',250)
+            else:notrun('journal-guard-synthetic-overlay-full-scripts','Exact remote-tracking ref preflight failed')
+
+            # Synthetic extracted-Java probes, not live services or an external IB.
+            run('pr156-independent-binding-probe',[PY,C/'tools/ЗД-154-независимый-тест-13.py',source('pr156')],C,'pr156',300)
+            run('pr153-redaction-author-probe',[PY,'tools/infobase_redaction_probe_16.py','.'],source('pr153'),'pr153',300)
+            run('pr153-independent-exception-leak',[PY,C/'tools/ЗД-152-ошибка-службы-тест-13.py',source('pr153')],C,'pr153',300)
+            for n,reason in [('real-Windows-COM-ACL','Linux/ synthetic is not real Windows'),('real-EDT-unsaved-recovery','No approved disposable live writer semantics'),('O181-live','security scenario prohibited'),('single-integration-verify','no approved integration SHA')]:notrun(n,reason)
+        elif PHASE=='ui':
+            srcroot=source('pr169')/'server/tests/si.edt.mcp.server.tests/src'
+            ui=sorted(p.stem for p in srcroot.rglob('*Test.java') if re.search(r'\b(?:AToolsTabOnAShell|AGeneralTabOnAShell)\b',p.read_text()))
+            expected=['AGroupTickUnderAQuerySparesWhatItHidesTest','AKeptSetOutlivesThePresetChangeTest','APresetChangeRepaintsTheHiddenMarksTest','AQueryBringsBackTheTicksItShowsTest','ARejectedUpdateSiteIsNotSavedAndSaysWhyTest','ARejectedUpdateSiteLeavesTheWholeTabAloneTest','CandidateDisclosureSettingsTest','DefaultsDoNotCommitBeforeOkTest','LateResultDisclosureSettingsTest','RestoreDefaultsKeepsTheTokenInForceTest','RestoringDefaultsClearsTheVanessaFieldsTest','RestoringToolDefaultsGivesTheShippedPresetTest','TheGeneralTabOnAScreenTest','TheNextOkStartsAServerAFailedRestartStoppedTest','ThePortFieldSaysWhenAChangeTakesEffectTest','TheToolsPageOffersThreeRightsModesTest','TheToolsTabOnAScreenTest']
+            (REPORT/'pr169-ui-requested-classes.json').write_text(json.dumps({'actual':ui,'expected':expected,'selection':'reference to helper anywhere in test source, not only extends'},indent=2))
+            evidence('pr169-ui-17-selection',ui==expected,actual=ui)
+            if ui==expected:
+                mvn('common','common-current-ui-17',ui,limit=2400)
+                mvn('pr169','pr169-ui-17',ui,limit=2400)
+                # Tycho did not honor surefire.runOrder in the previous log. Use a
+                # generated JUnit Suite runner to force and observe the actual order.
+                A='AGroupTickUnderAQuerySparesWhatItHidesTest';B='AKeptSetOutlivesThePresetChangeTest'
+                suites=[('Agent11OrderABTest',[A,B],'pr169orderAB'),('Agent11OrderBATest',[B,A],'pr169orderBA')]
+                for suite,order,label in suites:
+                    # Separate clean clone and HOME/TMP per order: do not reuse UI state.
+                    fresh=source(label);assert not fresh.exists()
+                    subprocess.run(['git','clone','--no-hardlinks',str(source('pr169')),str(fresh)],check=True,stdout=subprocess.DEVNULL)
+                    subprocess.run(['git','-C',str(fresh),'remote','set-url','origin','https://github.com/Lavren73/SI-MCP.git'],check=True)
+                    MANIFEST[label]=MANIFEST['pr169']
+                    assert subprocess.check_output(['git','-C',str(fresh),'rev-parse','HEAD'],text=True).strip()==MANIFEST['pr169']
+                    package=fresh/'server/tests/si.edt.mcp.server.tests/src/si/edt/mcp/server/settings'
+                    java=('package si.edt.mcp.server.settings;\n'
+                          'import org.junit.runner.RunWith;\nimport org.junit.runner.Runner;\n'
+                          'import org.junit.runner.notification.RunNotifier;\nimport org.junit.runners.Suite;\n'
+                          'import org.junit.runners.model.InitializationError;\n'
+                          '@RunWith('+suite+'.Ordered.class)\npublic class '+suite+' {\n'
+                          ' public static class Ordered extends Suite {\n'
+                          '  public Ordered(Class<?> klass) throws InitializationError { super(klass, new Class<?>[]{'+','.join(x+'.class' for x in order)+'}); }\n'
+                          '  @Override protected void runChild(Runner runner, RunNotifier notifier) {\n'
+                          '   System.out.println("AGENT11_EXECUTING_CLASS="+runner.getDescription().getClassName());\n'
+                          '   super.runChild(runner, notifier);\n  }\n }\n}\n')
+                    f=package/(suite+'.java');assert not f.exists();f.write_text(java);(REPORT/(suite+'.java')).write_text(java)
+                    name='pr169-ui-order-'+('AB' if order[0]==A else 'BA')
+                    mvn(label,name,[suite],limit=1200,evidence_tests=order)
+                    log=(REPORT/(name+'.log')).read_text(errors='replace')
+                    actual=[x.rsplit('.',1)[-1] for x in re.findall(r'AGENT11_EXECUTING_CLASS=([A-Za-z0-9_.$]+)',log)]
+                    evidence(name+'-observed-order',actual==order,actual=actual,expected=order,scope='generated test-only suite; not an unmodified candidate')
+                try:
+                    ab=json.loads((REPORT/'pr169-ui-order-AB-xml-summary.json').read_text());ba=json.loads((REPORT/'pr169-ui-order-BA-xml-summary.json').read_text())
+                    RESULTS.append({'name':'pr169-ui-two-order-comparison','status':'OBSERVATION','same_failed_case_set':set(ab['failed_tests'])==set(ba['failed_tests']),'AB_failures':ab['failed_tests'],'BA_failures':ba['failed_tests'],'scope':'only two selected classes; generated JUnit suites; not a general isolation PASS'});store()
+                except Exception as exc:evidence('pr169-ui-two-order-comparison',False,reason=type(exc).__name__)
+            mvn('pr153','pr153-redaction-osgi',['InfobaseParametersRedaction16Test','RegisteredInfobasesReaderTest'],limit=1800)
+            mvn('pr156','pr156-binding-osgi',['RegisteredInfobasesReaderTest'],limit=1800)
+        else:raise SystemExit('Unknown phase')
+        store();print('PHASE_FINISHED',PHASE,collections.Counter(x['status'] for x in RESULTS),flush=True)
+        raise SystemExit(1 if any(x['status']=='FAIL' for x in RESULTS) else 0)
+
+        PYDRIVER
+      continue-on-error: true
+      id: ui
+    - name: Sanitize allowlisted ui reports before upload
+      shell: bash
+      run: |
+        set -euo pipefail
+        python3 - <<'PY'
+        import pathlib,os,re,json
+        root=pathlib.Path(os.environ['TEAM_RUN'])/'reports';hits=[]
+        for p in root.rglob('*'):
+            if not p.is_file() or p.is_symlink():continue
+            text=p.read_text(errors='replace');original=text
+            text=re.sub(r'-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----.*?-----END (?:RSA |EC |OPENSSH )?PRIVATE KEY-----','<redacted-private-key>',text,flags=re.S)
+            text=re.sub(r'\bgh[pousr]_[A-Za-z0-9]{20,}|\bgithub_pat_[A-Za-z0-9_]{30,}','<redacted-token>',text)
+            text=re.sub(r'(?i)(Authorization:\s*Bearer\s+)[A-Za-z0-9._-]{20,}',r'\1<redacted>',text)
+            if text!=original:p.write_text(text);hits.append(p.name)
+        (root/'artifact-sanitization.json').write_text(json.dumps({'heuristic_not_full_audit':True,'files_redacted':hits},indent=2));print('REDACTED_FILES',len(hits))
+        PY
+      if: always() && env.TEAM_RUN != ''
+    - name: Upload allowlisted ui reports only
+      if: always() && env.TEAM_RUN != ''
+      uses: actions/upload-artifact@v4
+      with:
+        name: targeted11-ui-${{ github.run_id }}-${{ github.run_attempt }}
+        path: ${{ env.TEAM_RUN }}/reports/
+        retention-days: 7
+    - name: Final honest targeted summary
+      shell: bash
+      run: |
+        set -euo pipefail
+        python3 - <<'PY'
+        import os,pathlib,json,collections
+        r=pathlib.Path(os.environ['TEAM_RUN'])/'reports';rows=[];missing=[]
+        for phase in ('fast','ui'):
+            p=r/(phase+'-results.json')
+            if p.exists():rows+=json.loads(p.read_text())['results']
+            else:missing.append(phase)
+        counts=dict(collections.Counter(x['status'] for x in rows))
+        summary={'counts':counts,'missing_phases':missing,'results':rows,'integration_SHA':None,'release_ready':False,'note':'Rows are commands/evidence, not test counts; synthetic overlays are not integration commits.'}
+        (r/'targeted11-summary.json').write_text(json.dumps(summary,ensure_ascii=False,indent=2));print(json.dumps(summary,ensure_ascii=False))
+        pathlib.Path(os.environ['GITHUB_STEP_SUMMARY']).write_text('# Exact candidates: targeted runner checks\n\n'+str(counts)+'\n\nNo integration SHA or release claim.\n')
+        raise SystemExit(1 if missing or counts.get('FAIL',0) else 0)
+        PY
+      if: always() && env.TEAM_RUN != ''
+    - name: Upload final targeted summary
+      if: always() && env.TEAM_RUN != ''
+      uses: actions/upload-artifact@v4
+      with:
+        name: targeted11-summary-${{ github.run_id }}-${{ github.run_attempt }}
+        path: ${{ env.TEAM_RUN }}/reports/targeted11-summary.json
+        retention-days: 7
