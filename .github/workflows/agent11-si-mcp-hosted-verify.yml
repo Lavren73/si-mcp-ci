@@ -113,6 +113,7 @@ jobs:
           set -e
           echo "CLIENT_EXIT=$code"
           tail -25 "$RUNNER_TEMP/client-pytest.log"
+          grep -A 40 'short test summary info' "$RUNNER_TEMP/client-pytest.log" || true
           sha256sum "$RUNNER_TEMP/client-junit.xml"
           "$RUNNER_TEMP/venv/bin/python" - <<'PY'
           import os,xml.etree.ElementTree as ET
@@ -140,10 +141,11 @@ jobs:
             code=$?
             set -e
             echo "SCRIPTS_EXIT=$code"
-            echo "--- FAILED/ERROR имена ---"
-            grep -E '^(FAILED|ERROR)' "$RUNNER_TEMP/scripts-pytest.log" || true
-            echo "--- последние 30 строк ---"
-            tail -30 "$RUNNER_TEMP/scripts-pytest.log"
+            echo "--- short test summary ---"
+            grep -A 40 'short test summary info' "$RUNNER_TEMP/scripts-pytest.log" || true
+            echo "--- FAILURES (имена и утверждения) ---"
+            grep -B2 -A6 -E '^_{5,}' "$RUNNER_TEMP/scripts-pytest.log" || true
+            exit "$code"
           else
             echo "SCRIPTS_EXIT=skipped (нет server/scripts/tests)"
           fi
