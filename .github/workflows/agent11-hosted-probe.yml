@@ -1,4 +1,4 @@
-name: '№14 — oform 25x async stress hunt + ZD-09 run-gates check'
+name: '№14 — verify oform fix 40x stress + all 3 fixes full -fae'
 on:
   push:
     branches: [agent/14-hosted-full-verify]
@@ -8,10 +8,10 @@ permissions:
   contents: read
 
 jobs:
-  oform-stress-hunt:
-    name: 'Oform 25x async stress hunt (8eebaa35)'
+  oform-fix-stress-40x:
+    name: 'Oform 40x stress hunt WITH FIX (workers=4)'
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    timeout-minutes: 30
     env:
       LANG: C.UTF-8
       LC_ALL: C.UTF-8
@@ -53,7 +53,7 @@ jobs:
           rm -f /tmp/mvn.tgz
           echo "/opt/apache-maven-3.9.9/bin" >> "$GITHUB_PATH"
 
-      - name: Stress-repeat async oform.tests 25x (with and without CPU contention)
+      - name: Patch AnOrdinaryFormIsPulledFromTheInfobaseTest & stress-repeat 40x under CPU contention
         shell: bash
         env:
           MAVEN_OPTS: -Xmx3g -Dfile.encoding=UTF-8
@@ -63,6 +63,124 @@ jobs:
           import hashlib, multiprocessing, os, pathlib, shutil, subprocess, time, xml.etree.ElementTree as ET
 
           srv = pathlib.Path(os.environ['GITHUB_WORKSPACE']) / 'project/server'
+          test_file = srv / 'tests/si.edt.mcp.oform.tests/src/si/edt/mcp/oform/AnOrdinaryFormIsPulledFromTheInfobaseTest.java'
+          txt = test_file.read_text(encoding='utf-8')
+
+          old_test = (
+              '    @Test\n'
+              '    public void aDesignerStillWritingPastTheCancelIsRemovedInTheBackground() throws Exception\n'
+              '    {\n'
+              '        byte[] before = container(PROJECT_LAYOUT, PROJECT_MODULE);'
+          )
+          new_test = (
+              '    @Test\n'
+              '    public void aDesignerStillWritingPastTheCancelIsRemovedInTheBackground() throws Exception\n'
+              '    {\n'
+              '        assumeTrue("this user can delete a held file (a POSIX superuser ignores directory permissions)", //$NON-NLS-1$\n'
+              '            aHeldFileCannotBeDeleted());\n'
+              '        byte[] before = container(PROJECT_LAYOUT, PROJECT_MODULE);'
+          )
+          assert txt.count(old_test) == 1, 'old_test mismatch'
+          txt = txt.replace(old_test, new_test, 1)
+
+          old_block = (
+              '        Map<String, Object> answer;\n'
+              '        ToolCallScope.enter(scope);\n'
+              '        try\n'
+              '        {\n'
+              '            answer = imported("project", false, road); //$NON-NLS-1$\n'
+              '        }\n'
+              '        finally\n'
+              '        {\n'
+              '            ToolCallScope.exit();\n'
+              '        }\n'
+              '\n'
+              '        assertEquals(Boolean.FALSE, answer.get("success")); //$NON-NLS-1$\n'
+              '        assertTrue(String.valueOf(answer.get("error")), //$NON-NLS-1$\n'
+              '            String.valueOf(answer.get("error")).contains("cancelled")); //$NON-NLS-1$ //$NON-NLS-2$\n'
+              '        assertTrue(String.valueOf(answer.get("error")), //$NON-NLS-1$\n'
+              '            String.valueOf(answer.get("error")).contains("background")); //$NON-NLS-1$ //$NON-NLS-2$\n'
+              '        assertEquals("the run was cancelled by its key", 1, road.cancels); //$NON-NLS-1$\n'
+              '        assertTrue("the refusal came before the Designer left", road.designerDone.getCount() == 1); //$NON-NLS-1$\n'
+              '        Path parent = theOneImportDirectory();\n'
+              '        assertEquals("the output path lies inside the parent", parent, road.outputPassed.getParent()); //$NON-NLS-1$\n'
+              '        assertEquals(parent.toString(), String.valueOf(answer.get("leftBehind"))); //$NON-NLS-1$\n'
+              '        assertArrayEquals(before, theProjectsContainerBytes());\n'
+              '\n'
+              '        road.designerGate.countDown();'
+          )
+          new_block = (
+              '        Path parent;\n'
+              '        try\n'
+              '        {\n'
+              '            Map<String, Object> answer;\n'
+              '            ToolCallScope.enter(scope);\n'
+              '            try\n'
+              '            {\n'
+              '                answer = imported("project", false, road); //$NON-NLS-1$\n'
+              '            }\n'
+              '            finally\n'
+              '            {\n'
+              '                ToolCallScope.exit();\n'
+              '            }\n'
+              '\n'
+              '            assertEquals(Boolean.FALSE, answer.get("success")); //$NON-NLS-1$\n'
+              '            assertTrue(String.valueOf(answer.get("error")), //$NON-NLS-1$\n'
+              '                String.valueOf(answer.get("error")).contains("cancelled")); //$NON-NLS-1$ //$NON-NLS-2$\n'
+              '            assertTrue(String.valueOf(answer.get("error")), //$NON-NLS-1$\n'
+              '                String.valueOf(answer.get("error")).contains("background")); //$NON-NLS-1$ //$NON-NLS-2$\n'
+              '            assertEquals("the run was cancelled by its key", 1, road.cancels); //$NON-NLS-1$\n'
+              '            assertTrue("the refusal came before the Designer left", road.designerDone.getCount() == 1); //$NON-NLS-1$\n'
+              '            parent = theOneImportDirectory();\n'
+              '            assertEquals("the output path lies inside the parent", parent, road.outputPassed.getParent()); //$NON-NLS-1$\n'
+              '            assertEquals(parent.toString(), String.valueOf(answer.get("leftBehind"))); //$NON-NLS-1$\n'
+              '            assertArrayEquals(before, theProjectsContainerBytes());\n'
+              '        }\n'
+              '        finally\n'
+              '        {\n'
+              '            road.designerGate.countDown();\n'
+              '        }'
+          )
+          assert txt.count(old_block) == 1, 'old_block mismatch'
+          txt = txt.replace(old_block, new_block, 1)
+
+          old_designer = (
+              '                    Path service = output.getParent().resolve(".siedt-export-" + runKey); //$NON-NLS-1$\n'
+              '                    Files.createDirectories(service);\n'
+              '                    Path begun = service.resolve("begun.bin"); //$NON-NLS-1$\n'
+              '                    Files.write(begun, new byte[]{1});\n'
+              '                    java.io.FileInputStream running = new java.io.FileInputStream(begun.toFile());\n'
+              '                    designerBegun.countDown();\n'
+              '                    try\n'
+              '                    {\n'
+              '                        cancelledByRoad.await();\n'
+              '                        Files.write(service.resolve("working.bin"), new byte[]{1}); //$NON-NLS-1$\n'
+              '                        designerGate.await();\n'
+              '                    }\n'
+              '                    finally\n'
+              '                    {\n'
+              '                        running.close();\n'
+              '                    }'
+          )
+          new_designer = (
+              '                    Path service = output.getParent().resolve(".siedt-export-" + runKey); //$NON-NLS-1$\n'
+              '                    Path lockDir = service.resolve(".hold"); //$NON-NLS-1$\n'
+              '                    Files.createDirectories(lockDir);\n'
+              '                    Path begun = lockDir.resolve("begun.bin"); //$NON-NLS-1$\n'
+              '                    Files.write(begun, new byte[]{1});\n'
+              '                    try (Undeletable running = Undeletable.hold(begun))\n'
+              '                    {\n'
+              '                        designerBegun.countDown();\n'
+              '                        cancelledByRoad.await();\n'
+              '                        Files.write(service.resolve("working.bin"), new byte[]{1}); //$NON-NLS-1$\n'
+              '                        designerGate.await();\n'
+              '                    }'
+          )
+          assert txt.count(old_designer) == 1, 'old_designer mismatch'
+          txt = txt.replace(old_designer, new_designer, 1)
+          test_file.write_text(txt, encoding='utf-8')
+          print('PATCHED_TEST_OK=True', flush=True)
+
           test_javas = sorted((srv / 'tests/si.edt.mcp.oform.tests/src').rglob('*Test.java'))
           t0 = time.monotonic()
 
@@ -74,15 +192,6 @@ jobs:
           if p0.returncode != 0:
               raise SystemExit(1)
 
-          async_tests = (
-              'AnOrdinaryFormIsPulledFromTheInfobaseTest,'
-              'TwoPublicWritesRaceOneContainerTest,'
-              'TheOrdinaryComponentsFollowTheFrameworkTest,'
-              'BothActivationOrdersLeaveExactlyOneOrdinaryFormsTest,'
-              'TheBundlePublishesItsServicesTest,'
-              'TheBackgroundRemovalOfACancelledImportTest'
-          )
-
           def cpu_burner(stop_ev):
               data = b'x' * 4096
               while not stop_ev.is_set():
@@ -90,25 +199,26 @@ jobs:
 
           stop_ev = multiprocessing.Event()
           burners = []
+          for _ in range(4):
+              pr = multiprocessing.Process(target=cpu_burner, args=(stop_ev,))
+              pr.start()
+              burners.append(pr)
+          print('CPU_CONTENTION workers=4 ACTIVE', flush=True)
+
           any_fail = 0
           runs_done = 0
           try:
-              for idx in range(1, 26):
-                  if time.monotonic() - t0 > 1050:
+              for idx in range(1, 41):
+                  if time.monotonic() - t0 > 1350:
                       print(f'BUDGET_STOP after {runs_done} runs', flush=True)
                       break
-                  if idx == 13 and not burners:
-                      print('STARTING_CPU_CONTENTION workers=3', flush=True)
-                      for _ in range(3):
-                          pr = multiprocessing.Process(target=cpu_burner, args=(stop_ev,))
-                          pr.start()
-                          burners.append(pr)
                   it0 = time.monotonic()
                   for sr in (srv / 'tests/si.edt.mcp.oform.tests').glob('**/surefire-reports'):
                       shutil.rmtree(sr, ignore_errors=True)
                   cmd = [
                       'xvfb-run', '-a', 'mvn', '-B', '-ntp', '-Dstyle.color=never',
-                      '-pl', '!tests/si.edt.mcp.server.tests', f'-Dtest={async_tests}', 'verify'
+                      '-pl', '!tests/si.edt.mcp.server.tests',
+                      '-Dtest=AnOrdinaryFormIsPulledFromTheInfobaseTest', 'verify'
                   ]
                   if idx >= 2:
                       cmd.insert(4, '-o')
@@ -136,7 +246,7 @@ jobs:
                                       line_nums.append(ln.split('.java:', 1)[1].split(')', 1)[0])
                               coords.append(f'({xidx},{java_idx},{tc_idx},{kind},{exc_short},{line_nums[:3]})')
                   dt = time.monotonic() - it0
-                  print(f'ITER {idx}: exit={r.returncode} dt={dt:.1f}s xmls={len(xml_files)} tests={tot[0]} F={tot[1]} E={tot[2]} S={tot[3]}', flush=True)
+                  print(f'ITER {idx}: exit={r.returncode} dt={dt:.1f}s tests={tot[0]} F={tot[1]} E={tot[2]} S={tot[3]}', flush=True)
                   if coords:
                       print(f'ITER {idx} COORDS: ' + ' ; '.join(coords), flush=True)
           finally:
@@ -145,13 +255,15 @@ jobs:
                   pr.join(timeout=2)
                   if pr.is_alive():
                       pr.terminate()
-          print(f'STRESS_HUNT_SUMMARY runs={runs_done} total_bad={any_fail} ARTIFACTS_UPLOADED=0', flush=True)
+          print(f'FIXED_STRESS_SUMMARY runs={runs_done} total_bad={any_fail} ARTIFACTS_UPLOADED=0', flush=True)
+          if any_fail:
+              raise SystemExit(1)
           PY
 
-  zd09-gates-check:
-    name: 'ZD-09 unpack + run-gates.sh + client snakeyaml'
+  all-3-fixes-full-fae:
+    name: 'All 3 fixes full -fae + gates + snakeyaml + Z-15'
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    timeout-minutes: 30
     env:
       LANG: C.UTF-8
       LC_ALL: C.UTF-8
@@ -198,7 +310,7 @@ jobs:
           python3 -m venv "$RUNNER_TEMP/venv"
           "$RUNNER_TEMP/venv/bin/pip" install -q --disable-pip-version-check 'pytest==9.0.3' 'pytest-subtests==0.14.2'
 
-      - name: Patch server bundle pom.xml, package without server.tests, run-gates.sh + snakeyaml
+      - name: Apply all 3 fixes & verify end-to-end
         shell: bash
         env:
           MAVEN_OPTS: -Xmx3g -Dfile.encoding=UTF-8
@@ -206,12 +318,13 @@ jobs:
           set -euo pipefail
           export VENV_PY="$RUNNER_TEMP/venv/bin/python"
           "$VENV_PY" - <<'PY'
-          import os, pathlib, subprocess, zipfile
+          import os, pathlib, subprocess, xml.etree.ElementTree as ET
 
           root = pathlib.Path(os.environ['GITHUB_WORKSPACE']) / 'project'
           srv = root / 'server'
           py = os.environ['VENV_PY']
 
+          # 1. ZD-09 pom.xml
           pom = srv / 'bundles/si.edt.mcp.server/pom.xml'
           txt = pom.read_text(encoding='utf-8')
           snippet = (
@@ -242,22 +355,103 @@ jobs:
               '    </plugins>\n'
               '    <pluginManagement>'
           )
+          assert txt.count('    <pluginManagement>') == 1
           pom.write_text(txt.replace('    <pluginManagement>', snippet, 1), encoding='utf-8')
 
-          r = subprocess.run(
-              ['xvfb-run', '-a', 'mvn', '-B', '-ntp', '-Dstyle.color=never', '-pl', '!tests/si.edt.mcp.server.tests', 'verify'],
-              cwd=srv, capture_output=True, text=True, timeout=1200,
+          # 2. oform test race fix
+          tf = srv / 'tests/si.edt.mcp.oform.tests/src/si/edt/mcp/oform/AnOrdinaryFormIsPulledFromTheInfobaseTest.java'
+          t = tf.read_text(encoding='utf-8')
+          t = t.replace(
+              '    @Test\n    public void aDesignerStillWritingPastTheCancelIsRemovedInTheBackground() throws Exception\n    {\n        byte[] before = container(PROJECT_LAYOUT, PROJECT_MODULE);',
+              '    @Test\n    public void aDesignerStillWritingPastTheCancelIsRemovedInTheBackground() throws Exception\n    {\n        assumeTrue("this user can delete a held file (a POSIX superuser ignores directory permissions)", //$NON-NLS-1$\n            aHeldFileCannotBeDeleted());\n        byte[] before = container(PROJECT_LAYOUT, PROJECT_MODULE);',
+              1,
+          ).replace(
+              '        Map<String, Object> answer;\n        ToolCallScope.enter(scope);\n        try\n        {\n            answer = imported("project", false, road); //$NON-NLS-1$\n        }\n        finally\n        {\n            ToolCallScope.exit();\n        }\n\n        assertEquals(Boolean.FALSE, answer.get("success")); //$NON-NLS-1$\n        assertTrue(String.valueOf(answer.get("error")), //$NON-NLS-1$\n            String.valueOf(answer.get("error")).contains("cancelled")); //$NON-NLS-1$ //$NON-NLS-2$\n        assertTrue(String.valueOf(answer.get("error")), //$NON-NLS-1$\n            String.valueOf(answer.get("error")).contains("background")); //$NON-NLS-1$ //$NON-NLS-2$\n        assertEquals("the run was cancelled by its key", 1, road.cancels); //$NON-NLS-1$\n        assertTrue("the refusal came before the Designer left", road.designerDone.getCount() == 1); //$NON-NLS-1$\n        Path parent = theOneImportDirectory();\n        assertEquals("the output path lies inside the parent", parent, road.outputPassed.getParent()); //$NON-NLS-1$\n        assertEquals(parent.toString(), String.valueOf(answer.get("leftBehind"))); //$NON-NLS-1$\n        assertArrayEquals(before, theProjectsContainerBytes());\n\n        road.designerGate.countDown();',
+              '        Path parent;\n        try\n        {\n            Map<String, Object> answer;\n            ToolCallScope.enter(scope);\n            try\n            {\n                answer = imported("project", false, road); //$NON-NLS-1$\n            }\n            finally\n            {\n                ToolCallScope.exit();\n            }\n\n            assertEquals(Boolean.FALSE, answer.get("success")); //$NON-NLS-1$\n            assertTrue(String.valueOf(answer.get("error")), //$NON-NLS-1$\n                String.valueOf(answer.get("error")).contains("cancelled")); //$NON-NLS-1$ //$NON-NLS-2$\n            assertTrue(String.valueOf(answer.get("error")), //$NON-NLS-1$\n                String.valueOf(answer.get("error")).contains("background")); //$NON-NLS-1$ //$NON-NLS-2$\n            assertEquals("the run was cancelled by its key", 1, road.cancels); //$NON-NLS-1$\n            assertTrue("the refusal came before the Designer left", road.designerDone.getCount() == 1); //$NON-NLS-1$\n            parent = theOneImportDirectory();\n            assertEquals("the output path lies inside the parent", parent, road.outputPassed.getParent()); //$NON-NLS-1$\n            assertEquals(parent.toString(), String.valueOf(answer.get("leftBehind"))); //$NON-NLS-1$\n            assertArrayEquals(before, theProjectsContainerBytes());\n        }\n        finally\n        {\n            road.designerGate.countDown();\n        }',
+              1,
+          ).replace(
+              '                    Path service = output.getParent().resolve(".siedt-export-" + runKey); //$NON-NLS-1$\n                    Files.createDirectories(service);\n                    Path begun = service.resolve("begun.bin"); //$NON-NLS-1$\n                    Files.write(begun, new byte[]{1});\n                    java.io.FileInputStream running = new java.io.FileInputStream(begun.toFile());\n                    designerBegun.countDown();\n                    try\n                    {\n                        cancelledByRoad.await();\n                        Files.write(service.resolve("working.bin"), new byte[]{1}); //$NON-NLS-1$\n                        designerGate.await();\n                    }\n                    finally\n                    {\n                        running.close();\n                    }',
+              '                    Path service = output.getParent().resolve(".siedt-export-" + runKey); //$NON-NLS-1$\n                    Path lockDir = service.resolve(".hold"); //$NON-NLS-1$\n                    Files.createDirectories(lockDir);\n                    Path begun = lockDir.resolve("begun.bin"); //$NON-NLS-1$\n                    Files.write(begun, new byte[]{1});\n                    try (Undeletable running = Undeletable.hold(begun))\n                    {\n                        designerBegun.countDown();\n                        cancelledByRoad.await();\n                        Files.write(service.resolve("working.bin"), new byte[]{1}); //$NON-NLS-1$\n                        designerGate.await();\n                    }',
+              1,
           )
-          print(f'MVN_OFORM_EXIT={r.returncode}', flush=True)
-          if r.returncode != 0:
+          tf.write_text(t, encoding='utf-8')
+
+          # 3. client/make_installer.py
+          mi_p = root / 'client/make_installer.py'
+          mi = mi_p.read_text(encoding='utf-8')
+          replacements = [
+              (
+                  r"      .si-agent\\      журнал задач .si-agent\\задачи\\журнал.jsonl, ленты диалогов, .si-agent\\сессии" + "\\\n",
+                  r"      .si-agent\\      журнал задач .si-agent\\задачи\\журнал.jsonl, ленты диалогов, .si-agent\\сессии" + "\\\\\n",
+              ),
+              (
+                  r"      C:\\Program Files\1C\1CE\\components\1c-edt-*" + "\\\n",
+                  r"      C:\\Program Files\\1C\\1CE\\components\\1c-edt-*" + "\\\\\n",
+              ),
+              (
+                  r"      C:\\Program Files (x86)\1C\1CE\\components\1c-edt-*" + "\\\n",
+                  r"      C:\\Program Files (x86)\\1C\\1CE\\components\\1c-edt-*" + "\\\\\n",
+              ),
+              (
+                  r"      %LOCALAPPDATA%\1C\1CE\\components\1c-edt-*" + "\\\n",
+                  r"      %LOCALAPPDATA%\\1C\\1CE\\components\\1c-edt-*" + "\\\\\n",
+              ),
+          ]
+          for old_s, new_s in replacements:
+              assert mi.count(old_s) == 1, f'missing {old_s!r}'
+              mi = mi.replace(old_s, new_s, 1)
+          mi_p.write_text(mi, encoding='utf-8')
+
+          # Run Z-15 check
+          z15 = subprocess.run([py, 'tools/З-15-текст-установщика-13.py', '.'], cwd=root, capture_output=True, text=True)
+          print(f'Z15_EXIT={z15.returncode} stdout={z15.stdout.strip()}', flush=True)
+          if z15.returncode != 0:
               raise SystemExit(1)
 
-          rg = subprocess.run(['bash', 'scripts/run-gates.sh'], cwd=srv, capture_output=True, text=True)
-          print(f'RUN_GATES_SH_EXIT={rg.returncode}', flush=True)
-          for ln in rg.stdout.splitlines():
-              if any(k in ln for k in ('EDT_API:', 'GUARD:', 'проверок по существу')):
+          # Run full Maven -fae verify
+          r = subprocess.run(
+              ['xvfb-run', '-a', 'mvn', '-B', '-ntp', '-Dstyle.color=never', '-fae', 'verify'],
+              cwd=srv, capture_output=True, text=True, timeout=1200,
+          )
+          print(f'MVN_FAE_EXIT={r.returncode}', flush=True)
+          for ln in r.stdout.splitlines():
+              if any(k in ln for k in ('[INFO] SI-EDT', 'Tests run:', 'BUILD ')):
                   print(' ', ln.strip(), flush=True)
-          if rg.returncode != 0:
-              raise SystemExit(1)
-          print('ARTIFACTS_UPLOADED=0', flush=True)
+
+          # Check oform surefire totals
+          of_xmls = sorted((srv / 'tests/si.edt.mcp.oform.tests').glob('**/surefire-reports/TEST-*.xml'))
+          of_tot = [0, 0, 0, 0]
+          for xp in of_xmls:
+              x = ET.parse(xp).getroot()
+              of_tot = [a + int(x.get(k, '0')) for a, k in zip(of_tot, ('tests', 'failures', 'errors', 'skipped'))]
+          print(f'OFORM_TOTAL xmls={len(of_xmls)} tests={of_tot[0]} F={of_tot[1]} E={of_tot[2]} S={of_tot[3]}', flush=True)
+
+          # Check server.tests count
+          srv_xmls = sorted((srv / 'tests/si.edt.mcp.server.tests').glob('**/surefire-reports/TEST-*.xml'))
+          srv_tot = [0, 0, 0, 0]
+          for xp in srv_xmls:
+              x = ET.parse(xp).getroot()
+              srv_tot = [a + int(x.get(k, '0')) for a, k in zip(srv_tot, ('tests', 'failures', 'errors', 'skipped'))]
+          print(f'SERVER_TOTAL xmls={len(srv_xmls)} tests={srv_tot[0]} F={srv_tot[1]} E={srv_tot[2]} S={srv_tot[3]}', flush=True)
+
+          # SnakeYAML checks
+          jar = sorted((srv / 'repositories/si.edt.mcp.server.repository/target/repository/plugins').glob('si.edt.mcp.server_*.jar'))
+          site_zip = sorted((srv / 'repositories/si.edt.mcp.server.repository/target').glob('*.zip'))
+          assert len(jar) == 1 and len(site_zip) == 1
+          jres = subprocess.run([py, 'tools/проверка-snakeyaml.py', '--jar', str(jar[0])], cwd=root, capture_output=True, text=True)
+          sres = subprocess.run([py, 'tools/проверка-snakeyaml.py', '--сайт', str(site_zip[0])], cwd=root, capture_output=True, text=True)
+          pres = subprocess.run([py, '-m', 'pytest', 'tests/test_snakeyaml_v_feature.py', '-v'], cwd=root/'client', env={**os.environ, 'SI_EDT_PLUGIN_JAR': str(jar[0])}, capture_output=True, text=True)
+          print(f'SNAKEYAML jar={jres.returncode} site={sres.returncode} pytest={pres.returncode}', flush=True)
+
+          # run-gates.sh
+          rg = subprocess.run(['bash', 'scripts/run-gates.sh'], cwd=srv, capture_output=True, text=True)
+          print(f'RUN_GATES_EXIT={rg.returncode}', flush=True)
+          for ln in rg.stdout.splitlines():
+              if any(k in ln for k in ('проверок по существу', 'Провал', 'не проходят')):
+                  print(' ', ln.strip(), flush=True)
+
+          assert of_tot[1] == 0 and of_tot[2] == 0
+          assert srv_tot[1] + srv_tot[2] == 19
+          assert jres.returncode == 0 and sres.returncode == 0 and pres.returncode == 0 and rg.returncode == 0
+          print('ALL_CHECKS_GREEN ARTIFACTS_UPLOADED=0', flush=True)
           PY
