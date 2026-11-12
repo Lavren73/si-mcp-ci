@@ -1,11 +1,8 @@
 name: '№14 — oform flake hunt + ZD-09 root unpack experiment'
 on:
+  push:
+    branches: [agent/14-hosted-full-verify]
   workflow_dispatch:
-    inputs:
-      sha:
-        description: 'Exact SI-MCP SHA to verify'
-        required: true
-        default: '8eebaa355da257a408fb509b87090f9a02c33f66'
 
 permissions:
   contents: read
@@ -18,7 +15,7 @@ jobs:
     env:
       LANG: C.UTF-8
       LC_ALL: C.UTF-8
-      TARGET_SHA: ${{ inputs.sha }}
+      TARGET_SHA: '8eebaa355da257a408fb509b87090f9a02c33f66'
     steps:
       - name: Checkout SI-MCP branch without persisting credentials
         uses: actions/checkout@v4
@@ -128,7 +125,7 @@ jobs:
     env:
       LANG: C.UTF-8
       LC_ALL: C.UTF-8
-      TARGET_SHA: ${{ inputs.sha }}
+      TARGET_SHA: '8eebaa355da257a408fb509b87090f9a02c33f66'
     steps:
       - name: Checkout SI-MCP branch without persisting credentials
         uses: actions/checkout@v4
