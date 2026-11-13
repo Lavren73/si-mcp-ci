@@ -168,13 +168,14 @@ jobs:
               print(out2[-4000:], flush=True)
           assert rc2 == 0 and f2 == 0 and e2 == 0
 
-          # 4. Negative control A: disable expectedRevision mismatch check in ModuleSourceWriter
+          # 4. Negative control A: disable both expectedRevision mismatch checks in ModuleSourceWriter
           msw = srv / "bundles/si.edt.mcp.server/src/si/edt/mcp/server/toolkit/ops/ModuleSourceWriter.java"
           orig_msw = msw.read_text(encoding="utf-8")
           try:
-              needle = "if (!Objects.equals(expectedRevision, beforeToken))"
-              assert needle in orig_msw
-              msw.write_text(orig_msw.replace(needle, "if (false)"), encoding="utf-8")
+              n1 = "if (!Objects.equals(expectedRevision, beforeToken))"
+              n2 = "if (!Objects.equals(expectedRevision, liveRev))"
+              assert n1 in orig_msw and n2 in orig_msw
+              msw.write_text(orig_msw.replace(n1, "if (false)").replace(n2, "if (false)"), encoding="utf-8")
               nrc, nt, nf, ne, ns, _, _, _ = run_junit(
                   "targets/default,bundles/si.edt.mcp.server,tests/si.edt.mcp.server.tests",
                   "si.edt.mcp.server.tests",
