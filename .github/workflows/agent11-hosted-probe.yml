@@ -88,19 +88,24 @@ jobs:
           import pathlib,sys,xml.etree.ElementTree as E
           want={'TheAccessLevelMatrixMatchesTheCatalogueTest','Agent13MatrixIsolationSentinelTest'}
           seen={}
+          sentinel_marker=False
           for f in pathlib.Path('.').glob('**/target/surefire-reports/TEST-*.xml'):
               try:
                   r=E.parse(f).getroot(); name=r.get('name','').rsplit('.',1)[-1]
                   if name in want:
                       if name in seen: raise ValueError('duplicate')
                       seen[name]=tuple(int(r.attrib[k]) for k in ('tests','failures','errors','skipped'))
+                      if name == 'Agent13MatrixIsolationSentinelTest':
+                          failures=r.findall('.//failure')
+                          sentinel_marker=any((x.get('message') or '').startswith('ordinary registered identity must be restored') for x in failures)
               except Exception:
                   print('PARSE_ERROR=1'); sys.exit(2)
           for name in sorted(want): print(name+'='+str(seen.get(name)))
+          print('IDENTITY_LOST_MARKER='+str(int(sentinel_marker)))
           print('ARTIFACTS_UPLOADED=0')
           baseline=seen.get('TheAccessLevelMatrixMatchesTheCatalogueTest')
           sentinel=seen.get('Agent13MatrixIsolationSentinelTest')
-          ok=baseline == (2,0,0,0) and sentinel == (1,1,0,0) and int(sys.argv[1]) != 0 and int(sys.argv[2]) == 0
+          ok=sentinel_marker and baseline == (2,0,0,0) and sentinel == (1,1,0,0) and int(sys.argv[1]) != 0 and int(sys.argv[2]) == 0
           print('EXPECTED_COUNTEREXAMPLE_CONFIRMED='+str(int(ok)))
           sys.exit(0 if ok else 1)
           PY
