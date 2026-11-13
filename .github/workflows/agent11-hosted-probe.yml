@@ -12,7 +12,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: Lavren73/SI-MCP
-          ref: 4f1090b3c5ec304a33cdf3fd7effdf73203dbda2
+          ref: a3cb44a55583061cdbf8138edb3ace8853f1d079
           token: ${{ secrets.SI_MCP_TOKEN }}
           persist-credentials: false
           path: project
@@ -22,9 +22,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          [ "$(git rev-parse HEAD)" = 4f1090b3c5ec304a33cdf3fd7effdf73203dbda2 ]
-          [ "$(git rev-parse HEAD^)" = 65e089aad0e5dc5ee88a4bfad5e87e26116bf10a ]
-          [ "$(git diff --name-only HEAD^ HEAD)" = tools/agent13_review196.py ]
+          [ "$(git rev-parse HEAD)" = a3cb44a55583061cdbf8138edb3ace8853f1d079 ]
+          [ "$(git rev-parse HEAD^^)" = 65e089aad0e5dc5ee88a4bfad5e87e26116bf10a ]
+          [ "$(git diff --name-only HEAD^^ HEAD)" = tools/agent13_review196.py ]
           set +e
           python3 tools/agent13_review196.py
           probe_exit=$?
