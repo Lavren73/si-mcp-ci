@@ -94,7 +94,7 @@ jobs:
           ])
           r_f = subprocess.run([
               "xvfb-run", "-a", "/opt/apache-maven-3.9.9/bin/mvn", "-B", "-ntp", "-Dstyle.color=never",
-              "-pl", "bundles/si.edt.mcp.server,tests/si.edt.mcp.server.tests", "-am",
+              "-pl", "targets,bundles/si.edt.mcp.server,tests/si.edt.mcp.server.tests", "-am",
               f"-Dtest={focused}", "verify"
           ], cwd=srv, capture_output=True, text=True)
           print(f"Z03_FOCUSED_EXIT={r_f.returncode}", flush=True)
@@ -119,7 +119,7 @@ jobs:
               xp.unlink()
           r_all = subprocess.run([
               "xvfb-run", "-a", "/opt/apache-maven-3.9.9/bin/mvn", "-B", "-ntp", "-Dstyle.color=never",
-              "-pl", "tests/si.edt.mcp.server.tests",
+              "-pl", "targets,bundles/si.edt.mcp.server,tests/si.edt.mcp.server.tests", "-am",
               "-Dtest=si.edt.mcp.server.settings.*Test", "verify"
           ], cwd=srv, capture_output=True, text=True)
           atot = [0, 0, 0, 0]
@@ -147,7 +147,7 @@ jobs:
                   xp.unlink()
               r_mut = subprocess.run([
                   "xvfb-run", "-a", "/opt/apache-maven-3.9.9/bin/mvn", "-B", "-ntp", "-Dstyle.color=never",
-                  "-pl", "tests/si.edt.mcp.server.tests",
+                  "-pl", "targets,bundles/si.edt.mcp.server,tests/si.edt.mcp.server.tests", "-am",
                   "-Dtest=si.edt.mcp.server.settings.RestoringToolDefaultsGivesTheShippedPresetTest",
                   "verify"
               ], cwd=srv, capture_output=True, text=True)
