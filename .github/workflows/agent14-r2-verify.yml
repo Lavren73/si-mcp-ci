@@ -1,4 +1,4 @@
-name: Agent 14 Hosted P0 R-2 Verify (9b2aff6d)
+name: Agent 14 Hosted P0 R-2 Verify (399278b9)
 on:
   push:
     branches:
@@ -12,7 +12,7 @@ concurrency:
 
 jobs:
   r2_server_verify:
-    name: "P0 R-2 (9b2aff6d): exact SHA + neg-ctrls + full 0F/0E reactor"
+    name: "P0 R-2 (399278b9): exact SHA + 6 neg-ctrls + full 0F/0E reactor"
     runs-on: ubuntu-24.04
     timeout-minutes: 35
     env:
@@ -54,7 +54,7 @@ jobs:
           /opt/apache-maven-3.9.9/bin/mvn -version
           python3 -m pip install -q pytest pytest-subtests || true
 
-      - name: Checkout exact SHA 9b2aff6d71f890d46c7a07aa2f13c1f4eec32a28
+      - name: Checkout exact SHA 399278b9bb63a9e21c89673996044656e1704869
         shell: bash
         run: |
           set -euo pipefail
@@ -64,10 +64,10 @@ jobs:
           export GIT_SSH_COMMAND="ssh -i $HOME/.ssh/si_mcp_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"
           git clone -q --branch agent/14-p0-r2-diagnostics-completeness --depth=40 git@github.com:Lavren73/SI-MCP.git src
           cd src
-          git checkout -q 9b2aff6d71f890d46c7a07aa2f13c1f4eec32a28
+          git checkout -q 399278b9bb63a9e21c89673996044656e1704869
           echo "EXACT_R2_SHA=$(git rev-parse HEAD)"
 
-      - name: Standalone R-2 focused + 5 negative controls + cumulative 0F/0E reactor
+      - name: Standalone R-2 focused + 6 negative controls + cumulative 0F/0E reactor
         shell: bash
         run: |
           set -euo pipefail
@@ -114,12 +114,13 @@ jobs:
               print(f"R2_GATE {gate} exit={rg.returncode} tail={(rg.stdout.strip().splitlines() or [''])[-1]}", flush=True)
               assert rg.returncode == 0
 
-          # 2. Exact SHA focused 16-class suite (including isolation sentinel & all R-2 tests)
+          # 2. Exact SHA focused 17-class suite (including isolation sentinel & all R-2 tests)
           focused = [
               "si.edt.mcp.server.support.FailureShapeTest",
               "si.edt.mcp.server.wire.jsonrpc.ToolCallResultTest",
               "si.edt.mcp.server.wire.McpRequestRouterTest",
               "si.edt.mcp.server.toolkit.ops.DiagnosticsCompletenessTest",
+              "si.edt.mcp.server.toolkit.ops.TheEmptyFirstReadIsRetriedTest",
               "si.edt.mcp.server.wire.DiagnosticsCompletenessWireTest",
               "si.edt.mcp.server.wire.DiagnosticsCompletenessWireIsolationTest",
               "si.edt.mcp.server.TheAccessLevelMatrixFixturePreservesRuntimeStateTest",
@@ -139,7 +140,7 @@ jobs:
           print(f"R2_EXACT_FOCUSED exit={rc} T={t} F={f} E={e} S={s}", flush=True)
           if rc != 0 or f != 0 or e != 0:
               print(out[-3000:], flush=True)
-          assert rc == 0 and f == 0 and e == 0 and t >= 130
+          assert rc == 0 and f == 0 and e == 0 and t >= 135
 
           # 3. Negative control A: disable MARKDOWN_REQUEST_FAILED in FailureShape.java
           fs = srv / "bundles/si.edt.mcp.server/src/si/edt/mcp/server/support/FailureShape.java"
@@ -202,20 +203,48 @@ jobs:
           finally:
               wt.write_text(orig_wt, encoding="utf-8")
 
-          # 7. Merge latest team base + open verified PRs (#195, #190, #192, #193, #194, #176) & run full reactor
+          # 6b. Negative control E: bypass maxSidecarBytes <= 0 guard in McpRequestRouter.boundSidecar
+          rr = srv / "bundles/si.edt.mcp.server/src/si/edt/mcp/server/wire/McpRequestRouter.java"
+          orig_rr = rr.read_text(encoding="utf-8")
+          try:
+              needle_rr = "        if (maxSidecarBytes <= 0)\n        {\n            return completeness.withResponseTruncated().withBoundedUnresolved(0);\n        }"
+              assert needle_rr in orig_rr
+              rr.write_text(orig_rr.replace(needle_rr, "        // mutated: sidecarBudget==0 falls into ResponseCap.exceeds"), encoding="utf-8")
+              nrc, nt, nf, ne, ns, _, _ = run_junit([
+                  "si.edt.mcp.server.wire.DiagnosticsCompletenessWireTest",
+              ])
+              print(f"R2_NEG_CTRL_SIDECAR_ZERO_BUDGET exit={nrc} T={nt} F={nf} E={ne}", flush=True)
+              assert nrc != 0 and (nf + ne) >= 2
+          finally:
+              rr.write_text(orig_rr, encoding="utf-8")
+
+          # 6c. Negative control F: revert InterruptedException fail-closed throw in retryEmptyRead back to break
+          try:
+              needle_int = 'throw new MarkerStoreException(\n                    "Interrupted while waiting for diagnostics markers to refresh.", interrupted); //$NON-NLS-1$'
+              assert needle_int in orig_ppr
+              ppr.write_text(orig_ppr.replace(needle_int, "break;"), encoding="utf-8")
+              nrc, nt, nf, ne, ns, _, _ = run_junit([
+                  "si.edt.mcp.server.toolkit.ops.TheEmptyFirstReadIsRetriedTest",
+                  "si.edt.mcp.server.toolkit.ops.DiagnosticsCompletenessTest",
+              ])
+              print(f"R2_NEG_CTRL_INTERRUPTED_RETRY exit={nrc} T={nt} F={nf} E={ne}", flush=True)
+              assert nrc != 0 and (nf + ne) >= 2
+          finally:
+              ppr.write_text(orig_ppr, encoding="utf-8")
+
+          # 7. Merge latest team base + open verified PRs (#190, #192, #193, #194, #176) & run full reactor
           subprocess.run(["git", "config", "user.name", "si-mcp-agent-sim"], cwd=src, check=True)
           subprocess.run(["git", "config", "user.email", "si-mcp-agent@local.invalid"], cwd=src, check=True)
           subprocess.run([
               "git", "fetch", "-q", "origin",
               "agent/obmen-20261102:refs/heads/obmen-latest",
-              "refs/pull/195/head:refs/heads/pr-195",
               "refs/pull/190/head:refs/heads/pr-190",
               "refs/pull/192/head:refs/heads/pr-192",
               "refs/pull/193/head:refs/heads/pr-193",
               "refs/pull/194/head:refs/heads/pr-194",
               "refs/pull/176/head:refs/heads/pr-176",
           ], cwd=src, check=True)
-          for branch in ("obmen-latest", "pr-195", "pr-190", "pr-192", "pr-193", "pr-194", "pr-176"):
+          for branch in ("obmen-latest", "pr-190", "pr-192", "pr-193", "pr-194", "pr-176"):
               r_m = subprocess.run(["git", "merge", "--no-edit", branch, "-m", f"sim merge {branch}"],
                                    cwd=src, capture_output=True, text=True)
               if r_m.returncode != 0:
