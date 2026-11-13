@@ -93,9 +93,9 @@ jobs:
               "si.edt.mcp.server.settings.AGroupTickUnderAQuerySparesWhatItHidesTest",
           ])
           r_f = subprocess.run([
-              "xvfb-run", "-a", "mvn", "-B", "-ntp", "-Dstyle.color=never",
+              "xvfb-run", "-a", "/opt/apache-maven-3.9.9/bin/mvn", "-B", "-ntp", "-Dstyle.color=never",
               "-pl", "bundles/si.edt.mcp.server,tests/si.edt.mcp.server.tests", "-am",
-              f"-Dtest={focused}", "test-compile", "tycho-surefire:test"
+              f"-Dtest={focused}", "verify"
           ], cwd=srv, capture_output=True, text=True)
           print(f"Z03_FOCUSED_EXIT={r_f.returncode}", flush=True)
           if r_f.returncode != 0:
@@ -118,9 +118,9 @@ jobs:
           for xp in rep.glob("TEST-*.xml"):
               xp.unlink()
           r_all = subprocess.run([
-              "xvfb-run", "-a", "mvn", "-B", "-ntp", "-Dstyle.color=never",
+              "xvfb-run", "-a", "/opt/apache-maven-3.9.9/bin/mvn", "-B", "-ntp", "-Dstyle.color=never",
               "-pl", "tests/si.edt.mcp.server.tests",
-              "-Dtest=si.edt.mcp.server.settings.*Test", "tycho-surefire:test"
+              "-Dtest=si.edt.mcp.server.settings.*Test", "verify"
           ], cwd=srv, capture_output=True, text=True)
           atot = [0, 0, 0, 0]
           xmls = sorted(rep.glob("TEST-*.xml"))
@@ -146,10 +146,10 @@ jobs:
               for xp in rep.glob("TEST-*.xml"):
                   xp.unlink()
               r_mut = subprocess.run([
-                  "xvfb-run", "-a", "mvn", "-B", "-ntp", "-Dstyle.color=never",
+                  "xvfb-run", "-a", "/opt/apache-maven-3.9.9/bin/mvn", "-B", "-ntp", "-Dstyle.color=never",
                   "-pl", "tests/si.edt.mcp.server.tests",
                   "-Dtest=si.edt.mcp.server.settings.RestoringToolDefaultsGivesTheShippedPresetTest",
-                  "test-compile", "tycho-surefire:test"
+                  "verify"
               ], cwd=srv, capture_output=True, text=True)
               mtot = [0, 0, 0, 0]
               for xp in rep.glob("TEST-*.xml"):
