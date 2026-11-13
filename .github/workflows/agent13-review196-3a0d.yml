@@ -1,0 +1,56 @@
+name: 'Agent 13 PR196 exact-head no-restore verification'
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout public synthetic harness
+        uses: actions/checkout@v4
+        with:
+          path: harness
+          persist-credentials: false
+      - name: Checkout exact private source commit
+        uses: actions/checkout@v4
+        with:
+          repository: Lavren73/SI-MCP
+          ref: 3a0dff24978b4842dcbcb2d01ba3b1de31e28ef1
+          token: ${{ secrets.SI_MCP_TOKEN }}
+          persist-credentials: false
+          path: project
+          fetch-depth: 1
+      - name: Verify exact SHA and run independent synthetic tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected='3a0dff24978b4842dcbcb2d01ba3b1de31e28ef1'
+          actual="$(git -C project rev-parse HEAD)"
+          test "$actual" = "$expected"
+          echo "SOURCE_SHA=$actual"
+          cd project/client
+          set +e
+          python3 -m unittest discover -s tests -p 'test_partial_diagnostics_agent11.py' > "$RUNNER_TEMP/partial.log" 2>&1
+          partial_exit=$?
+          python3 -m unittest discover -s tests -p 'test_rollback.py' > "$RUNNER_TEMP/rollback.log" 2>&1
+          rollback_exit=$?
+          set -e
+          python3 - "$RUNNER_TEMP/partial.log" "$partial_exit" "$RUNNER_TEMP/rollback.log" "$rollback_exit" <<'PY'
+          import pathlib,re,sys
+          for label,path,code in [('PARTIAL','partial',int(sys.argv[2])),('ROLLBACK','rollback',int(sys.argv[4]))]:
+              text=pathlib.Path(sys.argv[1] if label=='PARTIAL' else sys.argv[3]).read_text(errors='replace')
+              m=re.search(r'Ran (\d+) tests?',text)
+              print(f"{label}_TESTS={m.group(1) if m else 'UNKNOWN'}")
+              print(f"{label}_EXIT={code}")
+              print(f"{label}_RESULT={'PASS' if code==0 and '\nOK\n' in text else 'FAIL'}")
+          PY
+          test "$partial_exit" -eq 0
+          test "$rollback_exit" -eq 0
+          cd "$GITHUB_WORKSPACE/project"
+          python3 ../harness/agent13-review/no_rollback_3a0d.py
+          echo 'ARTIFACTS_UPLOADED=0'
+          echo 'PRIVATE_SOURCE_LOGS_UPLOADED=0'
+          echo 'LIVE_EDT_IB=0'
+          echo 'SOURCE_CHECKOUT_CREDENTIALS_PERSISTED=0'
