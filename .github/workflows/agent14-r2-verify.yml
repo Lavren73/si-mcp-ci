@@ -1,4 +1,4 @@
-name: Agent 14 Hosted P0 R-2 Verify (8dd8fba1)
+name: Agent 14 Hosted P0 R-2 Verify (9b2aff6d)
 on:
   push:
     branches:
@@ -12,7 +12,7 @@ concurrency:
 
 jobs:
   r2_server_verify:
-    name: "P0 R-2 (8dd8fba1): exact SHA + neg-ctrls + full 0F/0E reactor"
+    name: "P0 R-2 (9b2aff6d): exact SHA + neg-ctrls + full 0F/0E reactor"
     runs-on: ubuntu-24.04
     timeout-minutes: 35
     env:
@@ -54,7 +54,7 @@ jobs:
           /opt/apache-maven-3.9.9/bin/mvn -version
           python3 -m pip install -q pytest pytest-subtests || true
 
-      - name: Checkout exact SHA 8dd8fba14193bc4957a7643be19579ce74dedd72
+      - name: Checkout exact SHA 9b2aff6d71f890d46c7a07aa2f13c1f4eec32a28
         shell: bash
         run: |
           set -euo pipefail
@@ -64,7 +64,7 @@ jobs:
           export GIT_SSH_COMMAND="ssh -i $HOME/.ssh/si_mcp_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"
           git clone -q --branch agent/14-p0-r2-diagnostics-completeness --depth=40 git@github.com:Lavren73/SI-MCP.git src
           cd src
-          git checkout -q 8dd8fba14193bc4957a7643be19579ce74dedd72
+          git checkout -q 9b2aff6d71f890d46c7a07aa2f13c1f4eec32a28
           echo "EXACT_R2_SHA=$(git rev-parse HEAD)"
 
       - name: Standalone R-2 focused + 5 negative controls + cumulative 0F/0E reactor
