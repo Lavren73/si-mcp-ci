@@ -1,4 +1,4 @@
-name: '№13 — isolated access matrix sentinel'
+name: '№13 — matrix fixture independent repeat'
 on:
   workflow_dispatch:
 permissions:
@@ -16,7 +16,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: Lavren73/SI-MCP
-          ref: be507661db35990ec40ab0f105bd045f0ff08d02
+          ref: 88511e3ca5fa407d4fb53826e97b3418bc094ed0
           token: ${{ secrets.SI_MCP_TOKEN }}
           persist-credentials: false
           path: project
@@ -41,7 +41,7 @@ jobs:
         run: |
           set -euo pipefail
           sha=$(git rev-parse HEAD)
-          [ "$sha" = be507661db35990ec40ab0f105bd045f0ff08d02 ] || exit 1
+          [ "$sha" = 88511e3ca5fa407d4fb53826e97b3418bc094ed0 ] || exit 1
           echo "SOURCE_SHA=$sha"
           python3 tools/проверить-матрицу-прав.py > "$RUNNER_TEMP/private-matrix.log" 2>&1 && matrix=0 || matrix=$?
           echo "MATRIX_BASE_EXIT=$matrix"
@@ -80,13 +80,13 @@ jobs:
           JAVA
           cd server
           set +e
-          xvfb-run -a "$RUNNER_TEMP/apache-maven-3.9.9/bin/mvn" -B -fae -ntp -pl targets/default,bundles/si.edt.mcp.server,tests/si.edt.mcp.server.tests -am '-Dtest=TheAccessLevelMatrixMatchesTheCatalogueTest,Agent13MatrixIsolationSentinelTest' verify > "$RUNNER_TEMP/private-maven.log" 2>&1
+          xvfb-run -a "$RUNNER_TEMP/apache-maven-3.9.9/bin/mvn" -B -fae -ntp -pl targets/default,bundles/si.edt.mcp.server,tests/si.edt.mcp.server.tests -am '-Dtest=TheAccessLevelMatrixMatchesTheCatalogueTest,TheAccessLevelMatrixFixturePreservesRuntimeStateTest,Agent13MatrixIsolationSentinelTest' verify > "$RUNNER_TEMP/private-maven.log" 2>&1
           rc=$?
           set -e
           echo "MAVEN_EXIT=$rc"
           python3 - "$rc" "$matrix" <<'PY'
           import pathlib,sys,xml.etree.ElementTree as E
-          want={'TheAccessLevelMatrixMatchesTheCatalogueTest','Agent13MatrixIsolationSentinelTest'}
+          want={'TheAccessLevelMatrixMatchesTheCatalogueTest','TheAccessLevelMatrixFixturePreservesRuntimeStateTest','Agent13MatrixIsolationSentinelTest'}
           seen={}
           sentinel_marker=False
           for f in pathlib.Path('.').glob('**/target/surefire-reports/TEST-*.xml'):
@@ -105,7 +105,8 @@ jobs:
           print('ARTIFACTS_UPLOADED=0')
           baseline=seen.get('TheAccessLevelMatrixMatchesTheCatalogueTest')
           sentinel=seen.get('Agent13MatrixIsolationSentinelTest')
-          ok=sentinel_marker and baseline == (2,0,0,0) and sentinel == (1,1,0,0) and int(sys.argv[1]) != 0 and int(sys.argv[2]) == 0
-          print('EXPECTED_COUNTEREXAMPLE_CONFIRMED='+str(int(ok)))
+          fixture=seen.get('TheAccessLevelMatrixFixturePreservesRuntimeStateTest')
+          ok=baseline == (2,0,0,0) and fixture == (2,0,0,0) and sentinel == (1,0,0,0) and int(sys.argv[1]) == 0 and int(sys.argv[2]) == 0
+          print('RESTORATION_CONFIRMED='+str(int(ok)))
           sys.exit(0 if ok else 1)
           PY
