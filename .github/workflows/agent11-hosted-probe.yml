@@ -1,4 +1,4 @@
-name: '№13 — UI fixture preference isolation sentinel'
+name: '№13 — UI fixture constructor fault sentinel'
 on:
   workflow_dispatch:
 permissions:
@@ -42,36 +42,36 @@ jobs:
           set -euo pipefail
           [ "$(git rev-parse HEAD)" = 371ce1ce1d77c13949b9b19b858da990cf0fe97e ] || exit 1
           echo 'SOURCE_SHA=371ce1ce1d77c13949b9b19b858da990cf0fe97e'
-          cat > server/tests/si.edt.mcp.server.tests/src/si/edt/mcp/server/settings/Agent13DefaultStateProbeTest.java <<'JAVA'
+          cat > server/tests/si.edt.mcp.server.tests/src/si/edt/mcp/server/settings/Agent13ConstructorFaultProbeTest.java <<'JAVA'
           package si.edt.mcp.server.settings;
           import static org.junit.Assert.*;
           import org.eclipse.jface.preference.IPreferenceStore;
           import org.junit.Test;
           import si.edt.mcp.server.Activator;
-          public class Agent13DefaultStateProbeTest {
-            @Test public void openingAndClosingMustRestoreDefaultness() {
+          public class Agent13ConstructorFaultProbeTest {
+            @Test public void failedConstructorMustRestorePreference() {
               IPreferenceStore store=Activator.getDefault().getPreferenceStore();
               String key=PrefKeys.PREF_DISABLED_TOOLS;
-              boolean wasDefault=store.isDefault(key);
-              String before=store.getString(key);
+              boolean priorDefault=store.isDefault(key);
+              String prior=store.getString(key);
               try {
                 store.setToDefault(key);
-                assertTrue("sentinel precondition: value is default",store.isDefault(key));
-                String actualDefault=store.getString(key);
-                try (AToolsTabOnAShell tab=AToolsTabOnAShell.open(key,"agent13_sentinel_not_a_tool")) {
-                  assertFalse("sentinel precondition: temporary value differs from default",store.isDefault(key));
-                }
-                assertEquals("value must be restored",actualDefault,store.getString(key));
-                assertTrue("default preference state must be restored",store.isDefault(key));
+                String baseline=store.getString(key);
+                boolean threw=false;
+                try (AToolsTabOnAShell ignored=AToolsTabOnAShell.open(key,"agent13_fault_injection",null,"ignored")) {
+                  fail("sentinel precondition: expected constructor failure");
+                } catch (RuntimeException expected) { threw=true; }
+                assertTrue("sentinel precondition: constructor threw",threw);
+                assertEquals("preference must survive constructor exception",baseline,store.getString(key));
               } finally {
-                if (wasDefault) store.setToDefault(key); else store.setValue(key,before);
+                if (priorDefault) store.setToDefault(key); else store.setValue(key,prior);
               }
             }
           }
           JAVA
           cd server
           set +e
-          xvfb-run -a "$RUNNER_TEMP/apache-maven-3.9.9/bin/mvn" -B -fae -ntp -pl targets/default,bundles/si.edt.mcp.server,tests/si.edt.mcp.server.tests -am '-Dtest=Agent13DefaultStateProbeTest' verify > "$RUNNER_TEMP/private-maven.log" 2>&1
+          xvfb-run -a "$RUNNER_TEMP/apache-maven-3.9.9/bin/mvn" -B -fae -ntp -pl targets/default,bundles/si.edt.mcp.server,tests/si.edt.mcp.server.tests -am '-Dtest=Agent13ConstructorFaultProbeTest' verify > "$RUNNER_TEMP/private-maven.log" 2>&1
           rc=$?
           set -e
           echo "MAVEN_EXIT=$rc"
@@ -81,18 +81,18 @@ jobs:
           for f in pathlib.Path('.').glob('**/target/surefire-reports/TEST-*.xml'):
               try:
                   r=E.parse(f).getroot()
-                  if r.get('name','').rsplit('.',1)[-1]=='Agent13DefaultStateProbeTest': seen.append(r)
+                  if r.get('name','').rsplit('.',1)[-1]=='Agent13ConstructorFaultProbeTest': seen.append(r)
               except E.ParseError: print('XML_PARSE_ERROR=1');sys.exit(2)
           if len(seen)!=1: print('SENTINEL_XML_MISSING_OR_DUPLICATE=1');sys.exit(2)
           r=seen[0]; nums=tuple(int(r.attrib[k]) for k in ('tests','failures','errors','skipped'))
           failures=r.findall('.//failure')
-          marker=any((x.get('message') or '').startswith('default preference state must be restored') for x in failures)
+          marker=any((x.get('message') or '').startswith('preference must survive constructor exception') for x in failures)
           print('SENTINEL_TESTS=%d FAILURES=%d ERRORS=%d SKIPPED=%d'%nums)
-          print('DEFAULT_STATE_LOST_MARKER='+str(int(marker)))
+          print('CONSTRUCTOR_ROLLBACK_LOST_MARKER='+str(int(marker)))
           print('ARTIFACTS_UPLOADED=0')
           if nums==(1,0,0,0) and int(sys.argv[1])==0:
-              print('DEFAULT_STATE_RESTORED=1');sys.exit(0)
+              print('CONSTRUCTOR_ROLLBACK_RESTORED=1');sys.exit(0)
           if nums==(1,1,0,0) and int(sys.argv[1])!=0 and marker:
-              print('DEFAULT_STATE_RESTORED=0');sys.exit(0)
+              print('CONSTRUCTOR_ROLLBACK_RESTORED=0');sys.exit(0)
           print('UNEXPECTED_OUTCOME=1');sys.exit(1)
           PY
