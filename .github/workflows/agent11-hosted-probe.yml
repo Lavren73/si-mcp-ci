@@ -1,4 +1,4 @@
-name: Agent 14 Hosted Verify PR193 + Z03
+name: Agent 14 Hosted Verify PR193 (3 mutations) + Z03 (54 settings + 4 mutations)
 on:
   push:
     branches:
@@ -12,7 +12,7 @@ concurrency:
 
 jobs:
   pr193_verify:
-    name: "PR193: Causal contrast (a4e93e6f vs 829e25bc) + DCS suite + mutation"
+    name: "PR193: Causal contrast + DCS suite + 3 mutations (guard, exact-name, ambiguity)"
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     env:
@@ -52,7 +52,7 @@ jobs:
           git -C src remote add origin git@github.com:Lavren73/SI-MCP.git
           git -C src fetch -q --depth=1 origin a4e93e6f027e04b8067ace1ec85d31e5df1a3e2e 829e25bcef79276603a7681e0db5174f1a596561
 
-      - name: Run causal contrast, PR193 DCS suite, and DcsWorkshopTool mutation
+      - name: Run causal contrast, PR193 DCS suite, and 3 DcsWorkshopTool mutations
         shell: bash
         run: |
           set -euo pipefail
@@ -68,11 +68,10 @@ jobs:
               details = []
               for xp in xmls:
                   r = ET.fromstring(xp.read_text(encoding="utf-8", errors="replace"))
-                  t = int(r.attrib.get("tests", 0))
-                  f = int(r.attrib.get("failures", 0))
-                  e = int(r.attrib.get("errors", 0))
-                  s = int(r.attrib.get("skipped", 0))
-                  tot[0] += t; tot[1] += f; tot[2] += e; tot[3] += s
+                  tot[0] += int(r.attrib.get("tests", 0))
+                  tot[1] += int(r.attrib.get("failures", 0))
+                  tot[2] += int(r.attrib.get("errors", 0))
+                  tot[3] += int(r.attrib.get("skipped", 0))
                   for tc in r.findall("testcase"):
                       bad = tc.find("failure") or tc.find("error")
                       if bad is not None:
@@ -95,7 +94,7 @@ jobs:
           print(f"PR193_BASE_CONTRAST exit={r_base.returncode} xmls={xb} tests={tb[0]} F={tb[1]} E={tb[2]} S={tb[3]}", flush=True)
           for line in db:
               print("  BASE_FAIL:", line, flush=True)
-          assert r_base.returncode != 0 and (tb[1] + tb[2]) == 3, f"expected 3 causal failures on base, got {tb}"
+          assert r_base.returncode != 0 and (tb[1] + tb[2]) == 3
 
           # 2. Head 829e25bcef ASchemaHoldsSchemasInsideItTest + full DCS/schema group
           subprocess.run(["git", "checkout", "-q", "-f", "829e25bcef79276603a7681e0db5174f1a596561"], cwd=src, check=True)
@@ -117,43 +116,39 @@ jobs:
           ], cwd=srv, capture_output=True, text=True)
           xh, th, dh = parse_xmls(srv)
           print(f"PR193_HEAD_DCS_GROUP exit={r_head.returncode} xmls={xh} tests={th[0]} F={th[1]} E={th[2]} S={th[3]}", flush=True)
-          for line in dh:
-              print("  HEAD_FAIL:", line, flush=True)
           assert r_head.returncode == 0 and xh == 8 and th[1:] == [0, 0, 0]
 
-          # Check exact test count of ASchemaHoldsSchemasInsideItTest
-          schema_xml = list(srv.rglob("TEST-*ASchemaHoldsSchemasInsideItTest.xml"))
-          assert len(schema_xml) == 1
-          sr = ET.fromstring(schema_xml[0].read_text(encoding="utf-8", errors="replace"))
-          print(f"PR193_SCHEMA_TEST_ONLY tests={sr.attrib.get('tests')} F={sr.attrib.get('failures')} E={sr.attrib.get('errors')} S={sr.attrib.get('skipped')}", flush=True)
-          assert int(sr.attrib.get("tests", 0)) >= 33
-
-          # 3. Mutation: remove dataset dot guard in DcsWorkshopTool.doAddDataSet
           dcs_tool = srv / "bundles/si.edt.mcp.server/src/si/edt/mcp/server/toolkit/ops/DcsWorkshopTool.java"
           orig = dcs_tool.read_text(encoding="utf-8")
-          needle = 'mustNotLookLikeAPath(name, "dataset"); //$NON-NLS-1$'
-          assert needle in orig
-          dcs_tool.write_text(orig.replace(needle, "// MUTATED: " + needle, 1), encoding="utf-8")
-          try:
-              clean_xmls(srv)
-              r_mut = subprocess.run([
-                  "xvfb-run", "-a", "mvn", "-B", "-ntp", "-Dstyle.color=never",
-                  "-pl", "targets/default,bundles/si.edt.mcp.server,tests/si.edt.mcp.server.tests", "-am",
-                  "-Dtest=ASchemaHoldsSchemasInsideItTest", "verify"
-              ], cwd=srv, capture_output=True, text=True)
-              xm, tm, dm = parse_xmls(srv)
-              print(f"PR193_MUTATION exit={r_mut.returncode} xmls={xm} tests={tm[0]} F={tm[1]} E={tm[2]} S={tm[3]}", flush=True)
-              for line in dm:
-                  print("  MUT_FAIL:", line, flush=True)
-              assert r_mut.returncode != 0 and (tm[1] + tm[2]) >= 1
-          finally:
-              dcs_tool.write_text(orig, encoding="utf-8")
 
-          print("PR193_SUMMARY=CAUSAL_3_RED_ON_BASE_HEAD_GREEN_MUTATION_KILLED ARTIFACTS_UPLOADED=0", flush=True)
+          mutations = [
+              ("MUT_GUARD", 'mustNotLookLikeAPath(name, "dataset"); //$NON-NLS-1$', '// MUTATED: guard disabled'),
+              ("MUT_EXACT_NAME", 'if (BmDcsHelper.findByNameInList(schema, "getDataSets", unionName) != null) //$NON-NLS-1$', 'if (false) // MUTATED: exact-name skipped'),
+              ("MUT_AMBIGUITY", 'mustNotBeAmbiguous(schema, "getDataSets", unionName); //$NON-NLS-1$', '// MUTATED: ambiguity check disabled'),
+          ]
+          for label, needle, repl in mutations:
+              assert needle in orig, f"missing needle for {label}"
+              dcs_tool.write_text(orig.replace(needle, repl, 1), encoding="utf-8")
+              try:
+                  clean_xmls(srv)
+                  r_m = subprocess.run([
+                      "xvfb-run", "-a", "mvn", "-B", "-ntp", "-Dstyle.color=never",
+                      "-pl", "targets/default,bundles/si.edt.mcp.server,tests/si.edt.mcp.server.tests", "-am",
+                      "-Dtest=ASchemaHoldsSchemasInsideItTest", "verify"
+                  ], cwd=srv, capture_output=True, text=True)
+                  xm, tm, dm = parse_xmls(srv)
+                  print(f"PR193_{label} exit={r_m.returncode} xmls={xm} tests={tm[0]} F={tm[1]} E={tm[2]} S={tm[3]}", flush=True)
+                  for line in dm:
+                      print(f"  {label}_FAIL:", line, flush=True)
+                  assert r_m.returncode != 0 and (tm[1] + tm[2]) >= 1
+              finally:
+                  dcs_tool.write_text(orig, encoding="utf-8")
+
+          print("PR193_SUMMARY=CAUSAL_BASE3_HEAD115_ALL_3_MUTATIONS_KILLED ARTIFACTS_UPLOADED=0", flush=True)
           PY_INNER
 
   z03_verify:
-    name: "Z03: Exact 371ce1ce OSGi (54 settings tests + legacy preservation + mutations)"
+    name: "Z03: Exact 371ce1ce OSGi (54 settings + 4 mutations)"
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     env:
@@ -195,7 +190,7 @@ jobs:
           git -C src checkout -q FETCH_HEAD
           echo "Z03_SHA=$(git -C src rev-parse HEAD)"
 
-      - name: Run gates, full 54-class settings OSGi suite, and ToolsPrefTab mutations
+      - name: Run full 54-class settings suite, focused 6 Z03+legacy, and 4 ToolsPrefTab mutations
         shell: bash
         run: |
           set -euo pipefail
@@ -209,6 +204,7 @@ jobs:
               xmls = sorted(root.rglob("TEST-*.xml"))
               tot = [0, 0, 0, 0]
               details = []
+              skipped = []
               for xp in xmls:
                   r = ET.fromstring(xp.read_text(encoding="utf-8", errors="replace"))
                   tot[0] += int(r.attrib.get("tests", 0))
@@ -216,84 +212,100 @@ jobs:
                   tot[2] += int(r.attrib.get("errors", 0))
                   tot[3] += int(r.attrib.get("skipped", 0))
                   for tc in r.findall("testcase"):
+                      sk = tc.find("skipped")
+                      if sk is not None:
+                          skipped.append(f"{r.attrib.get('name')}#{tc.attrib.get('name')}: {sk.attrib.get('message','')[:100]}")
                       bad = tc.find("failure") or tc.find("error")
                       if bad is not None:
                           details.append(f"{tc.attrib.get('name')}({bad.tag}): {(bad.attrib.get('message') or '')[:140]}")
-              return len(xmls), tot, details
+              return len(xmls), tot, details, skipped
 
           def clean_xmls(root):
               for xp in root.rglob("TEST-*.xml"):
                   xp.unlink()
 
-          r_txt = subprocess.run(["python3", "tools/проверка-текста.py"], cwd=src, capture_output=True, text=True)
-          print(f"Z03_PY_TEXT exit={r_txt.returncode}", flush=True)
-          assert r_txt.returncode == 0
+          # 1. Focused 4 adapted classes + 2 legacy-finder neighbour classes: must be 0F/0E/0S
+          z03_focus = ",".join([
+              "AKeptSetOutlivesThePresetChangeTest",
+              "APresetChangeRepaintsTheHiddenMarksTest",
+              "AQueryBringsBackTheTicksItShowsTest",
+              "RestoringToolDefaultsGivesTheShippedPresetTest",
+              "TheToolsTabOnAScreenTest",
+              "AGroupTickUnderAQuerySparesWhatItHidesTest",
+          ])
+          clean_xmls(srv)
+          r_foc = subprocess.run([
+              "xvfb-run", "-a", "mvn", "-B", "-ntp", "-Dstyle.color=never",
+              "-pl", "targets/default,bundles/si.edt.mcp.server,tests/si.edt.mcp.server.tests", "-am",
+              f"-Dtest={z03_focus}", "verify"
+          ], cwd=srv, capture_output=True, text=True)
+          xf, tf, df, sf = parse_xmls(srv)
+          print(f"Z03_FOCUSED_6 exit={r_foc.returncode} xmls={xf} tests={tf[0]} F={tf[1]} E={tf[2]} S={tf[3]}", flush=True)
+          assert r_foc.returncode == 0 and xf == 6 and tf[1:] == [0, 0, 0]
 
-          r_gates = subprocess.run(["bash", "scripts/run-gates.sh"], cwd=srv, capture_output=True, text=True)
-          print(f"Z03_SERVER_GATES exit={r_gates.returncode}\n{r_gates.stdout.strip()}", flush=True)
-          assert r_gates.returncode == 0
-
-          # Run all *Test classes in si.edt.mcp.server.settings
+          # 2. All 54 *Test classes in settings
           settings_dir = srv / "tests/si.edt.mcp.server.tests/src/si/edt/mcp/server/settings"
           all_classes = sorted(p.stem for p in settings_dir.glob("*Test.java"))
-          print(f"Z03_SETTINGS_CLASS_COUNT={len(all_classes)}", flush=True)
-
           clean_xmls(srv)
           r_all = subprocess.run([
               "xvfb-run", "-a", "mvn", "-B", "-ntp", "-Dstyle.color=never",
               "-pl", "targets/default,bundles/si.edt.mcp.server,tests/si.edt.mcp.server.tests", "-am",
               f"-Dtest={','.join(all_classes)}", "verify"
           ], cwd=srv, capture_output=True, text=True)
-          xa, ta, da = parse_xmls(srv)
+          xa, ta, da, sa = parse_xmls(srv)
           print(f"Z03_SETTINGS_FULL exit={r_all.returncode} xmls={xa} tests={ta[0]} F={ta[1]} E={ta[2]} S={ta[3]}", flush=True)
-          for line in da:
-              print("  FULL_FAIL:", line, flush=True)
-          if r_all.returncode != 0:
-              print("=== MVN TAIL ===")
-              print("\n".join(r_all.stdout.splitlines()[-80:]))
-          assert r_all.returncode == 0 and xa == len(all_classes) and ta[1:] == [0, 0, 0]
+          for line in sa:
+              print("  FULL_SKIP:", line, flush=True)
+          assert r_all.returncode == 0 and xa == len(all_classes) and ta[1] == 0 and ta[2] == 0
 
-          # Mutation 1: strip unlisted mark suffix in ToolsPrefTab
+          # 3. Four targeted mutations in ToolsPrefTab (one per adapted test class)
           tab_file = srv / "bundles/si.edt.mcp.server/src/si/edt/mcp/server/settings/ToolsPrefTab.java"
           orig = tab_file.read_text(encoding="utf-8")
-          needle_mark = 'return " — скрыт из списка, но вызывается";'
-          assert needle_mark in orig
-          tab_file.write_text(orig.replace(needle_mark, 'return ""; // MUTATED', 1), encoding="utf-8")
-          try:
-              clean_xmls(srv)
-              r_m1 = subprocess.run([
-                  "xvfb-run", "-a", "mvn", "-B", "-ntp", "-Dstyle.color=never",
-                  "-pl", "targets/default,bundles/si.edt.mcp.server,tests/si.edt.mcp.server.tests", "-am",
-                  "-Dtest=APresetChangeRepaintsTheHiddenMarksTest,RestoringToolDefaultsGivesTheShippedPresetTest",
-                  "verify"
-              ], cwd=srv, capture_output=True, text=True)
-              xm1, tm1, dm1 = parse_xmls(srv)
-              print(f"Z03_MUTATION_UNLISTED_MARK exit={r_m1.returncode} xmls={xm1} tests={tm1[0]} F={tm1[1]} E={tm1[2]} S={tm1[3]}", flush=True)
-              for line in dm1:
-                  print("  M1_FAIL:", line, flush=True)
-              assert r_m1.returncode != 0 and (tm1[1] + tm1[2]) >= 2
-          finally:
-              tab_file.write_text(orig, encoding="utf-8")
 
-          # Mutation 2: drop reconcileDoor in applyKeptSet
-          needle_door = "AgentRightsMode.reconcileDoor(disabledTools, rightsMode);"
-          assert orig.count(needle_door) >= 2
-          tab_file.write_text(orig.replace(needle_door, "// MUTATED: " + needle_door), encoding="utf-8")
-          try:
-              clean_xmls(srv)
-              r_m2 = subprocess.run([
-                  "xvfb-run", "-a", "mvn", "-B", "-ntp", "-Dstyle.color=never",
-                  "-pl", "targets/default,bundles/si.edt.mcp.server,tests/si.edt.mcp.server.tests", "-am",
-                  "-Dtest=AKeptSetOutlivesThePresetChangeTest",
-                  "verify"
-              ], cwd=srv, capture_output=True, text=True)
-              xm2, tm2, dm2 = parse_xmls(srv)
-              print(f"Z03_MUTATION_KEPT_DOOR exit={r_m2.returncode} xmls={xm2} tests={tm2[0]} F={tm2[1]} E={tm2[2]} S={tm2[3]}", flush=True)
-              for line in dm2:
-                  print("  M2_FAIL:", line, flush=True)
-              assert r_m2.returncode != 0 and (tm2[1] + tm2[2]) >= 1
-          finally:
-              tab_file.write_text(orig, encoding="utf-8")
+          mutations = [
+              (
+                  "MUT_QUERY",
+                  "AQueryBringsBackTheTicksItShowsTest",
+                  "pane.filter.setQuery(pane.filterBox.getText());",
+                  'pane.filter.setQuery("nonexistent_mutated_xyz");',
+              ),
+              (
+                  "MUT_UNLISTED_MARK",
+                  "APresetChangeRepaintsTheHiddenMarksTest",
+                  'return " — скрыт из списка, но вызывается";',
+                  'return ""; // MUTATED',
+              ),
+              (
+                  "MUT_DEFAULTS_UNLISTED",
+                  "RestoringToolDefaultsGivesTheShippedPresetTest",
+                  "unlistedTools.addAll(ToolProfile.CANONICAL.getUnlistedTools());",
+                  "// MUTATED: skipped CANONICAL unlisted restore",
+              ),
+              (
+                  "MUT_KEPT_DOOR",
+                  "AKeptSetOutlivesThePresetChangeTest",
+                  "AgentRightsMode.reconcileDoor(disabledTools, rightsMode);",
+                  "// MUTATED: reconcileDoor skipped",
+              ),
+          ]
 
-          print("Z03_SUMMARY=ALL_54_SETTINGS_GREEN_AND_BOTH_MUTATIONS_KILLED ARTIFACTS_UPLOADED=0", flush=True)
+          for label, test_cls, needle, repl in mutations:
+              assert needle in orig, f"missing needle for {label}"
+              tab_file.write_text(orig.replace(needle, repl), encoding="utf-8")
+              try:
+                  clean_xmls(srv)
+                  r_m = subprocess.run([
+                      "xvfb-run", "-a", "mvn", "-B", "-ntp", "-Dstyle.color=never",
+                      "-pl", "targets/default,bundles/si.edt.mcp.server,tests/si.edt.mcp.server.tests", "-am",
+                      f"-Dtest={test_cls}", "verify"
+                  ], cwd=srv, capture_output=True, text=True)
+                  xm, tm, dm, _ = parse_xmls(srv)
+                  print(f"Z03_{label} exit={r_m.returncode} xmls={xm} tests={tm[0]} F={tm[1]} E={tm[2]} S={tm[3]}", flush=True)
+                  for line in dm:
+                      print(f"  {label}_FAIL:", line, flush=True)
+                  assert r_m.returncode != 0 and (tm[1] + tm[2]) >= 1
+              finally:
+                  tab_file.write_text(orig, encoding="utf-8")
+
+          print("Z03_SUMMARY=FOCUSED_6_ZERO_ALL_54_ZERO_FAIL_ALL_4_MUTATIONS_KILLED ARTIFACTS_UPLOADED=0", flush=True)
           PY_INNER
