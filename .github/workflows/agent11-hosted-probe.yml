@@ -1,18 +1,14 @@
-name: '№13 — whole-catalog contract census'
+name: '№13 — catalog to schema snapshot identity'
 on:
   workflow_dispatch:
 permissions:
   contents: read
 jobs:
-  verify:
+  inventory:
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
-    env:
-      LANG: C.UTF-8
-      LC_ALL: C.UTF-8
-      MAVEN_OPTS: -Xmx3g
+    timeout-minutes: 10
     steps:
-      - name: Checkout private test-only candidate
+      - name: Checkout exact candidate
         uses: actions/checkout@v4
         with:
           repository: Lavren73/SI-MCP
@@ -21,85 +17,23 @@ jobs:
           persist-credentials: false
           path: project
           fetch-depth: 2
-      - name: Set up Java
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: '17'
-      - name: Prepare hosted dependencies
-        shell: bash
-        run: |
-          set -euo pipefail
-          sudo apt-get update -qq > "$RUNNER_TEMP/setup.log" 2>&1
-          sudo apt-get install -y -qq xvfb xauth libgtk-3-0 >> "$RUNNER_TEMP/setup.log" 2>&1
-          curl -fsSL https://archive.apache.org/dist/maven/maven-3/3.9.9/binaries/apache-maven-3.9.9-bin.tar.gz -o "$RUNNER_TEMP/maven.tar.gz"
-          tar -xzf "$RUNNER_TEMP/maven.tar.gz" -C "$RUNNER_TEMP"
-          echo 'SETUP_OK=1'
-      - name: Inventory and runtime schema checks
+      - name: Compare sets without revealing names
         shell: bash
         working-directory: project
         run: |
           set -euo pipefail
           [ "$(git rev-parse HEAD)" = f2c83433be6b64c48d0ce0fb79e81e857d045257 ] || exit 1
           [ "$(git rev-parse HEAD^)" = 364a64b566ca99560ae27b45c4887ea95e697077 ] || exit 1
-          echo 'BASE_SHA=364a64b566ca99560ae27b45c4887ea95e697077'
-          echo 'TEST_CANDIDATE_SHA=f2c83433be6b64c48d0ce0fb79e81e857d045257'
-          set +e
-          python3 client/tests/извлечь-каталог-из-исходников.py --src server --check > "$RUNNER_TEMP/catalog-check.log" 2>&1
-          catrc=$?
-          python3 server/scripts/check-tool-catalog.py > "$RUNNER_TEMP/doc-check.log" 2>&1
-          docrc=$?
-          set -e
-          echo "STATIC_SNAPSHOT_CHECK_EXIT=$catrc"
-          echo "DOC_CATALOG_CHECK_EXIT=$docrc"
           python3 - <<'PY'
           import importlib.util,pathlib,sys
           root=pathlib.Path.cwd();p=root/'client/tests';sys.path.insert(0,str(p))
           spec=importlib.util.spec_from_file_location('audit13',p/'извлечь-каталог-из-исходников.py')
           m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
           catalog,unparsed=m.собрать(root/'server')
-          import extract_edt_catalog as e
-          e.CATEGORY_FILE=root/'server/bundles/si.edt.mcp.server/src/si/edt/mcp/server/settings/ToolCategory.java'
-          cats=e.tool_categories()
-          print('STATIC_DECLARED=%d UNIQUE=%d UNPARSED=%d CATEGORIZED=%d STATIC_SCHEMA_RECOGNIZED=%d'%(
-              len(catalog),len({x['name'] for x in catalog}),len(unparsed),sum(x['name'] in cats for x in catalog),sum(bool(x['schema']) for x in catalog)))
-          if len(catalog)!=154 or len({x['name'] for x in catalog})!=154 or unparsed or sum(x['name'] in cats for x in catalog)!=154: sys.exit(1)
-          PY
-          cd server
-          set +e
-          xvfb-run -a "$RUNNER_TEMP/apache-maven-3.9.9/bin/mvn" -B -fae -ntp -pl targets/default,bundles/si.edt.mcp.server,tests/si.edt.mcp.server.tests -am '-Dtest=Agent13WholeCatalogSentinelTest,McpToolSchemaContractTest,ToolRegistrationTest,TheSchemaShapeIsFrozenTest' verify > "$RUNNER_TEMP/private-maven.log" 2>&1
-          rc=$?
-          set -e
-          echo "MAVEN_EXIT=$rc"
-          python3 - <<'PY'
-          import os,re
-          text=open(os.environ['RUNNER_TEMP']+'/private-maven.log',encoding='utf8',errors='replace').read()
-          checks={'COMPILER_FAILURE':r'(?i)compilation failure|tycho-compiler.*failed|compiler.*error',
-                  'ACCESS_RESTRICTION':r'(?i)access restriction',
-                  'SYMBOL_UNRESOLVED':r'(?i)cannot be resolved|cannot find symbol',
-                  'TEST_FAILURE':r'(?i)there are test failures|tests run:.*failures: [1-9]',
-                  'DEPENDENCY_FAILURE':r'(?i)could not resolve|failed to collect dependencies|could not transfer artifact',
-                  'TEST_RUNTIME_FAILURE':r'(?i)could not launch|failed to execute goal.*tycho-surefire',
-                  'LOCAL_SENTINEL_REFERENCED':r'Agent13WholeCatalogSentinelTest'}
-          for name,pat in checks.items(): print(name+'='+str(int(bool(re.search(pat,text)))))
-          lines=sorted(set(int(n) for n in re.findall(r'Agent13WholeCatalogSentinelTest\.java(?::\[?|\s*\(at line )([0-9]+)',text)))
-          print('SENTINEL_DIAGNOSTIC_LINES='+','.join(map(str,lines)))
-          PY
-          python3 - "$rc" <<'PY'
-          import pathlib,sys,xml.etree.ElementTree as E
-          want={'Agent13WholeCatalogSentinelTest','McpToolSchemaContractTest','ToolRegistrationTest','TheSchemaShapeIsFrozenTest'}
-          seen={}
-          for f in pathlib.Path('.').glob('**/target/surefire-reports/TEST-*.xml'):
-              try:
-                  r=E.parse(f).getroot(); name=r.get('name','').rsplit('.',1)[-1]
-                  if name in want:
-                      if name in seen: raise ValueError('duplicate suite')
-                      seen[name]=tuple(int(r.attrib[k]) for k in ('tests','failures','errors','skipped'))
-              except Exception:
-                  print('PARSE_ERROR=1');sys.exit(2)
-          for name in sorted(want): print(name+'='+str(seen.get(name)))
+          snapshot=root/'server/tests/si.edt.mcp.server.tests/src/si/edt/mcp/server/schema-shape.tsv'
+          raw=[l.split('\t',1)[0] for l in snapshot.read_text(encoding='utf8').splitlines() if l and not l.startswith('#')]
+          equal=len(catalog)==154 and len(raw)==154 and len(set(raw))==154 and not unparsed and set(raw)=={x['name'] for x in catalog}
+          print('STATIC_NAMES=%d SNAPSHOT_NAMES=%d UNPARSED=%d SETS_EQUAL=%d'%(len(catalog),len(raw),len(unparsed),int(equal)))
           print('ARTIFACTS_UPLOADED=0')
-          ok=int(sys.argv[1])==0 and set(seen)==want and seen.get('Agent13WholeCatalogSentinelTest')==(1,0,0,0) and all(x[0]>0 and x[1:]==(0,0,0) for x in seen.values())
-          print('CATALOG_SCHEMA_ONLY_CONFIRMED='+str(int(ok)))
-          sys.exit(0 if ok else 1)
+          sys.exit(0 if equal else 1)
           PY
