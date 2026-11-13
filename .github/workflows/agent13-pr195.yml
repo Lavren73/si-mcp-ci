@@ -1,0 +1,59 @@
+name: Agent 13 independent PR 195 review
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout reviewed exact SHA
+        uses: actions/checkout@v4
+        with:
+          repository: Lavren73/SI-MCP
+          ref: 59ec19fe24ac8ee0e2f8e58c74db31578461ed34
+          token: ${{ secrets.SI_MCP_TOKEN }}
+          persist-credentials: false
+          path: project
+      - name: Independent synthetic filesystem boundaries
+        working-directory: project
+        shell: bash
+        run: |
+          set -euo pipefail
+          [ "$(git rev-parse HEAD)" = 59ec19fe24ac8ee0e2f8e58c74db31578461ed34 ]
+          python3 - <<'PYCODE'
+          import importlib.util,tempfile,pathlib,contextlib,io,os
+          s=importlib.util.spec_from_file_location('gate','server/scripts/check-no-file-journals.py'); g=importlib.util.module_from_spec(s); s.loader.exec_module(g)
+          checks=0
+          for n in range(10,24):
+              with tempfile.TemporaryDirectory() as d:
+                  root=pathlib.Path(d); p=root/'ОБСУЖДЕНИЕ';p.mkdir();(p/f'№{n}.md').write_text('synthetic',encoding='utf8');g.ДЕРЕВО=d
+                  with contextlib.redirect_stdout(io.StringIO()),contextlib.redirect_stderr(io.StringIO()): rc=g.main()
+                  assert rc==(0 if n in (*range(11,17),21) else 1),(n,rc);checks+=1
+          for kind in ['link','dangling','fifo','nested','wrongdir','dirlink']:
+              with tempfile.TemporaryDirectory() as d:
+                  root=pathlib.Path(d); p=root/'ОБСУЖДЕНИЕ';p.mkdir();f=p/'№21.md'
+                  if kind=='link':
+                      t=root/'target';t.write_text('x');f.symlink_to(t)
+                  elif kind=='dangling': f.symlink_to(root/'absent')
+                  elif kind=='fifo': os.mkfifo(f)
+                  elif kind=='nested':
+                      q=p/'child';q.mkdir();(q/'№21.md').write_text('x')
+                  elif kind=='wrongdir':
+                      q=root/'ОБСУЖДЕНИЯ';q.mkdir();(q/'№21.md').write_text('x')
+                  else: f.symlink_to(p,target_is_directory=True)
+                  g.ДЕРЕВО=d
+                  with contextlib.redirect_stdout(io.StringIO()),contextlib.redirect_stderr(io.StringIO()): rc=g.main()
+                  assert rc==(2 if kind=='dirlink' else 1),(kind,rc);checks+=1
+          print('INDEPENDENT_195_CHECKS=%d FAILURES=0' % checks)
+          PYCODE
+          python3 - <<'PYCODE'
+          import io,sys,unittest
+          sys.path.insert(0,'server/scripts/tests')
+          suite=unittest.defaultTestLoader.loadTestsFromName('test_no_file_journals')
+          result=unittest.TextTestRunner(stream=io.StringIO(),verbosity=0).run(suite)
+          print('AUTHOR_TESTS=%d FAILURES=%d ERRORS=%d SKIPS=%d' % (result.testsRun,len(result.failures),len(result.errors),len(result.skipped)))
+          sys.exit(0 if result.wasSuccessful() and result.testsRun==14 else 1)
+          PYCODE
+          echo 'ARTIFACTS_UPLOADED=0'
