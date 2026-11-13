@@ -1,21 +1,91 @@
-name: '№11 — hosted runner probe (public repo check)'
+name: '№13 — whole-catalog contract census'
 on:
   workflow_dispatch:
 permissions:
   contents: read
 jobs:
-  probe:
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      LANG: C.UTF-8
+      LC_ALL: C.UTF-8
+      MAVEN_OPTS: -Xmx3g
     steps:
-      - name: Confirm GitHub-hosted runner starts and report toolchain
+      - name: Checkout private test-only candidate
+        uses: actions/checkout@v4
+        with:
+          repository: Lavren73/SI-MCP
+          ref: f2c83433be6b64c48d0ce0fb79e81e857d045257
+          token: ${{ secrets.SI_MCP_TOKEN }}
+          persist-credentials: false
+          path: project
+          fetch-depth: 2
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Prepare hosted dependencies
         shell: bash
         run: |
-          set -uo pipefail
-          echo "HOSTED_PROBE=ok"
-          echo "runner_os=$RUNNER_OS runner_name=$RUNNER_NAME"
-          uname -a; id; nproc; free -m | head -2; df -h / | tail -1
-          for x in java javac mvn python3 pip3 xvfb-run git curl; do printf '%s=%s\n' "$x" "$(command -v $x || echo ABSENT)"; done
-          java -version 2>&1 | head -2 || true
-          mvn -version 2>&1 | head -1 || true
-          python3 -V
+          set -euo pipefail
+          sudo apt-get update -qq > "$RUNNER_TEMP/setup.log" 2>&1
+          sudo apt-get install -y -qq xvfb xauth libgtk-3-0 >> "$RUNNER_TEMP/setup.log" 2>&1
+          curl -fsSL https://archive.apache.org/dist/maven/maven-3/3.9.9/binaries/apache-maven-3.9.9-bin.tar.gz -o "$RUNNER_TEMP/maven.tar.gz"
+          tar -xzf "$RUNNER_TEMP/maven.tar.gz" -C "$RUNNER_TEMP"
+          echo 'SETUP_OK=1'
+      - name: Inventory and runtime schema checks
+        shell: bash
+        working-directory: project
+        run: |
+          set -euo pipefail
+          [ "$(git rev-parse HEAD)" = f2c83433be6b64c48d0ce0fb79e81e857d045257 ] || exit 1
+          [ "$(git rev-parse HEAD^)" = 364a64b566ca99560ae27b45c4887ea95e697077 ] || exit 1
+          echo 'BASE_SHA=364a64b566ca99560ae27b45c4887ea95e697077'
+          echo 'TEST_CANDIDATE_SHA=f2c83433be6b64c48d0ce0fb79e81e857d045257'
+          set +e
+          python3 client/tests/извлечь-каталог-из-исходников.py --src server --check > "$RUNNER_TEMP/catalog-check.log" 2>&1
+          catrc=$?
+          python3 server/scripts/check-tool-catalog.py > "$RUNNER_TEMP/doc-check.log" 2>&1
+          docrc=$?
+          set -e
+          echo "STATIC_SNAPSHOT_CHECK_EXIT=$catrc"
+          echo "DOC_CATALOG_CHECK_EXIT=$docrc"
+          python3 - <<'PY'
+          import importlib.util,pathlib,sys
+          root=pathlib.Path.cwd();p=root/'client/tests';sys.path.insert(0,str(p))
+          spec=importlib.util.spec_from_file_location('audit13',p/'извлечь-каталог-из-исходников.py')
+          m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
+          catalog,unparsed=m.собрать(root/'server')
+          import extract_edt_catalog as e
+          e.CATEGORY_FILE=root/'server/bundles/si.edt.mcp.server/src/si/edt/mcp/server/settings/ToolCategory.java'
+          cats=e.tool_categories()
+          print('STATIC_DECLARED=%d UNIQUE=%d UNPARSED=%d CATEGORIZED=%d STATIC_SCHEMA_RECOGNIZED=%d'%(
+              len(catalog),len({x['name'] for x in catalog}),len(unparsed),sum(x['name'] in cats for x in catalog),sum(bool(x['schema']) for x in catalog)))
+          if len(catalog)!=154 or len({x['name'] for x in catalog})!=154 or unparsed or sum(x['name'] in cats for x in catalog)!=154: sys.exit(1)
+          PY
+          cd server
+          set +e
+          xvfb-run -a "$RUNNER_TEMP/apache-maven-3.9.9/bin/mvn" -B -fae -ntp -pl targets/default,bundles/si.edt.mcp.server,tests/si.edt.mcp.server.tests -am '-Dtest=Agent13WholeCatalogSentinelTest,McpToolSchemaContractTest,ToolRegistrationTest,TheSchemaShapeIsFrozenTest' verify > "$RUNNER_TEMP/private-maven.log" 2>&1
+          rc=$?
+          set -e
+          echo "MAVEN_EXIT=$rc"
+          python3 - "$rc" <<'PY'
+          import pathlib,sys,xml.etree.ElementTree as E
+          want={'Agent13WholeCatalogSentinelTest','McpToolSchemaContractTest','ToolRegistrationTest','TheSchemaShapeIsFrozenTest'}
+          seen={}
+          for f in pathlib.Path('.').glob('**/target/surefire-reports/TEST-*.xml'):
+              try:
+                  r=E.parse(f).getroot(); name=r.get('name','').rsplit('.',1)[-1]
+                  if name in want:
+                      if name in seen: raise ValueError('duplicate suite')
+                      seen[name]=tuple(int(r.attrib[k]) for k in ('tests','failures','errors','skipped'))
+              except Exception:
+                  print('PARSE_ERROR=1');sys.exit(2)
+          for name in sorted(want): print(name+'='+str(seen.get(name)))
+          print('ARTIFACTS_UPLOADED=0')
+          ok=int(sys.argv[1])==0 and set(seen)==want and seen.get('Agent13WholeCatalogSentinelTest')==(1,0,0,0) and all(x[0]>0 and x[1:]==(0,0,0) for x in seen.values())
+          print('CATALOG_SCHEMA_ONLY_CONFIRMED='+str(int(ok)))
+          sys.exit(0 if ok else 1)
+          PY
