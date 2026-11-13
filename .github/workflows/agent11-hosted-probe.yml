@@ -1,65 +1,9 @@
-name: 'Agent 13 independent P0 recheck'
+name: 'Agent 13 independent client schema checks'
 on:
   workflow_dispatch:
 permissions:
   contents: read
 jobs:
-  server:
-    strategy:
-      fail-fast: false
-      matrix:
-        mode: [baseline, setup_failure, registry_negative, marker_negative, count_negative, coverage_negative]
-    runs-on: ubuntu-24.04
-    timeout-minutes: 50
-    env:
-      LANG: C.UTF-8
-      LC_ALL: C.UTF-8
-      MAVEN_OPTS: -Xmx3g
-    steps:
-      - name: Checkout isolated test scripts
-        uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-          path: harness
-      - name: Checkout exact server candidate
-        uses: actions/checkout@v4
-        with:
-          repository: Lavren73/SI-MCP
-          ref: 9b2aff6d71f890d46c7a07aa2f13c1f4eec32a28
-          token: ${{ secrets.SI_MCP_TOKEN }}
-          persist-credentials: false
-          path: project
-          fetch-depth: 1
-      - name: Set up Java
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: '17'
-      - name: Install hosted dependencies
-        shell: bash
-        run: |
-          set -euo pipefail
-          sudo apt-get update -qq > "$RUNNER_TEMP/setup.log" 2>&1
-          sudo apt-get install -y -qq xvfb xauth libgtk-3-0 >> "$RUNNER_TEMP/setup.log" 2>&1
-          curl --retry 3 -fsSL https://archive.apache.org/dist/maven/maven-3/3.9.9/binaries/apache-maven-3.9.9-bin.tar.gz -o "$RUNNER_TEMP/maven.tar.gz"
-          tar -xzf "$RUNNER_TEMP/maven.tar.gz" -C "$RUNNER_TEMP"
-          echo 'SETUP_OK=1'
-      - name: Exact source, test-only injection or mutation, focused OSGi
-        shell: bash
-        env:
-          MODE: ${{ matrix.mode }}
-        run: |
-          set -euo pipefail
-          [ "$(git -C project rev-parse HEAD)" = 9b2aff6d71f890d46c7a07aa2f13c1f4eec32a28 ]
-          echo SOURCE_SHA=9b2aff6d71f890d46c7a07aa2f13c1f4eec32a28
-          cp harness/agent13-review/Agent13Pr197IsolationSentinelTest.java project/server/tests/si.edt.mcp.server.tests/src/si/edt/mcp/server/wire/
-          python3 harness/agent13-review/mutate.py "$MODE"
-          prop=false; if [ "$MODE" = setup_failure ]; then prop=true; fi
-          set +e
-          (cd project/server && xvfb-run -a "$RUNNER_TEMP/apache-maven-3.9.9/bin/mvn" -B -fae -ntp -pl targets/default,bundles/si.edt.mcp.server,tests/si.edt.mcp.server.tests -am '-Dtest=DiagnosticsCompletenessTest,Agent13Pr197IsolationSentinelTest' "-Dagent13.setupFailure=$prop" verify > "$RUNNER_TEMP/private-maven.log" 2>&1)
-          rc=$?
-          set -e
-          python3 harness/agent13-review/check_results.py "$MODE" "$rc"
   client:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -71,7 +15,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: Lavren73/SI-MCP
-          ref: 2e115ef9c607b8a8679720b31ba43de8448dcf5f
+          ref: 332f54923fa0f39fa36057af9fa6c4dc63563f37
           token: ${{ secrets.SI_MCP_TOKEN }}
           persist-credentials: false
           path: project
@@ -80,8 +24,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          [ "$(git -C project rev-parse HEAD)" = 2e115ef9c607b8a8679720b31ba43de8448dcf5f ]
-          echo SOURCE_SHA=2e115ef9c607b8a8679720b31ba43de8448dcf5f
+          [ "$(git -C project rev-parse HEAD)" = 332f54923fa0f39fa36057af9fa6c4dc63563f37 ]
+          echo SOURCE_SHA=332f54923fa0f39fa36057af9fa6c4dc63563f37
           cd project
           set +e
           python3 ../harness/agent13-review/probe196.py
