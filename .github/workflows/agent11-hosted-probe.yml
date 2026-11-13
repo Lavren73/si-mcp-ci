@@ -1,21 +1,75 @@
-name: '№11 — hosted runner probe (public repo check)'
+name: '№11 — полный Maven кандидата №21'
 on:
   workflow_dispatch:
 permissions:
   contents: read
+concurrency:
+  group: agent11-hosted-agent21-auth-b8ff72c0
+  cancel-in-progress: false
 jobs:
-  probe:
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      LANG: C.UTF-8
+      LC_ALL: C.UTF-8
+      MAVEN_OPTS: -Xmx4g
+      SOURCE_SHA: b8ff72c01772ca9a6481ed2535682da959805dc5
     steps:
-      - name: Confirm GitHub-hosted runner starts and report toolchain
+      - name: JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Maven и Xvfb
         shell: bash
         run: |
-          set -uo pipefail
-          echo "HOSTED_PROBE=ok"
-          echo "runner_os=$RUNNER_OS runner_name=$RUNNER_NAME"
-          uname -a; id; nproc; free -m | head -2; df -h / | tail -1
-          for x in java javac mvn python3 pip3 xvfb-run git curl; do printf '%s=%s\n' "$x" "$(command -v $x || echo ABSENT)"; done
-          java -version 2>&1 | head -2 || true
-          mvn -version 2>&1 | head -1 || true
-          python3 -V
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq xvfb xauth libgtk-3-0 >/dev/null
+          curl -fsSL https://archive.apache.org/dist/maven/maven-3/3.9.9/binaries/apache-maven-3.9.9-bin.tar.gz -o "$RUNNER_TEMP/maven.tgz"
+          tar -xzf "$RUNNER_TEMP/maven.tgz" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/apache-maven-3.9.9/bin" >> "$GITHUB_PATH"
+      - name: Exact source в одноразовой среде
+        shell: bash
+        env:
+          DEPLOY_KEY: ${{ secrets.SI_MCP_DEPLOY_KEY }}
+        run: |
+          set -euo pipefail
+          mkdir -m 700 "$RUNNER_TEMP/ssh"
+          printf '%s\n' "$DEPLOY_KEY" > "$RUNNER_TEMP/ssh/key"
+          chmod 600 "$RUNNER_TEMP/ssh/key"
+          export GIT_SSH_COMMAND="ssh -i $RUNNER_TEMP/ssh/key -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"
+          git clone -q --no-checkout git@github.com:Lavren73/SI-MCP.git "$RUNNER_TEMP/src"
+          git -C "$RUNNER_TEMP/src" checkout -q --detach "$SOURCE_SHA"
+          test "$(git -C "$RUNNER_TEMP/src" rev-parse HEAD)" = "$SOURCE_SHA"
+          rm -f "$RUNNER_TEMP/ssh/key"
+          echo "SOURCE_SHA=$SOURCE_SHA"
+      - name: Полный Maven без публикации сырых логов
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/src/server"
+          set +e
+          timeout --signal=TERM --kill-after=30s 3150s xvfb-run -a mvn -B -ntp -Dstyle.color=never -fae verify > "$RUNNER_TEMP/maven-private.log" 2>&1
+          rc=$?
+          set -e
+          echo "MAVEN_EXIT=$rc"
+          python3 - <<'PY'
+          import os,pathlib,xml.etree.ElementTree as ET
+          root=pathlib.Path(os.environ['RUNNER_TEMP'])/'src/server/tests'
+          for mod in ('si.edt.mcp.server.tests','si.edt.mcp.oform.tests'):
+              fs=sorted((root/mod/'target/surefire-reports').glob('TEST-*.xml'))
+              counts=[0,0,0,0]
+              for f in fs:
+                  r=ET.parse(f).getroot()
+                  for i,k in enumerate(('tests','failures','errors','skipped')): counts[i]+=int(r.get(k,0))
+              print('JUNIT',mod,'xml=',len(fs),'tests=',counts[0],'failures=',counts[1],'errors=',counts[2],'skipped=',counts[3],flush=True)
+          reports=list(root.rglob('TEST-*AuthorizationTest.xml'))
+          print('AUTH_REPORT_COUNT='+str(len(reports)))
+          for f in reports:
+              r=ET.parse(f).getroot()
+              print('AUTH_TOTAL tests='+r.get('tests','0')+' failures='+r.get('failures','0')+' errors='+r.get('errors','0')+' skipped='+r.get('skipped','0'))
+          print('RAW_LOGS_AND_ARTIFACTS_UPLOADED=0')
+          PY
+          exit "$rc"
