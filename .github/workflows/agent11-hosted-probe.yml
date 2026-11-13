@@ -1,39 +1,30 @@
-name: '№13 — catalog to schema snapshot identity'
+name: '№13 — partial diagnostics synthetic boundary'
 on:
   workflow_dispatch:
 permissions:
   contents: read
 jobs:
-  inventory:
+  probe:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
-      - name: Checkout exact candidate
+      - name: Checkout exact private test candidate
         uses: actions/checkout@v4
         with:
           repository: Lavren73/SI-MCP
-          ref: f2c83433be6b64c48d0ce0fb79e81e857d045257
+          ref: 3d991b4b7e4ef2dedc5dcdc8e91b0d6cbac5f0cc
           token: ${{ secrets.SI_MCP_TOKEN }}
           persist-credentials: false
           path: project
           fetch-depth: 2
-      - name: Compare sets without revealing names
-        shell: bash
+      - name: Run isolated fake-response probe
         working-directory: project
+        shell: bash
         run: |
           set -euo pipefail
-          [ "$(git rev-parse HEAD)" = f2c83433be6b64c48d0ce0fb79e81e857d045257 ] || exit 1
-          [ "$(git rev-parse HEAD^)" = 364a64b566ca99560ae27b45c4887ea95e697077 ] || exit 1
-          python3 - <<'PY'
-          import importlib.util,pathlib,sys
-          root=pathlib.Path.cwd();p=root/'client/tests';sys.path.insert(0,str(p))
-          spec=importlib.util.spec_from_file_location('audit13',p/'извлечь-каталог-из-исходников.py')
-          m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
-          catalog,unparsed=m.собрать(root/'server')
-          snapshot=root/'server/tests/si.edt.mcp.server.tests/src/si/edt/mcp/server/schema-shape.tsv'
-          raw=[l.split('\t',1)[0] for l in snapshot.read_text(encoding='utf8').splitlines() if l and not l.startswith('#')]
-          equal=len(catalog)==154 and len(raw)==154 and len(set(raw))==154 and not unparsed and set(raw)=={x['name'] for x in catalog}
-          print('STATIC_NAMES=%d SNAPSHOT_NAMES=%d UNPARSED=%d SETS_EQUAL=%d'%(len(catalog),len(raw),len(unparsed),int(equal)))
-          print('ARTIFACTS_UPLOADED=0')
-          sys.exit(0 if equal else 1)
-          PY
+          [ "$(git rev-parse HEAD)" = 3d991b4b7e4ef2dedc5dcdc8e91b0d6cbac5f0cc ]
+          [ "$(git rev-parse HEAD^)" = 7f73b65a5547b741a7b5334812abc5b423647dc8 ]
+          [ "$(git diff --name-only HEAD^ HEAD | wc -l)" -eq 1 ]
+          [ "$(git diff --name-only HEAD^ HEAD)" = tools/agent13-partial-diagnostics-probe.py ]
+          python3 tools/agent13-partial-diagnostics-probe.py
+          printf 'ARTIFACTS_UPLOADED=0\n'
