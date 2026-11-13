@@ -1,4 +1,4 @@
-name: '№13 — hosted watcher refs control'
+name: '№13 — hosted watcher fixture candidate'
 on:
   workflow_dispatch:
 permissions:
@@ -12,7 +12,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: Lavren73/SI-MCP
-          ref: f6f7ea6a592fa4eb2945972b361b56a9c3918431
+          ref: 9f4927c7b4790fd6f2c21a816db1549ae24d21ae
           token: ${{ secrets.SI_MCP_TOKEN }}
           persist-credentials: false
           path: shallow
@@ -21,18 +21,25 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: Lavren73/SI-MCP
-          ref: f6f7ea6a592fa4eb2945972b361b56a9c3918431
+          ref: 9f4927c7b4790fd6f2c21a816db1549ae24d21ae
           token: ${{ secrets.SI_MCP_TOKEN }}
           persist-credentials: false
           path: full
           fetch-depth: 0
+      - name: Install isolated Python test dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install -q pytest pytest-subtests > "$RUNNER_TEMP/pip.log" 2>&1
+          echo 'DEPENDENCIES_OK=1'
       - name: Compare tests without publishing raw results
         shell: bash
         run: |
           set -euo pipefail
           python3 - <<'PY'
           import contextlib,importlib.util,io,pathlib,subprocess,sys,unittest
-          sha='f6f7ea6a592fa4eb2945972b361b56a9c3918431'
+          sha='9f4927c7b4790fd6f2c21a816db1549ae24d21ae'
           expected='refs/remotes/origin/agent/obmen-20261102'
           results={}
           for kind in ('shallow','full'):
@@ -54,8 +61,28 @@ jobs:
               print(kind.upper()+'_TESTS='+str(r.testsRun)+' FAILURES='+str(len(r.failures))+' ERRORS='+str(len(r.errors))+' SKIPS='+str(len(r.skipped)))
               print(kind.upper()+'_ONLY_TARGET_FAILED='+str(int(targetfail)))
               results[kind]=(ref,r.testsRun,len(r.failures),len(r.errors),len(r.skipped),targetfail)
-          good=results['shallow']==(False,7,1,0,0,True) and results['full']==(True,7,0,0,0,False)
-          print('EXPECTED_REF_DIFFERENTIAL='+str(int(good)))
+          good=results['shallow']==(False,9,0,0,0,False) and results['full']==(True,9,0,0,0,False)
+          print('EXPECTED_HERMETIC_BOTH='+str(int(good)))
           print('ARTIFACTS_UPLOADED=0')
           sys.exit(0 if good else 1)
+          PY
+      - name: Full scripts suite on shallow exact SHA
+        shell: bash
+        working-directory: shallow
+        run: |
+          set -uo pipefail
+          "$RUNNER_TEMP/venv/bin/python" -m pytest server/scripts/tests -q --junitxml="$RUNNER_TEMP/scripts.xml" > "$RUNNER_TEMP/private-pytest.log" 2>&1
+          rc=$?
+          echo "SCRIPTS_EXIT=$rc"
+          python3 - "$rc" <<'PY'
+          import os,sys,xml.etree.ElementTree as E
+          try:
+              root=E.parse(os.environ['RUNNER_TEMP']+'/scripts.xml').getroot()
+              suites=[root] if root.tag=='testsuite' else root.findall('testsuite')
+              totals=[sum(int(s.get(k,'0')) for s in suites) for k in ('tests','failures','errors','skipped')]
+          except Exception:
+              print('XML_ERROR=1');sys.exit(1)
+          print('SCRIPTS_XML_TESTS=%d FAILURES=%d ERRORS=%d SKIPPED=%d'%tuple(totals))
+          print('ARTIFACTS_UPLOADED=0')
+          sys.exit(0 if int(sys.argv[1])==0 and totals[0]>=285 and totals[1]==0 and totals[2]==0 else 1)
           PY
