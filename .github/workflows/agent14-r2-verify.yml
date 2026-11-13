@@ -1,4 +1,4 @@
-name: Agent 14 Hosted P0 R-2 Verify (be168813)
+name: Agent 14 Hosted P0 R-2 Verify (d6d25e21)
 on:
   push:
     branches:
@@ -12,7 +12,7 @@ concurrency:
 
 jobs:
   r2_server_verify:
-    name: "P0 R-2 (be168813): focused + full server reactor + EDT API + gates"
+    name: "P0 R-2 (d6d25e21): focused + full server reactor + EDT API + gates"
     runs-on: ubuntu-24.04
     timeout-minutes: 35
     env:
@@ -51,7 +51,7 @@ jobs:
           echo "/opt/apache-maven-3.9.9/bin" >> "$GITHUB_PATH"
           /opt/apache-maven-3.9.9/bin/mvn -version
 
-      - name: Checkout exact SHA be168813497e480593535e869c4451790b74f7d9
+      - name: Checkout exact SHA d6d25e21eb085845f551efd4a785410e5a472d28
         shell: bash
         run: |
           set -euo pipefail
@@ -61,7 +61,7 @@ jobs:
           export GIT_SSH_COMMAND="ssh -i $HOME/.ssh/si_mcp_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"
           git clone -q --branch agent/14-p0-r2-diagnostics-completeness --depth=30 git@github.com:Lavren73/SI-MCP.git src
           cd src
-          git checkout -q be168813497e480593535e869c4451790b74f7d9
+          git checkout -q d6d25e21eb085845f551efd4a785410e5a472d28
           echo "VERIFIED_SHA=$(git rev-parse HEAD)"
 
       - name: Focused tests, full Maven reactor verify, and static/EDT-API gates
