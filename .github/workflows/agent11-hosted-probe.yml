@@ -1,4 +1,4 @@
-name: Agent 14 Hosted PR176 Verify
+name: Agent 14 Hosted Z02 Matrix Verify
 on:
   push:
     branches:
@@ -11,8 +11,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  pr176_sweep_and_mutation:
-    name: "PR176: Exact 40028bee OSGi (23 + 139 + guard mutation)"
+  z02_matrix_and_mutation:
+    name: "Z02: Exact fa83040e OSGi (matrix + Z02 settings group + mutation)"
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     env:
@@ -20,7 +20,7 @@ jobs:
       LC_ALL: C.UTF-8
       MAVEN_OPTS: -Xmx3g
     steps:
-      - name: Fetch exact PR #176 SHA 40028bee69f84c085eb4837b324519d774673f9b
+      - name: Fetch exact Z02 SHA fa83040e785038b080afddbfb76819f554cfd7fb
         shell: bash
         run: |
           set -euo pipefail
@@ -30,9 +30,9 @@ jobs:
           export GIT_SSH_COMMAND="ssh -i $HOME/.ssh/si_mcp_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"
           git init -q src
           git -C src remote add origin git@github.com:Lavren73/SI-MCP.git
-          git -C src fetch -q --depth=1 origin 40028bee69f84c085eb4837b324519d774673f9b
+          git -C src fetch -q --depth=1 origin fa83040e785038b080afddbfb76819f554cfd7fb
           git -C src checkout -q FETCH_HEAD
-          echo "PR176_SHA=$(git -C src rev-parse HEAD)"
+          echo "Z02_SHA=$(git -C src rev-parse HEAD)"
 
       - name: Setup JDK 17
         uses: actions/setup-java@v4
@@ -50,7 +50,7 @@ jobs:
           sudo tar -xzf /tmp/mvn.tgz -C /opt
           echo "/opt/apache-maven-3.9.9/bin" >> "$GITHUB_PATH"
 
-      - name: Run probe, 23 focused, 139 group, and guard mutation
+      - name: Run Python matrix gate, focused JUnit, Z02 settings group, and mutation
         shell: bash
         run: |
           set -euo pipefail
@@ -75,51 +75,71 @@ jobs:
               for xp in root.rglob("TEST-*.xml"):
                   xp.unlink()
 
-          r_probe = subprocess.run(["python3", "tools/З-04-schedule-probe-13.py", "."], cwd=src, capture_output=True, text=True)
-          print(f"PR176_PROBE exit={r_probe.returncode}", flush=True)
-          assert r_probe.returncode == 0
+          # 1. Python matrix & text gates
+          r_mat = subprocess.run(["python3", "tools/проверить-матрицу-прав.py"], cwd=src, capture_output=True, text=True)
+          print(f"Z02_PY_MATRIX exit={r_mat.returncode}\n{r_mat.stdout.strip()}", flush=True)
+          assert r_mat.returncode == 0
+          r_txt = subprocess.run(["python3", "tools/проверка-текста.py"], cwd=src, capture_output=True, text=True)
+          print(f"Z02_PY_TEXT exit={r_txt.returncode}", flush=True)
+          assert r_txt.returncode == 0
 
-          # 1. Focused 23
+          # 2. Focused new test TheAccessLevelMatrixMatchesTheCatalogueTest
           clean_xmls(srv)
-          r23 = subprocess.run([
+          r_foc = subprocess.run([
               "xvfb-run", "-a", "mvn", "-B", "-ntp", "-Dstyle.color=never",
               "-pl", "targets/default,bundles/si.edt.mcp.server,tests/si.edt.mcp.server.tests", "-am",
-              "-Dtest=ReleaseSweepTest,ReleaseSweepFailClosedRegressionTest", "verify"
+              "-Dtest=TheAccessLevelMatrixMatchesTheCatalogueTest", "verify"
           ], cwd=srv, capture_output=True, text=True)
-          x23, t23 = parse_xmls(srv)
-          print(f"PR176_FOCUSED23 exit={r23.returncode} xmls={x23} tests={t23[0]} F={t23[1]} E={t23[2]} S={t23[3]}", flush=True)
-          assert r23.returncode == 0 and t23[0] == 23 and t23[1:] == [0, 0, 0]
+          xf, tf = parse_xmls(srv)
+          print(f"Z02_FOCUSED exit={r_foc.returncode} xmls={xf} tests={tf[0]} F={tf[1]} E={tf[2]} S={tf[3]}", flush=True)
+          if r_foc.returncode != 0:
+              print((r_foc.stdout + "\n" + r_foc.stderr)[-4000:])
+          assert r_foc.returncode == 0 and tf[0] == 2 and tf[1:] == [0, 0, 0]
 
-          # 2. Group 139
+          # 3. Full Z02 settings + annotations regression group
           clean_xmls(srv)
-          r139 = subprocess.run([
+          group = ",".join([
+              "TheAccessLevelMatrixMatchesTheCatalogueTest",
+              "ToolAccessLevelTest",
+              "ToolCategoryTest",
+              "ToolProfileTest",
+              "ToolSettingsStoreTest",
+              "K12AccessLevelRegressionTest",
+              "K13LegacyPresetRegressionTest",
+              "TheCatalogueSaysWhatAToolMayChangeTest",
+              "ReadOnlyClosesTheDoorAndKeepsTheChoiceTest",
+              "TheWriteGateIsAnsweredByThePolicyNotTheLabelTest",
+          ])
+          r_grp = subprocess.run([
               "xvfb-run", "-a", "mvn", "-B", "-ntp", "-Dstyle.color=never",
               "-pl", "targets/default,bundles/si.edt.mcp.server,tests/si.edt.mcp.server.tests", "-am",
-              "-Dtest=*Sweep*Test,*Upkeep*Test,*Release*Test", "verify"
+              f"-Dtest={group}", "verify"
           ], cwd=srv, capture_output=True, text=True)
-          x139, t139 = parse_xmls(srv)
-          print(f"PR176_GROUP139 exit={r139.returncode} xmls={x139} tests={t139[0]} F={t139[1]} E={t139[2]} S={t139[3]}", flush=True)
-          assert r139.returncode == 0 and t139[0] >= 139 and t139[1:] == [0, 0, 0]
+          xg, tg = parse_xmls(srv)
+          print(f"Z02_GROUP exit={r_grp.returncode} xmls={xg} tests={tg[0]} F={tg[1]} E={tg[2]} S={tg[3]}", flush=True)
+          if r_grp.returncode != 0:
+              print((r_grp.stdout + "\n" + r_grp.stderr)[-4000:])
+          assert r_grp.returncode == 0 and tg[0] > 20 and tg[1:] == [0, 0, 0]
 
-          # 3. Guard mutation control on ReleaseSweep.java
-          rs = src / "server/bundles/si.edt.mcp.server/src/si/edt/mcp/server/upkeep/ReleaseSweep.java"
-          orig = rs.read_text(encoding="utf-8")
-          old = "if (store == null || !PrefKeys.UPDATES_FROM_NETWORK)"
-          new = "if (store == null)"
-          assert old in orig
-          rs.write_text(orig.replace(old, new, 1), encoding="utf-8")
+          # 4. Mutation control on access-level-matrix.tsv (flip read_module_source ro_hint_all true->false)
+          tsv = srv / "tests/si.edt.mcp.server.tests/src/si/edt/mcp/server/access-level-matrix.tsv"
+          orig = tsv.read_text(encoding="utf-8")
+          old_row = "read_module_source\tCODE\topen\topen\topen\tlisted\ttrue\ttrue\tfalse\t-"
+          new_row = "read_module_source\tCODE\topen\topen\topen\tlisted\tfalse\ttrue\tfalse\t-"
+          assert old_row in orig
+          tsv.write_text(orig.replace(old_row, new_row, 1), encoding="utf-8")
           try:
               clean_xmls(srv)
-              rmut = subprocess.run([
+              r_mut = subprocess.run([
                   "xvfb-run", "-a", "mvn", "-B", "-ntp", "-Dstyle.color=never",
                   "-pl", "targets/default,bundles/si.edt.mcp.server,tests/si.edt.mcp.server.tests", "-am",
-                  "-Dtest=ReleaseSweepTest,ReleaseSweepFailClosedRegressionTest", "verify"
+                  "-Dtest=TheAccessLevelMatrixMatchesTheCatalogueTest", "verify"
               ], cwd=srv, capture_output=True, text=True)
-              xmut, tmut = parse_xmls(srv)
-              print(f"PR176_MUTATION exit={rmut.returncode} xmls={xmut} tests={tmut[0]} F={tmut[1]} E={tmut[2]} S={tmut[3]}", flush=True)
-              assert rmut.returncode != 0 and (tmut[1] + tmut[2]) >= 2
+              xm, tm = parse_xmls(srv)
+              print(f"Z02_MUTATION exit={r_mut.returncode} xmls={xm} tests={tm[0]} F={tm[1]} E={tm[2]} S={tm[3]}", flush=True)
+              assert r_mut.returncode != 0 and (tm[1] + tm[2]) >= 1
           finally:
-              rs.write_text(orig, encoding="utf-8")
+              tsv.write_text(orig, encoding="utf-8")
 
-          print("PR176_SUMMARY=ALL_GREEN_AND_MUTATION_KILLED ARTIFACTS_UPLOADED=0", flush=True)
+          print("Z02_SUMMARY=ALL_GREEN_AND_MUTATION_KILLED ARTIFACTS_UPLOADED=0", flush=True)
           PY_INNER
