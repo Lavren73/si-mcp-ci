@@ -12,7 +12,7 @@ concurrency:
 
 jobs:
   z02_matrix_and_mutation:
-    name: "Z02: Exact fa83040e OSGi (matrix + Z02 settings group + mutation)"
+    name: "Z02: Exact 7b7d49a0 OSGi (matrix + Z02 settings group + mutation)"
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     env:
@@ -20,7 +20,7 @@ jobs:
       LC_ALL: C.UTF-8
       MAVEN_OPTS: -Xmx3g
     steps:
-      - name: Fetch exact Z02 SHA fa83040e785038b080afddbfb76819f554cfd7fb
+      - name: Fetch exact Z02 SHA 7b7d49a0de729df6218cbaf955bd65e1c26faac8
         shell: bash
         run: |
           set -euo pipefail
@@ -30,7 +30,7 @@ jobs:
           export GIT_SSH_COMMAND="ssh -i $HOME/.ssh/si_mcp_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"
           git init -q src
           git -C src remote add origin git@github.com:Lavren73/SI-MCP.git
-          git -C src fetch -q --depth=1 origin fa83040e785038b080afddbfb76819f554cfd7fb
+          git -C src fetch -q --depth=1 origin 7b7d49a0de729df6218cbaf955bd65e1c26faac8
           git -C src checkout -q FETCH_HEAD
           echo "Z02_SHA=$(git -C src rev-parse HEAD)"
 
