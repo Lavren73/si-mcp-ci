@@ -1,4 +1,4 @@
-name: Agent 14 Hosted Exact Integration Candidate 9ae7f9ca
+name: Agent 14 Hosted Exact Z02 Verify 88511e3c
 on:
   push:
     branches:
@@ -11,16 +11,16 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  int_9ae7f9ca_jar_gates:
-    name: "INT: Exact 9ae7f9ca (SnakeYAML --jar/--site, check-edt-api, client+JAR, -fae)"
+  z02_88511e3c_verify:
+    name: "Z02: Exact 88511e3c OSGi (isolation sentinel + Z02 group + strict-python negative + gates)"
     runs-on: ubuntu-24.04
-    timeout-minutes: 35
+    timeout-minutes: 25
     env:
       LANG: C.UTF-8
       LC_ALL: C.UTF-8
       MAVEN_OPTS: -Xmx3g
     steps:
-      - name: Fetch exact integration SHA 9ae7f9ca375744c3fb5717cfd563594853c3043d
+      - name: Fetch exact Z02 SHA 88511e3ca5fa407d4fb53826e97b3418bc094ed0
         shell: bash
         run: |
           set -euo pipefail
@@ -30,11 +30,11 @@ jobs:
           export GIT_SSH_COMMAND="ssh -i $HOME/.ssh/si_mcp_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"
           git init -q src
           git -C src remote add origin git@github.com:Lavren73/SI-MCP.git
-          git -C src fetch -q --depth=1 origin 9ae7f9ca375744c3fb5717cfd563594853c3043d
+          git -C src fetch -q --depth=1 origin 88511e3ca5fa407d4fb53826e97b3418bc094ed0
           git -C src checkout -q FETCH_HEAD
-          echo "INT_SHA=$(git -C src rev-parse HEAD)"
+          echo "Z02_SHA=$(git -C src rev-parse HEAD)"
 
-      - name: Setup JDK 17 & Python
+      - name: Setup JDK 17 & Python 3.13
         uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -44,7 +44,7 @@ jobs:
         with:
           python-version: '3.13'
 
-      - name: Install Maven 3.9.9, Xvfb & pytest
+      - name: Install Maven 3.9.9 & Xvfb
         shell: bash
         run: |
           set -euo pipefail
@@ -53,78 +53,104 @@ jobs:
           curl -fsSL https://archive.apache.org/dist/maven/maven-3/3.9.9/binaries/apache-maven-3.9.9-bin.tar.gz -o /tmp/mvn.tgz
           sudo tar -xzf /tmp/mvn.tgz -C /opt
           echo "/opt/apache-maven-3.9.9/bin" >> "$GITHUB_PATH"
-          python3 -m pip install -q pytest
 
-      - name: Run full -fae, SnakeYAML --jar/--сайт, client+JAR, and server gates
+      - name: Run Python checks, negative --strict-python, server gates, OSGi sentinel+matrix+group, and TSV mutation
         shell: bash
         run: |
           set -euo pipefail
           python3 - <<'PY_INNER'
-          import os, pathlib, subprocess, xml.etree.ElementTree as ET
+          import pathlib, subprocess, xml.etree.ElementTree as ET
 
-          src = pathlib.Path("src").resolve()
+          src = pathlib.Path("src")
           srv = src / "server"
 
-          r_mvn = subprocess.run([
-              "xvfb-run", "-a", "mvn", "-B", "-ntp", "-Dstyle.color=never", "-fae", "verify"
-          ], cwd=srv, capture_output=True, text=True)
-          print(f"INT_MVN_FAE exit={r_mvn.returncode}", flush=True)
-
-          for mod in ("si.edt.mcp.server.tests", "si.edt.mcp.oform.tests"):
-              mdir = srv / "tests" / mod / "target/surefire-reports"
-              xmls = sorted(mdir.glob("TEST-*.xml")) if mdir.is_dir() else []
+          def parse_xmls(root):
+              xmls = sorted(root.rglob("TEST-*.xml"))
               tot = [0, 0, 0, 0]
-              fails = []
               for xp in xmls:
-                  root = ET.fromstring(xp.read_text(encoding="utf-8", errors="replace"))
-                  tot[0] += int(root.attrib.get("tests", 0))
-                  tot[1] += int(root.attrib.get("failures", 0))
-                  tot[2] += int(root.attrib.get("errors", 0))
-                  tot[3] += int(root.attrib.get("skipped", 0))
-                  for tc in root.findall("testcase"):
-                      for tag in ("failure", "error"):
-                          if tc.find(tag) is not None:
-                              fails.append(f"{tc.attrib.get('classname')}.{tc.attrib.get('name')}[{tag[0].upper()}]")
-              print(f"MOD {mod}: xmls={len(xmls)} tests={tot[0]} F={tot[1]} E={tot[2]} S={tot[3]}", flush=True)
-              for fn in sorted(fails):
-                  print(f"  RED: {fn}", flush=True)
+                  r = ET.fromstring(xp.read_text(encoding="utf-8", errors="replace"))
+                  tot[0] += int(r.attrib.get("tests", 0))
+                  tot[1] += int(r.attrib.get("failures", 0))
+                  tot[2] += int(r.attrib.get("errors", 0))
+                  tot[3] += int(r.attrib.get("skipped", 0))
+              return len(xmls), tot
 
-          # Check built plugin jars & p2 repository zip
-          repo_jars = sorted((srv / "repositories/si.edt.mcp.server.repository/target/repository/plugins").glob("si.edt.mcp.server_*.jar"))
-          repo_jars = [j for j in repo_jars if "-sources" not in j.name]
-          bundle_jars = sorted((srv / "bundles/si.edt.mcp.server/target").glob("si.edt.mcp.server-*.jar"))
-          bundle_jars = [j for j in bundle_jars if "-sources" not in j.name]
-          site_zips = sorted((srv / "repositories/si.edt.mcp.server.repository/target").glob("SI-EDT-*.zip"))
-          print(f"ARTIFACTS: bundle_jars={len(bundle_jars)} repo_jars={len(repo_jars)} site_zips={len(site_zips)}", flush=True)
-          assert bundle_jars and repo_jars and site_zips
+          def clean_xmls(root):
+              for xp in root.rglob("TEST-*.xml"):
+                  xp.unlink()
 
-          for label, args in [
-              ("BUNDLE_JAR", ["--jar", str(bundle_jars[0])]),
-              ("REPO_JAR", ["--jar", str(repo_jars[0])]),
-              ("UPDATE_SITE_ZIP", ["--сайт", str(site_zips[0])]),
-          ]:
-              rs = subprocess.run(["python3", "tools/проверка-snakeyaml.py", *args], cwd=src, capture_output=True, text=True)
-              print(f"SNAKEYAML_{label} exit={rs.returncode}: {rs.stdout.strip()} {rs.stderr.strip()}", flush=True)
-              assert rs.returncode == 0
+          r_mat = subprocess.run(["python3", "tools/проверить-матрицу-прав.py"], cwd=src, capture_output=True, text=True)
+          print(f"Z02_PY_MATRIX exit={r_mat.returncode}\n{r_mat.stdout.strip()}", flush=True)
+          assert r_mat.returncode == 0
 
-          # Run full client pytest with SI_EDT_PLUGIN_JAR set so BuiltPluginTest executes (not skipped!)
-          env = dict(os.environ, SI_EDT_PLUGIN_JAR=str(repo_jars[0]))
-          rc_jar = subprocess.run(["python3", "-m", "pytest", "-v", "tests/test_snakeyaml_v_feature.py"], cwd=src / "client", env=env, capture_output=True, text=True)
-          print(f"PYTEST_SNAKEYAML_V_FEATURE exit={rc_jar.returncode}", flush=True)
-          print(rc_jar.stdout.strip(), flush=True)
-          assert rc_jar.returncode == 0 and "SKIPPED" not in rc_jar.stdout
+          r_strict = subprocess.run(["python3", "tools/проверить-матрицу-прав.py", "--strict-python"], cwd=src, capture_output=True, text=True)
+          print(f"Z02_PY_STRICT_NEG exit={r_strict.returncode}", flush=True)
+          assert r_strict.returncode == 1
 
-          rc_all = subprocess.run(["python3", "-m", "pytest", "-q", "-ra"], cwd=src / "client", env=env, capture_output=True, text=True)
-          print(f"CLIENT_ALL_WITH_JAR exit={rc_all.returncode}", flush=True)
-          print("\n".join(rc_all.stdout.splitlines()[-15:]), flush=True)
-          assert rc_all.returncode == 0
+          r_txt = subprocess.run(["python3", "tools/проверка-текста.py"], cwd=src, capture_output=True, text=True)
+          print(f"Z02_PY_TEXT exit={r_txt.returncode}", flush=True)
+          assert r_txt.returncode == 0
 
-          rc_bm = subprocess.run(["python3", "-m", "pytest", "-q", "--benchmarks", "tests/test_benchmarks.py"], cwd=src / "client", env=env, capture_output=True, text=True)
-          print(f"CLIENT_BENCHMARKS exit={rc_bm.returncode}: {rc_bm.stdout.splitlines()[-1] if rc_bm.stdout else ''}", flush=True)
-          assert rc_bm.returncode == 0
+          r_gates = subprocess.run(["bash", "scripts/run-gates.sh"], cwd=srv, capture_output=True, text=True)
+          print(f"Z02_SERVER_GATES exit={r_gates.returncode}\n{r_gates.stdout.strip()}", flush=True)
+          assert r_gates.returncode == 0
 
-          rg = subprocess.run(["bash", "scripts/run-gates.sh"], cwd=srv, capture_output=True, text=True)
-          print(f"SERVER_GATES_POST_BUILD exit={rg.returncode}\n{rg.stdout.strip()}", flush=True)
+          clean_xmls(srv)
+          r_foc = subprocess.run([
+              "xvfb-run", "-a", "mvn", "-B", "-ntp", "-Dstyle.color=never",
+              "-pl", "targets/default,bundles/si.edt.mcp.server,tests/si.edt.mcp.server.tests", "-am",
+              "-Dtest=TheAccessLevelMatrixMatchesTheCatalogueTest,TheAccessLevelMatrixFixturePreservesRuntimeStateTest",
+              "verify"
+          ], cwd=srv, capture_output=True, text=True)
+          xf, tf = parse_xmls(srv)
+          print(f"Z02_FOCUSED_AND_SENTINEL exit={r_foc.returncode} xmls={xf} tests={tf[0]} F={tf[1]} E={tf[2]} S={tf[3]}", flush=True)
+          assert r_foc.returncode == 0 and tf[0] == 4 and tf[1:] == [0, 0, 0]
 
-          print("INT_ALL_PROBES_DONE=1 ARTIFACTS_UPLOADED=0", flush=True)
+          clean_xmls(srv)
+          group = ",".join([
+              "TheAccessLevelMatrixMatchesTheCatalogueTest",
+              "TheAccessLevelMatrixFixturePreservesRuntimeStateTest",
+              "ACatalogClearTestRestoresItsToolsTest",
+              "ToolRegistrationTest",
+              "TheCatalogueSaysWhatAToolMayChangeTest",
+              "ToolAccessLevelTest",
+              "ToolCategoryTest",
+              "ToolProfileTest",
+              "ToolSettingsStoreTest",
+              "K12AccessLevelRegressionTest",
+              "K13LegacyPresetRegressionTest",
+              "PermissionBoundaryRegressionTest",
+              "ALeaseNarrowsTheCatalogueAndNeverWidensItTest",
+              "ReadOnlyClosesTheDoorAndKeepsTheChoiceTest",
+              "TheWriteGateIsAnsweredByThePolicyNotTheLabelTest",
+          ])
+          r_grp = subprocess.run([
+              "xvfb-run", "-a", "mvn", "-B", "-ntp", "-Dstyle.color=never",
+              "-pl", "targets/default,bundles/si.edt.mcp.server,tests/si.edt.mcp.server.tests", "-am",
+              f"-Dtest={group}", "verify"
+          ], cwd=srv, capture_output=True, text=True)
+          xg, tg = parse_xmls(srv)
+          print(f"Z02_GROUP_ISOLATION exit={r_grp.returncode} xmls={xg} tests={tg[0]} F={tg[1]} E={tg[2]} S={tg[3]}", flush=True)
+          assert r_grp.returncode == 0 and xg == 15 and tg[0] > 100 and tg[1:] == [0, 0, 0]
+
+          tsv = srv / "tests/si.edt.mcp.server.tests/src/si/edt/mcp/server/access-level-matrix.tsv"
+          orig = tsv.read_text(encoding="utf-8")
+          old_row = "read_module_source\tCODE\topen\topen\topen\tlisted\ttrue\ttrue\tfalse\t-"
+          new_row = "read_module_source\tCODE\topen\topen\topen\tlisted\tfalse\ttrue\tfalse\t-"
+          assert old_row in orig
+          tsv.write_text(orig.replace(old_row, new_row, 1), encoding="utf-8")
+          try:
+              clean_xmls(srv)
+              r_mut = subprocess.run([
+                  "xvfb-run", "-a", "mvn", "-B", "-ntp", "-Dstyle.color=never",
+                  "-pl", "targets/default,bundles/si.edt.mcp.server,tests/si.edt.mcp.server.tests", "-am",
+                  "-Dtest=TheAccessLevelMatrixMatchesTheCatalogueTest", "verify"
+              ], cwd=srv, capture_output=True, text=True)
+              xm, tm = parse_xmls(srv)
+              print(f"Z02_MUTATION_TSV exit={r_mut.returncode} xmls={xm} tests={tm[0]} F={tm[1]} E={tm[2]} S={tm[3]}", flush=True)
+              assert r_mut.returncode != 0 and (tm[1] + tm[2]) >= 1
+          finally:
+              tsv.write_text(orig, encoding="utf-8")
+
+          print("Z02_SUMMARY=ALL_GREEN_ISOLATION_VERIFIED_AND_MUTATION_KILLED ARTIFACTS_UPLOADED=0", flush=True)
           PY_INNER
