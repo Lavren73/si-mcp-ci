@@ -1,4 +1,4 @@
-name: Agent 14 Hosted P0 R-2 Verify (d6d25e21)
+name: Agent 14 Hosted P0 R-2 Verify (667447dc)
 on:
   push:
     branches:
@@ -12,9 +12,9 @@ concurrency:
 
 jobs:
   r2_server_verify:
-    name: "P0 R-2 (d6d25e21): exact SHA + 2 neg-ctrls + full 0F/0E reactor"
+    name: "P0 R-2 (667447dc): exact SHA + neg-ctrls + full 0F/0E reactor"
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 35
     env:
       LANG: C.UTF-8
       LC_ALL: C.UTF-8
@@ -38,20 +38,23 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-m2-simcp-
 
-      - name: Install Maven 3.9.9 & Xvfb
+      - name: Install Maven 3.9.9, Xvfb & pytest
         shell: bash
         run: |
           set -euo pipefail
           sudo apt-get update -qq
           sudo apt-get install -y -qq xvfb xauth libgtk-3-0 >/dev/null
           if [ ! -x /opt/apache-maven-3.9.9/bin/mvn ]; then
-            curl -fsSL --retry 4 --retry-delay 2 https://archive.apache.org/dist/maven/maven-3/3.9.9/binaries/apache-maven-3.9.9-bin.tar.gz -o /tmp/mvn.tgz               || curl -fsSL --retry 4 --retry-delay 2 https://downloads.apache.org/maven/maven-3/3.9.9/binaries/apache-maven-3.9.9-bin.tar.gz -o /tmp/mvn.tgz               || curl -fsSL --retry 4 --retry-delay 2 https://repo.maven.apache.org/maven2/org/apache/maven/apache-maven/3.9.9/apache-maven-3.9.9-bin.tar.gz -o /tmp/mvn.tgz
+            curl -fsSL --retry 4 --retry-delay 2 https://archive.apache.org/dist/maven/maven-3/3.9.9/binaries/apache-maven-3.9.9-bin.tar.gz -o /tmp/mvn.tgz \
+              || curl -fsSL --retry 4 --retry-delay 2 https://downloads.apache.org/maven/maven-3/3.9.9/binaries/apache-maven-3.9.9-bin.tar.gz -o /tmp/mvn.tgz \
+              || curl -fsSL --retry 4 --retry-delay 2 https://repo.maven.apache.org/maven2/org/apache/maven/apache-maven/3.9.9/apache-maven-3.9.9-bin.tar.gz -o /tmp/mvn.tgz
             sudo tar -xzf /tmp/mvn.tgz -C /opt
           fi
           echo "/opt/apache-maven-3.9.9/bin" >> "$GITHUB_PATH"
           /opt/apache-maven-3.9.9/bin/mvn -version
+          python3 -m pip install -q pytest pytest-subtests || true
 
-      - name: Checkout exact SHA d6d25e21eb085845f551efd4a785410e5a472d28
+      - name: Checkout exact SHA 667447dc44e02e9e438353eca33a7c84a68c7b44
         shell: bash
         run: |
           set -euo pipefail
@@ -61,10 +64,10 @@ jobs:
           export GIT_SSH_COMMAND="ssh -i $HOME/.ssh/si_mcp_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"
           git clone -q --branch agent/14-p0-r2-diagnostics-completeness --depth=40 git@github.com:Lavren73/SI-MCP.git src
           cd src
-          git checkout -q d6d25e21eb085845f551efd4a785410e5a472d28
+          git checkout -q 667447dc44e02e9e438353eca33a7c84a68c7b44
           echo "EXACT_R2_SHA=$(git rev-parse HEAD)"
 
-      - name: Standalone R-2 focused + 2 negative controls + cumulative 0F/0E reactor
+      - name: Standalone R-2 focused + 5 negative controls + cumulative 0F/0E reactor
         shell: bash
         run: |
           set -euo pipefail
@@ -111,13 +114,15 @@ jobs:
               print(f"R2_GATE {gate} exit={rg.returncode} tail={(rg.stdout.strip().splitlines() or [''])[-1]}", flush=True)
               assert rg.returncode == 0
 
-          # 2. Exact SHA focused 14-class suite
+          # 2. Exact SHA focused 16-class suite (including isolation sentinel & all R-2 tests)
           focused = [
               "si.edt.mcp.server.support.FailureShapeTest",
               "si.edt.mcp.server.wire.jsonrpc.ToolCallResultTest",
               "si.edt.mcp.server.wire.McpRequestRouterTest",
               "si.edt.mcp.server.toolkit.ops.DiagnosticsCompletenessTest",
               "si.edt.mcp.server.wire.DiagnosticsCompletenessWireTest",
+              "si.edt.mcp.server.wire.DiagnosticsCompletenessWireIsolationTest",
+              "si.edt.mcp.server.TheAccessLevelMatrixFixturePreservesRuntimeStateTest",
               "si.edt.mcp.server.toolkit.ops.ProjectProblemsCapNoticeTest",
               "si.edt.mcp.server.toolkit.ops.ProjectProblemsSeverityNoticeTest",
               "si.edt.mcp.server.toolkit.ops.AReadAnswersItsMarkersAndItsRefusalTogetherTest",
@@ -132,7 +137,9 @@ jobs:
           for row in rows:
               print("  FOCUSED", row, flush=True)
           print(f"R2_EXACT_FOCUSED exit={rc} T={t} F={f} E={e} S={s}", flush=True)
-          assert rc == 0 and f == 0 and e == 0 and t >= 125
+          if rc != 0 or f != 0 or e != 0:
+              print(out[-3000:], flush=True)
+          assert rc == 0 and f == 0 and e == 0 and t >= 130
 
           # 3. Negative control A: disable MARKDOWN_REQUEST_FAILED in FailureShape.java
           fs = srv / "bundles/si.edt.mcp.server/src/si/edt/mcp/server/support/FailureShape.java"
@@ -141,7 +148,7 @@ jobs:
               mut_fs = orig_fs.replace("|| head.startsWith(MARKDOWN_REQUEST_FAILED)", "/* mutated */")
               assert mut_fs != orig_fs
               fs.write_text(mut_fs, encoding="utf-8")
-              nrc, nt, nf, ne, ns, nrows, _ = run_junit([
+              nrc, nt, nf, ne, ns, _, _ = run_junit([
                   "si.edt.mcp.server.support.FailureShapeTest",
                   "si.edt.mcp.server.wire.DiagnosticsCompletenessWireTest",
               ])
@@ -150,29 +157,57 @@ jobs:
           finally:
               fs.write_text(orig_fs, encoding="utf-8")
 
-          # 4. Negative control B: drop completeness publication in ProjectProblemsReader.execute
+          # 4. Negative control B: swallow CoreException in collectEclipseMarkers
           ppr = srv / "bundles/si.edt.mcp.server/src/si/edt/mcp/server/toolkit/ops/ProjectProblemsReader.java"
           orig_ppr = ppr.read_text(encoding="utf-8")
           try:
-              mut_ppr = orig_ppr.replace(
-                  "DiagnosticsCompleteness.publishIfCapturing(result.completeness);",
-                  "// mutated: dropped publishIfCapturing"
-              )
-              assert mut_ppr != orig_ppr
-              ppr.write_text(mut_ppr, encoding="utf-8")
-              nrc, nt, nf, ne, ns, nrows, _ = run_junit([
+              target = 'throw new MarkerStoreException("Could not read Eclipse markers of project \'" //$NON-NLS-1$\n                    + project.getName() + "\': " + failureText(e), e); //$NON-NLS-1$'
+              assert target in orig_ppr
+              ppr.write_text(orig_ppr.replace(target, "continue;"), encoding="utf-8")
+              nrc, nt, nf, ne, ns, _, _ = run_junit([
                   "si.edt.mcp.server.toolkit.ops.DiagnosticsCompletenessTest",
               ])
-              print(f"R2_NEG_CTRL_PUBLISH exit={nrc} T={nt} F={nf} E={ne}", flush=True)
+              print(f"R2_NEG_CTRL_CORE_EXCEPTION exit={nrc} T={nt} F={nf} E={ne}", flush=True)
               assert nrc != 0 and (nf + ne) >= 1
           finally:
               ppr.write_text(orig_ppr, encoding="utf-8")
 
-          # 5. Merge open verified PRs (#195, #190, #192, #193, #194, #176) & run full reactor
+          # 5. Negative control C: swallow RuntimeException in ModuleSources.coverageEntries
+          ms = srv / "bundles/si.edt.mcp.server/src/si/edt/mcp/server/support/modules/ModuleSources.java"
+          orig_ms = ms.read_text(encoding="utf-8")
+          try:
+              needle = "out.add(new CoverageEntry(kind,\n                    \"Model coverage check failed for provider \" + kind //$NON-NLS-1$\n                        + \" (coverage outside the BSL index could not be verified).\", //$NON-NLS-1$\n                    true));"
+              assert needle in orig_ms
+              ms.write_text(orig_ms.replace(needle, "// mutated: swallowed provider failure"), encoding="utf-8")
+              nrc, nt, nf, ne, ns, _, _ = run_junit([
+                  "si.edt.mcp.server.toolkit.ops.DiagnosticsCompletenessTest",
+              ])
+              print(f"R2_NEG_CTRL_COVERAGE_FAIL exit={nrc} T={nt} F={nf} E={ne}", flush=True)
+              assert nrc != 0 and (nf + ne) >= 1
+          finally:
+              ms.write_text(orig_ms, encoding="utf-8")
+
+          # 6. Negative control D: drop restore of ownTools in DiagnosticsCompletenessWireTest
+          wt = srv / "tests/si.edt.mcp.server.tests/src/si/edt/mcp/server/wire/DiagnosticsCompletenessWireTest.java"
+          orig_wt = wt.read_text(encoding="utf-8")
+          try:
+              needle = "registry.register(own);"
+              assert needle in orig_wt
+              wt.write_text(orig_wt.replace(needle, "// mutated: dropped own tool restore"), encoding="utf-8")
+              nrc, nt, nf, ne, ns, _, _ = run_junit([
+                  "si.edt.mcp.server.wire.DiagnosticsCompletenessWireIsolationTest",
+              ])
+              print(f"R2_NEG_CTRL_WIRE_ISOLATION exit={nrc} T={nt} F={nf} E={ne}", flush=True)
+              assert nrc != 0 and (nf + ne) >= 1
+          finally:
+              wt.write_text(orig_wt, encoding="utf-8")
+
+          # 7. Merge latest team base + open verified PRs (#195, #190, #192, #193, #194, #176) & run full reactor
           subprocess.run(["git", "config", "user.name", "si-mcp-agent-sim"], cwd=src, check=True)
           subprocess.run(["git", "config", "user.email", "si-mcp-agent@local.invalid"], cwd=src, check=True)
           subprocess.run([
               "git", "fetch", "-q", "origin",
+              "agent/obmen-20261102:refs/heads/obmen-latest",
               "refs/pull/195/head:refs/heads/pr-195",
               "refs/pull/190/head:refs/heads/pr-190",
               "refs/pull/192/head:refs/heads/pr-192",
@@ -180,14 +215,13 @@ jobs:
               "refs/pull/194/head:refs/heads/pr-194",
               "refs/pull/176/head:refs/heads/pr-176",
           ], cwd=src, check=True)
-          for pr in (195, 190, 192, 193, 194, 176):
-              r_m = subprocess.run(["git", "merge", "--no-edit", f"pr-{pr}", "-m", f"sim merge PR #{pr}"],
+          for branch in ("obmen-latest", "pr-195", "pr-190", "pr-192", "pr-193", "pr-194", "pr-176"):
+              r_m = subprocess.run(["git", "merge", "--no-edit", branch, "-m", f"sim merge {branch}"],
                                    cwd=src, capture_output=True, text=True)
               if r_m.returncode != 0:
-                  # Check only server/docs-сервера/test-coverage.md conflicted
                   st = subprocess.run(["git", "-c", "core.quotepath=false", "diff", "--name-only", "--diff-filter=U"],
                                       cwd=src, capture_output=True, text=True, check=True).stdout.strip().splitlines()
-                  print(f"Merge conflict PR #{pr}: {st}", flush=True)
+                  print(f"Merge conflict {branch}: {st}", flush=True)
                   assert st == ["server/docs-сервера/test-coverage.md"], f"Unexpected conflicts: {st}"
                   subprocess.run(["git", "checkout", "--ours", "server/docs-сервера/test-coverage.md"], cwd=src, check=True)
                   subprocess.run(["git", "add", "server/docs-сервера/test-coverage.md"], cwd=src, check=True)
