@@ -185,7 +185,7 @@ jobs:
                                    cwd=src, capture_output=True, text=True)
               if r_m.returncode != 0:
                   # Check only server/docs-сервера/test-coverage.md conflicted
-                  st = subprocess.run(["git", "diff", "--name-only", "--diff-filter=U"],
+                  st = subprocess.run(["git", "-c", "core.quotepath=false", "diff", "--name-only", "--diff-filter=U"],
                                       cwd=src, capture_output=True, text=True, check=True).stdout.strip().splitlines()
                   print(f"Merge conflict PR #{pr}: {st}", flush=True)
                   assert st == ["server/docs-сервера/test-coverage.md"], f"Unexpected conflicts: {st}"
