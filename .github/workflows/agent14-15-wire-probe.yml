@@ -135,7 +135,7 @@ jobs:
                   assertNotNull("OSGi preference store required", store);
                   store.setValue(PrefKeys.PREF_PII_REDACT_ENABLED, true);
                   String full = "email ivanov@example.com tail";
-                  int limit = ResponseCap.byteLength("email ivanov@example.");
+                  long limit = ResponseCap.byteLength("email ivanov@example.");
                   registry.register(new StubProblemsTool(full,
                       DiagnosticsCompleteness.builder().returnedCount(0).totalMatching(0L).build()));
                   ToolCallScope scope = ToolCallScope.create(null);
