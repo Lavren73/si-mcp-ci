@@ -1,0 +1,152 @@
+name: Agent 14+15 Whole-Wire & Truncation Probe (e1051751)
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: agent14-15-wire-probe-e1051751
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout SI-MCP exact e1051751 (clean copy)
+        uses: actions/checkout@v4
+        with:
+          repository: Lavren73/SI-MCP
+          ref: e1051751fd0e1afe9d89ea40e38ffe54e12e5e36
+          fetch-depth: 0
+          token: ${{ secrets.SI_MCP_TOKEN }}
+
+      - name: Check JDK 17 + Maven
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+
+      - name: Verify exact base SHA and append Agent 15 test methods to test copy only
+        run: |
+          git rev-parse HEAD
+          python3 - <<'PY'
+          import textwrap
+          from pathlib import Path
+
+          p = Path('server/tests/si.edt.mcp.server.tests/src/si/edt/mcp/server/wire/DiagnosticsCompletenessWireTest.java')
+          text = p.read_text(encoding='utf-8')
+          idx = text.rfind('}')
+          assert idx != -1
+
+          addition = textwrap.dedent(r"""
+              @Test
+              public void agent15WholeWireBoundariesAndMasking()
+              {
+                  assertNotNull("OSGi preference store required", store);
+                  store.setValue(PrefKeys.PREF_PII_REDACT_ENABLED, true);
+                  final int limit = 512;
+                  final String request = "{\"jsonrpc\":\"2.0\",\"id\":\"sentinel@example.com\",\"method\":\"tools/call\",\"params\":{\"name\":\"get_project_errors\",\"arguments\":{}}}";
+                  for (int count : new int[] { 100, 1000 })
+                  {
+                      List<String> unresolved = new ArrayList<>();
+                      for (int i = 0; i < count; i++)
+                      {
+                          unresolved.add("Каталог.\"" + i + " ivanov@example.com " + "\\\"".repeat(40));
+                      }
+                      for (int bodyBytes : new int[] { limit - 1, limit, limit + 1 })
+                      {
+                          registry.clear();
+                          String body = "\"".repeat(bodyBytes);
+                          registry.register(new StubProblemsTool(body, DiagnosticsCompleteness.builder()
+                              .returnedCount(0).totalMatching(0L).unresolvedObjects(unresolved).build()));
+                          ToolCallScope scope = ToolCallScope.create(null);
+                          scope.setResponseByteLimit(limit);
+                          ToolCallScope.enter(scope);
+                          try
+                          {
+                              String raw = router.processRequest(request);
+                              long bytes = ResponseCap.byteLength(raw);
+                              JsonObject envelope = JsonParser.parseString(raw).getAsJsonObject();
+                              assertEquals("sentinel@example.com", envelope.get("id").getAsString());
+                              assertFalse("unresolved PII must be masked", raw.contains("ivanov@example.com"));
+                              JsonObject result = envelope.getAsJsonObject("result");
+                              JsonObject comp = result.getAsJsonObject("structuredContent").getAsJsonObject("completeness");
+                              assertFalse(comp.get("complete").getAsBoolean());
+                              assertTrue(comp.get("capped").getAsBoolean());
+                              assertTrue(containsReason(comp.getAsJsonArray("reasons"), DiagnosticsCompleteness.REASON_RESPONSE_TRUNCATED));
+                              assertTrue(comp.getAsJsonArray("unresolvedObjects").size() < count);
+                              assertTrue("unexpected wire amplification " + bytes, bytes <= 6L * limit + 2048L);
+                              System.out.println("AGENT15_WIRE body=" + bodyBytes + " count=" + count + " bytes=" + bytes);
+                          }
+                          finally
+                          {
+                              ToolCallScope.exit();
+                          }
+                      }
+                  }
+              }
+
+              @Test
+              public void agent15CappedBodyCutInsideSyntheticEmail()
+              {
+                  assertNotNull("OSGi preference store required", store);
+                  store.setValue(PrefKeys.PREF_PII_REDACT_ENABLED, true);
+                  String full = "email ivanov@example.com tail";
+                  int limit = ResponseCap.byteLength("email ivanov@example.");
+                  registry.register(new StubProblemsTool(full,
+                      DiagnosticsCompleteness.builder().returnedCount(0).totalMatching(0L).build()));
+                  ToolCallScope scope = ToolCallScope.create(null);
+                  scope.setResponseByteLimit(limit);
+                  ToolCallScope.enter(scope);
+                  try
+                  {
+                      String raw = router.processRequest("{\"jsonrpc\":\"2.0\",\"id\":\"sentinel@example.com\",\"method\":\"tools/call\",\"params\":{\"name\":\"get_project_errors\",\"arguments\":{}}}");
+                      JsonObject env = JsonParser.parseString(raw).getAsJsonObject();
+                      assertEquals("sentinel@example.com", env.get("id").getAsString());
+                      String text = extractText(env.getAsJsonObject("result"));
+                      assertTrue("characterization of pre-existing cut/redact behavior", text.contains("ivanov@example."));
+                      assertFalse(text.contains("ivanov@example.com"));
+                      assertTrue(text.contains("[truncated=true:"));
+                      System.out.println("AGENT15_PII_PARTIAL_CHARACTERIZED=1");
+                  }
+                  finally
+                  {
+                      ToolCallScope.exit();
+                  }
+              }
+          """)
+          # indent addition by 4 spaces to match class body
+          indented = "\n".join(("    " + ln if ln else ln) for ln in addition.splitlines())
+          p.write_text(text[:idx] + "\n" + indented + "\n" + text[idx:], encoding='utf-8')
+          PY
+          git diff --stat
+          grep -c "agent15" server/tests/si.edt.mcp.server.tests/src/si/edt/mcp/server/wire/DiagnosticsCompletenessWireTest.java
+
+      - name: Run focused OSGi wire probe under xvfb-run
+        env:
+          MAVEN_OPTS: "-Xmx3g"
+        run: |
+          set +e
+          xvfb-run -a mvn -B -f server/pom.xml -pl bundles/si.edt.mcp.server,tests/si.edt.mcp.server.tests -Dtest=DiagnosticsCompletenessWireTest,DiagnosticsCompletenessWireIsolationTest test -DfailIfNoTests=true > /tmp/mvn_wire.log 2>&1
+          RC=$?
+          echo "MVN_EXIT=$RC"
+          grep "AGENT15_" /tmp/mvn_wire.log || true
+          python3 - <<'PY'
+          import glob, xml.etree.ElementTree as ET
+          for xp in sorted(glob.glob('server/tests/si.edt.mcp.server.tests/target/surefire-reports/TEST-*.xml')):
+              root = ET.parse(xp).getroot()
+              print(f"XML {root.attrib.get('name')}: T={root.attrib.get('tests')} F={root.attrib.get('failures')} E={root.attrib.get('errors')} S={root.attrib.get('skipped')}")
+              for tc in root.findall('testcase'):
+                  st = 'PASS'
+                  for tag in ('failure', 'error', 'skipped'):
+                      el = tc.find(tag)
+                      if el is not None:
+                          st = f"{tag.upper()}: {el.attrib.get('message', '')}"
+                  print(f"  - {tc.attrib.get('name')}: {st}")
+          PY
+          if [ "$RC" -ne 0 ]; then
+            echo "=== TAIL MVN LOG (NO SECRETS) ==="
+            tail -n 40 /tmp/mvn_wire.log
+          fi
+          exit "$RC"
