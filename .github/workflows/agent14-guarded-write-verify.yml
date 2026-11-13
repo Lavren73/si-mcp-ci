@@ -61,7 +61,7 @@ jobs:
           printf '%s\n' "${{ secrets.SI_MCP_DEPLOY_KEY }}" > "$HOME/.ssh/si_mcp_key"
           chmod 600 "$HOME/.ssh/si_mcp_key"
           export GIT_SSH_COMMAND="ssh -i $HOME/.ssh/si_mcp_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"
-          git clone -q --branch agent/14-guarded-write-draft --depth=20 git@github.com:Lavren73/SI-MCP.git src
+          git clone -q --branch agent/14-guarded-write-draft git@github.com:Lavren73/SI-MCP.git src
           cd src
           git checkout -q 433594d7efea42d7505f6a144458d06538a370bc
           echo "EXACT_GUARD_SHA=$(git rev-parse HEAD)"
