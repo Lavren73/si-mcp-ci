@@ -1,21 +1,42 @@
-name: '№11 — hosted runner probe (public repo check)'
+name: 'Agent 13 independent diagnostics review'
 on:
   workflow_dispatch:
 permissions:
   contents: read
 jobs:
   probe:
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
     steps:
-      - name: Confirm GitHub-hosted runner starts and report toolchain
+      - name: Checkout exact candidate
+        uses: actions/checkout@v4
+        with:
+          repository: Lavren73/SI-MCP
+          ref: 4f1090b3c5ec304a33cdf3fd7effdf73203dbda2
+          token: ${{ secrets.SI_MCP_TOKEN }}
+          persist-credentials: false
+          path: project
+          fetch-depth: 3
+      - name: Run synthetic behavioral checks
+        working-directory: project
         shell: bash
         run: |
-          set -uo pipefail
-          echo "HOSTED_PROBE=ok"
-          echo "runner_os=$RUNNER_OS runner_name=$RUNNER_NAME"
-          uname -a; id; nproc; free -m | head -2; df -h / | tail -1
-          for x in java javac mvn python3 pip3 xvfb-run git curl; do printf '%s=%s\n' "$x" "$(command -v $x || echo ABSENT)"; done
-          java -version 2>&1 | head -2 || true
-          mvn -version 2>&1 | head -1 || true
-          python3 -V
+          set -euo pipefail
+          [ "$(git rev-parse HEAD)" = 4f1090b3c5ec304a33cdf3fd7effdf73203dbda2 ]
+          [ "$(git rev-parse HEAD^)" = 65e089aad0e5dc5ee88a4bfad5e87e26116bf10a ]
+          [ "$(git diff --name-only HEAD^ HEAD)" = tools/agent13_review196.py ]
+          set +e
+          python3 tools/agent13_review196.py
+          probe_exit=$?
+          python3 - <<'PY'
+          import io,sys,unittest
+          sys.path.insert(0,'client/tests')
+          suite=unittest.defaultTestLoader.loadTestsFromName('test_partial_diagnostics_agent11')
+          result=unittest.TextTestRunner(stream=io.StringIO(),verbosity=0).run(suite)
+          print('AUTHOR_TESTS=%d FAILURES=%d ERRORS=%d SKIPS=%d' % (result.testsRun,len(result.failures),len(result.errors),len(result.skipped)))
+          sys.exit(0 if result.wasSuccessful() and result.testsRun==8 else 1)
+          PY
+          author_exit=$?
+          set -e
+          echo "PROBE_EXIT=$probe_exit AUTHOR_EXIT=$author_exit ARTIFACTS_UPLOADED=0"
+          [ "$probe_exit" -eq 0 ] && [ "$author_exit" -eq 0 ]
