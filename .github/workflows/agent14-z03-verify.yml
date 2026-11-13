@@ -44,12 +44,12 @@ jobs:
           set -euo pipefail
           sudo apt-get update -qq
           sudo apt-get install -y -qq xvfb xauth libgtk-3-0 >/dev/null
-          if ! command -v mvn >/dev/null 2>&1; then
-            curl -fsSL https://repo.maven.apache.org/maven2/org/apache/maven/apache-maven/3.9.9/apache-maven-3.9.9-bin.tar.gz -o /tmp/mvn.tgz
+          if [ ! -x /opt/apache-maven-3.9.9/bin/mvn ]; then
+            curl -fsSL --retry 4 --retry-delay 2 https://archive.apache.org/dist/maven/maven-3/3.9.9/binaries/apache-maven-3.9.9-bin.tar.gz -o /tmp/mvn.tgz               || curl -fsSL --retry 4 --retry-delay 2 https://downloads.apache.org/maven/maven-3/3.9.9/binaries/apache-maven-3.9.9-bin.tar.gz -o /tmp/mvn.tgz               || curl -fsSL --retry 4 --retry-delay 2 https://repo.maven.apache.org/maven2/org/apache/maven/apache-maven/3.9.9/apache-maven-3.9.9-bin.tar.gz -o /tmp/mvn.tgz
             sudo tar -xzf /tmp/mvn.tgz -C /opt
-            echo "/opt/apache-maven-3.9.9/bin" >> "$GITHUB_PATH"
           fi
-          mvn -version || true
+          echo "/opt/apache-maven-3.9.9/bin" >> "$GITHUB_PATH"
+          /opt/apache-maven-3.9.9/bin/mvn -version
 
       - name: Checkout exact SHA 647f322e1e5b89a18eda1f59124ed27f18efedf0
         shell: bash
