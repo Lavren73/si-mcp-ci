@@ -24,7 +24,7 @@ jobs:
           set -euo pipefail
           [ "$(git rev-parse HEAD)" = 9f4927c7b4790fd6f2c21a816db1549ae24d21ae ] || exit 1
           python3 - <<'PY'
-          import importlib.util,pathlib,subprocess,tempfile
+          import contextlib,importlib.util,io,pathlib,subprocess,tempfile
           p=pathlib.Path('server/scripts/tests/test_watcher_repo.py')
           spec=importlib.util.spec_from_file_location('watcher_fixture',p)
           m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
@@ -39,12 +39,18 @@ jobs:
                   swapped=c.н.проверить_клон(str(c.клон),c.ветка) is None
                   missing_ref=subprocess.run(['git','-C',str(foreign),'show-ref','--verify','--quiet','refs/heads/'+c.ветка]).returncode != 0
                   local_ref=subprocess.run(['git','-C',str(c.клон),'show-ref','--verify','--quiet','refs/remotes/origin/'+c.ветка]).returncode == 0
+                  old=subprocess.check_output(['git','-C',str(c.клон),'rev-parse','refs/remotes/origin/'+c.ветка],text=True).strip()
+                  buf=io.StringIO()
+                  with contextlib.redirect_stdout(buf):
+                      after,rc=c.н.один_проход(str(c.клон),c.ветка,old)
+                  unchanged_success=(after==old and rc==0 and 'no new commits' in buf.getvalue())
+                  print('EMPTY_FOREIGN_FETCH_REPORTS_NO_NEW_COMMITS='+str(int(unchanged_success)))
                   print('ORIGINAL_ACCEPTED='+str(int(before)))
                   print('FOREIGN_EMPTY_REMOTE_WITH_STALE_REF_ACCEPTED='+str(int(swapped)))
                   print('FOREIGN_REF_ABSENT='+str(int(missing_ref)))
                   print('LOCAL_TRACKING_REF_PRESENT='+str(int(local_ref)))
                   print('ARTIFACTS_UPLOADED=0')
-                  if not (before and swapped and missing_ref and local_ref): raise SystemExit(1)
+                  if not (before and swapped and missing_ref and local_ref and unchanged_success): raise SystemExit(1)
           finally:
               c.doClassCleanups()
           PY
