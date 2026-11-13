@@ -1,7 +1,12 @@
 name: Agent 14+15 Whole-Wire & Truncation Probe (e1051751)
 
 on:
-  workflow_dispatch:
+  push:
+    branches:
+      - agent/14-hosted-wire-probe
+
+permissions:
+  contents: read
 
 concurrency:
   group: agent14-15-wire-probe-e1051751
