@@ -40,13 +40,16 @@ jobs:
           python3 - "$RUNNER_TEMP/partial.log" "$partial_exit" "$RUNNER_TEMP/rollback.log" "$rollback_exit" <<'PY'
           import pathlib,re,sys
           rows=[('PARTIAL',sys.argv[1],int(sys.argv[2])),('ROLLBACK',sys.argv[3],int(sys.argv[4]))]
+          all_ok=True
           for label,path,code in rows:
               text=pathlib.Path(path).read_text(errors='replace')
-              m=re.search(r'Ran (\d+) tests?',text)
-              passed=(code==0 and '\nOK\n' in text)
+              m=re.search(r'Ran ([0-9]+) tests?',text)
+              passed=(code==0 and text.rstrip().endswith('OK'))
+              all_ok = all_ok and passed and m is not None
               print(f"{label}_TESTS={m.group(1) if m else 'UNKNOWN'}")
               print(f"{label}_EXIT={code}")
-              print(f"{label}_RESULT={'PASS' if passed else 'FAIL'}")
+              print(f"{label}_RESULT={'PASS' if passed and m else 'FAIL'}")
+          if not all_ok: raise SystemExit(1)
           PY
           test "$partial_exit" -eq 0
           test "$rollback_exit" -eq 0
