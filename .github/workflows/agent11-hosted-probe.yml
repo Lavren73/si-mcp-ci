@@ -1,4 +1,4 @@
-name: 'Agent 13 independent P0 recheck'
+name: 'Agent 13 independent P0 retry and registry'
 on:
   workflow_dispatch:
 permissions:
@@ -8,7 +8,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        mode: [baseline, setup_failure, registry_negative, marker_negative, count_negative, coverage_negative]
+        mode: [baseline, setup_failure, interrupt_negative]
     runs-on: ubuntu-24.04
     timeout-minutes: 50
     env:
@@ -25,7 +25,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: Lavren73/SI-MCP
-          ref: 9b2aff6d71f890d46c7a07aa2f13c1f4eec32a28
+          ref: e1051751fd0e1afe9d89ea40e38ffe54e12e5e36
           token: ${{ secrets.SI_MCP_TOKEN }}
           persist-credentials: false
           path: project
@@ -44,49 +44,20 @@ jobs:
           curl --retry 3 -fsSL https://archive.apache.org/dist/maven/maven-3/3.9.9/binaries/apache-maven-3.9.9-bin.tar.gz -o "$RUNNER_TEMP/maven.tar.gz"
           tar -xzf "$RUNNER_TEMP/maven.tar.gz" -C "$RUNNER_TEMP"
           echo 'SETUP_OK=1'
-      - name: Exact source, test-only injection or mutation, focused OSGi
+      - name: Exact source, synthetic exception injection or negative control, focused OSGi
         shell: bash
         env:
           MODE: ${{ matrix.mode }}
         run: |
           set -euo pipefail
-          [ "$(git -C project rev-parse HEAD)" = 9b2aff6d71f890d46c7a07aa2f13c1f4eec32a28 ]
-          echo SOURCE_SHA=9b2aff6d71f890d46c7a07aa2f13c1f4eec32a28
+          [ "$(git -C project rev-parse HEAD)" = e1051751fd0e1afe9d89ea40e38ffe54e12e5e36 ]
+          echo SOURCE_SHA=e1051751fd0e1afe9d89ea40e38ffe54e12e5e36
           cp harness/agent13-review/Agent13Pr197IsolationSentinelTest.java project/server/tests/si.edt.mcp.server.tests/src/si/edt/mcp/server/wire/
-          python3 harness/agent13-review/mutate.py "$MODE"
+          cp harness/agent13-review/Agent13InterruptedBaselineTest.java project/server/tests/si.edt.mcp.server.tests/src/si/edt/mcp/server/toolkit/ops/
+          python3 harness/agent13-review/mutate_interrupt.py "$MODE"
           prop=false; if [ "$MODE" = setup_failure ]; then prop=true; fi
           set +e
-          (cd project/server && xvfb-run -a "$RUNNER_TEMP/apache-maven-3.9.9/bin/mvn" -B -fae -ntp -pl targets/default,bundles/si.edt.mcp.server,tests/si.edt.mcp.server.tests -am '-Dtest=DiagnosticsCompletenessTest,Agent13Pr197IsolationSentinelTest' "-Dagent13.setupFailure=$prop" verify > "$RUNNER_TEMP/private-maven.log" 2>&1)
+          (cd project/server && xvfb-run -a "$RUNNER_TEMP/apache-maven-3.9.9/bin/mvn" -B -fae -ntp -pl targets/default,bundles/si.edt.mcp.server,tests/si.edt.mcp.server.tests -am '-Dtest=DiagnosticsCompletenessTest,Agent13Pr197IsolationSentinelTest,TheEmptyFirstReadIsRetriedTest,Agent13InterruptedBaselineTest' "-Dagent13.setupFailure=$prop" verify > "$RUNNER_TEMP/private-maven.log" 2>&1)
           rc=$?
           set -e
-          python3 harness/agent13-review/check_results.py "$MODE" "$rc"
-  client:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-          path: harness
-      - uses: actions/checkout@v4
-        with:
-          repository: Lavren73/SI-MCP
-          ref: 2e115ef9c607b8a8679720b31ba43de8448dcf5f
-          token: ${{ secrets.SI_MCP_TOKEN }}
-          persist-credentials: false
-          path: project
-          fetch-depth: 1
-      - name: Repeat previous and exact schema fake scenarios
-        shell: bash
-        run: |
-          set -euo pipefail
-          [ "$(git -C project rev-parse HEAD)" = 2e115ef9c607b8a8679720b31ba43de8448dcf5f ]
-          echo SOURCE_SHA=2e115ef9c607b8a8679720b31ba43de8448dcf5f
-          cd project
-          set +e
-          python3 ../harness/agent13-review/probe196.py
-          probe=$?
-          set -e
-          echo PROBE_EXIT="$probe"
-          python3 ../harness/agent13-review/contract196.py
-          echo 'ARTIFACTS_UPLOADED=0'
+          python3 harness/agent13-review/check_interrupt.py "$MODE" "$rc"
