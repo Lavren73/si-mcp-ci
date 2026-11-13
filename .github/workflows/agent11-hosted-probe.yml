@@ -12,7 +12,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: Lavren73/SI-MCP
-          ref: 3251adae55b4c2dfbedc46ff82418fc0a0cd532e
+          ref: 1475821c8aafe6ce20d45f1ef7d860e35d2abdab
           token: ${{ secrets.SI_MCP_TOKEN }}
           persist-credentials: false
           path: project
@@ -22,7 +22,7 @@ jobs:
         working-directory: project
         run: |
           set -euo pipefail
-          [ "$(git rev-parse HEAD)" = 3251adae55b4c2dfbedc46ff82418fc0a0cd532e ] || exit 1
+          [ "$(git rev-parse HEAD)" = 1475821c8aafe6ce20d45f1ef7d860e35d2abdab ] || exit 1
           python3 - <<'PY'
           import contextlib,importlib.util,io,unittest,subprocess
           p='server/scripts/tests/test_watcher_stale_remote_11.py'
@@ -31,7 +31,7 @@ jobs:
           with contextlib.redirect_stdout(sink),contextlib.redirect_stderr(sink):
               r=unittest.TextTestRunner(stream=sink).run(unittest.defaultTestLoader.loadTestsFromTestCase(m.StaleRemote))
           print('REGRESSION_TESTS=%d FAILURES=%d ERRORS=%d SKIPS=%d'%(r.testsRun,len(r.failures),len(r.errors),len(r.skipped)))
-          if not (r.testsRun==6 and r.wasSuccessful() and len(r.skipped)==0): raise SystemExit(1)
+          if not (r.testsRun==10 and r.wasSuccessful() and len(r.skipped)==0): raise SystemExit(1)
           test=m.StaleRemote(methodName='test_unchanged_branch')
           test.setUp()
           try:
@@ -44,13 +44,17 @@ jobs:
               test.cmd('-C',str(test.seed),'push','--force',str(test.origin),test.old+':refs/heads/topic')
               buf=io.StringIO()
               with contextlib.redirect_stdout(buf): new,rc=m.w.один_проход(str(test.clone),'topic',current)
-              rewound=new==test.old and rc==0
-              zero='0 new commit(s)' in buf.getvalue()
+              rewound=new==test.old and rc==1
+              zero=('non-fast-forward' in buf.getvalue() and '0 new commit(s)' not in buf.getvalue())
               print('FORWARD_DETECTED='+str(int(forward)))
-              print('FORCED_REWIND_ACCEPTED='+str(int(rewound)))
-              print('REWIND_REPORTED_ZERO_NEW_COMMITS='+str(int(zero)))
+              print('FORCED_REWIND_ALERTED='+str(int(rewound)))
+              print('REWIND_PROPERLY_LABELED='+str(int(zero)))
+              out2=io.StringIO()
+              with contextlib.redirect_stdout(out2): again,rc2=m.w.один_проход(str(test.clone),'topic',new)
+              repeat=(again==new and rc2==0 and 'no new commits' in out2.getvalue())
+              print('SECOND_POLL_STABLE='+str(int(repeat)))
               print('ARTIFACTS_UPLOADED=0')
-              if not (forward and rewound and zero): raise SystemExit(1)
+              if not (forward and rewound and zero and repeat): raise SystemExit(1)
           finally:
               test.doCleanups()
           PY
