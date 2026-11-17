@@ -1,4 +1,4 @@
-name: "Agent 15 OSGi Wire Probe PR #225 (68c61cd9)"
+name: "Agent 15 OSGi Wire Probe PR #225 (b6af2436)"
 
 on:
   push:
@@ -10,12 +10,12 @@ permissions:
   contents: read
 
 concurrency:
-  group: agent15-wire-probe-225-68c61cd9
+  group: agent15-wire-probe-225-b6af2436
   cancel-in-progress: false
 
 jobs:
   verify:
-    name: "Agent 15 Wire Probe PR #225 (exact 68c61cd9)"
+    name: "Agent 15 Wire Probe PR #225 (exact b6af2436)"
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
@@ -49,14 +49,13 @@ jobs:
           sudo apt-get install -y -qq xvfb xauth libgtk-3-0 >/dev/null
           if [ ! -x /opt/apache-maven-3.9.9/bin/mvn ]; then
             curl -fsSL --retry 4 --retry-delay 2 https://archive.apache.org/dist/maven/maven/3/3.9.9/binaries/apache-maven-3.9.9/apache-maven-3.9.9-bin.tar.gz -o /tmp/mvn.tgz \
-              || curl -fsSL --retry 4 --retry-delay 2 https://archive.apache.org/dist/maven/maven-3/3.9.9/binaries/apache-maven-3.9.9-bin.tar.gz -o /tmp/mvn.tgz \
-              || curl -fsSL --retry 4 --retry-delay 2 https://downloads.apache.org/maven/maven-3/3.9.9/binaries/apache-maven-3.9.9-bin.tar.gz -o /tmp/mvn.tgz \
+              || curl -fsSL --retry 4 --retry-delay 2 https://downloads.apache.org/maven/maven/3/3.9.9/binaries/apache-maven-3.9.9/apache-maven-3.9.9-bin.tar.gz -o /tmp/mvn.tgz \
               || curl -fsSL --retry 4 --retry-delay 2 https://repo.maven.apache.org/maven2/org/apache/maven/apache-maven/3.9.9/apache-maven-3.9.9-bin.tar.gz -o /tmp/mvn.tgz
             sudo tar -xzf /tmp/mvn.tgz -C /opt
           fi
           /opt/apache-maven-3.9.9/bin/mvn -version
 
-      - name: Checkout SI-MCP exact 68c61cd9f3ff (ephemeral copy)
+      - name: "Checkout SI-MCP exact b6af24366064 (ephemeral copy)"
         shell: bash
         run: |
           set -euo pipefail
@@ -66,12 +65,12 @@ jobs:
           export GIT_SSH_COMMAND="ssh -i $HOME/.ssh/si_mcp_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"
           git clone -q --branch agent/14-197-followup-unknown-cap --depth=20 git@github.com:Lavren73/SI-MCP.git src
           cd src
-          git checkout -q 68c61cd9f3fff6de807ad2713405af7a08c3b246
+          git checkout -q b6af24366064d798ad859d48737b4d130331df1d
           ACTUAL_SHA=$(git rev-parse HEAD)
           echo "EXACT_PR225_SHA=$ACTUAL_SHA"
-          test "$ACTUAL_SHA" = "68c61cd9f3fff6de807ad2713405af7a08c3b246"
+          test "$ACTUAL_SHA" = "b6af24366064d798ad859d48737b4d130331df1d"
 
-      - name: "Append Agent 15 PR #225 OSGi wire tests and run targeted Tycho verify"
+      - name: "Append Agent 15 PR #225 OSGi wire tests (T04) and run targeted Tycho verify"
         shell: bash
         run: |
           set -euo pipefail
@@ -86,45 +85,93 @@ jobs:
 
           addition = textwrap.dedent(r"""
               @Test
-              public void agent15Pr225MaskingOnNeverLeaksPartialSecret() throws InterruptedException
+              public void agent15Pr225MaskingOnSyncCutSweep()
               {
                   assertNotNull("OSGi preference store required", store);
                   store.setValue(PrefKeys.PREF_PII_REDACT_ENABLED, true);
                   final String req = "{\"jsonrpc\":\"2.0\",\"id\":\"sentinel@example.com\",\"method\":\"tools/call\",\"params\":{\"name\":\"get_project_errors\",\"arguments\":{}}}";
 
-                  // 1. Sync tools/call sweep across synthetic email cuts
-                  String emailBody = "email ivanov@example.com tail padding";
-                  int syncChecks = 0;
-                  for (int limit = 10; limit < ResponseCap.byteLength(emailBody); limit++)
+                  // 0. Positive uncapped control: verify email, phone, and Luhn-valid card 4532 0151 1283 0366 all mask
+                  String multi = "card 4532 0151 1283 0366 phone +7 (999) 123-45-67 mail ivanov@example.com tail";
+                  registry.clear();
+                  registry.register(new StubProblemsTool(multi,
+                      DiagnosticsCompleteness.builder().returnedCount(0).totalMatching(0L).build()));
                   {
-                      registry.clear();
-                      registry.register(new StubProblemsTool(emailBody,
-                          DiagnosticsCompleteness.builder().returnedCount(0).totalMatching(0L).build()));
-                      ToolCallScope scope = ToolCallScope.create(null);
-                      scope.setResponseByteLimit(limit);
-                      ToolCallScope.enter(scope);
-                      try
-                      {
-                          String raw = router.processRequest(req);
-                          JsonObject env = JsonParser.parseString(raw).getAsJsonObject();
-                          assertEquals("sentinel@example.com", env.get("id").getAsString());
-                          String bodyText = extractText(env.getAsJsonObject("result"));
-                          assertFalse("leaked email fragment at limit=" + limit + ": " + bodyText,
-                              bodyText.contains("ivanov") || bodyText.contains("example."));
-                          assertTrue("must carry truncation notice at limit=" + limit,
-                              bodyText.contains("[truncated=true:"));
-                          syncChecks++;
-                      }
-                      finally
-                      {
-                          ToolCallScope.exit();
-                      }
+                      String rawUncapped = router.processRequest(req);
+                      JsonObject envUncapped = JsonParser.parseString(rawUncapped).getAsJsonObject();
+                      String uncappedText = extractText(envUncapped.getAsJsonObject("result"));
+                      assertTrue("Luhn card must mask to [CARD..0366]: " + uncappedText, uncappedText.contains("[CARD\u2022\u20220366]"));
+                      assertTrue("phone must mask to [PHONE]: " + uncappedText, uncappedText.contains("[PHONE]"));
+                      assertTrue("email must mask to [EMAIL]: " + uncappedText, uncappedText.contains("[EMAIL]"));
+                      assertFalse("uncapped leaked raw PII: " + uncappedText,
+                          uncappedText.contains("4532") || uncappedText.contains("0151") || uncappedText.contains("1283")
+                              || uncappedText.contains("999") || uncappedText.contains("123-45-67")
+                              || uncappedText.contains("ivanov") || uncappedText.contains("example."));
                   }
 
-                  // 2. Sync tools/call compact JSON with email + phone + card
-                  String compactPii = "{\"u\":\"ivanov@example.com\",\"p\":\"+7 (999) 123-45-67\",\"c\":\"4276 1234 5678 9012\",\"k\":\"tail\"}";
+                  // 1. Sync tools/call byte-by-byte sweep across email and multi-token string
+                  int syncChecks = 0;
+                  for (String payload : new String[] { "email ivanov@example.com tail padding", multi })
+                  {
+                      int totalBytes = ResponseCap.byteLength(payload);
+                      for (int limit = 10; limit < totalBytes; limit++)
+                      {
+                          registry.clear();
+                          registry.register(new StubProblemsTool(payload,
+                              DiagnosticsCompleteness.builder().returnedCount(0).totalMatching(0L).build()));
+                          ToolCallScope scope = ToolCallScope.create(null);
+                          scope.setResponseByteLimit(limit);
+                          ToolCallScope.enter(scope);
+                          try
+                          {
+                              String raw = router.processRequest(req);
+                              JsonObject env = JsonParser.parseString(raw).getAsJsonObject();
+                              assertEquals("sentinel@example.com", env.get("id").getAsString());
+                              String bodyText = extractText(env.getAsJsonObject("result"));
+                              assertFalse("sync cut leaked PII at limit=" + limit + ": " + bodyText,
+                                  bodyText.contains("ivanov") || bodyText.contains("example.")
+                                      || bodyText.contains("4532") || bodyText.contains("0151")
+                                      || bodyText.contains("1283") || bodyText.contains("999")
+                                      || bodyText.contains("123-45-67"));
+                              assertTrue("must carry truncation notice at limit=" + limit,
+                                  bodyText.contains("[truncated=true:"));
+                              syncChecks++;
+                          }
+                          finally
+                          {
+                              ToolCallScope.exit();
+                          }
+                      }
+                  }
+                  System.out.println("AGENT15_PR225_SYNC_SWEEP=PASS checks=" + syncChecks);
+              }
+
+              @Test
+              public void agent15Pr225MaskingOnCompactJson()
+              {
+                  assertNotNull("OSGi preference store required", store);
+                  store.setValue(PrefKeys.PREF_PII_REDACT_ENABLED, true);
+                  final String req = "{\"jsonrpc\":\"2.0\",\"id\":\"sentinel@example.com\",\"method\":\"tools/call\",\"params\":{\"name\":\"get_project_errors\",\"arguments\":{}}}";
+                  String compactPii = "{\"u\":\"ivanov@example.com\",\"p\":\"+7 (999) 123-45-67\",\"c\":\"4532 0151 1283 0366\",\"k\":\"tail\"}";
+
+                  // Positive uncapped control on compact JSON
+                  registry.clear();
+                  registry.register(new StubProblemsTool(compactPii,
+                      DiagnosticsCompleteness.builder().returnedCount(0).totalMatching(0L).build()));
+                  {
+                      String rawUncapped = router.processRequest(req);
+                      String uncappedText = extractText(JsonParser.parseString(rawUncapped).getAsJsonObject().getAsJsonObject("result"));
+                      assertTrue("compact uncapped email mask missing: " + uncappedText, uncappedText.contains("[EMAIL]"));
+                      assertTrue("compact uncapped phone mask missing: " + uncappedText, uncappedText.contains("[PHONE]"));
+                      assertTrue("compact uncapped Luhn card mask missing: " + uncappedText, uncappedText.contains("[CARD\u2022\u20220366]"));
+                      assertFalse("compact uncapped leaked raw PII: " + uncappedText,
+                          uncappedText.contains("ivanov") || uncappedText.contains("123-45-67")
+                              || uncappedText.contains("4532") || uncappedText.contains("0151")
+                              || uncappedText.contains("1283"));
+                  }
+
                   int compactChecks = 0;
-                  for (int limit = 20; limit < ResponseCap.byteLength(compactPii); limit += 5)
+                  for (int limit = 16; limit < ResponseCap.byteLength(compactPii); limit += 3)
                   {
                       registry.clear();
                       registry.register(new StubProblemsTool(compactPii,
@@ -138,10 +185,12 @@ jobs:
                           JsonObject env = JsonParser.parseString(raw).getAsJsonObject();
                           String bodyText = extractText(env.getAsJsonObject("result"));
                           assertFalse("compact JSON PII leak at limit=" + limit + ": " + bodyText,
-                              bodyText.contains("ivanov") || bodyText.contains("123-45-67")
-                                  || bodyText.contains("4276") || bodyText.contains("5678")
-                                  || bodyText.contains("9012"));
-                          assertTrue(bodyText.contains("[truncated=true:"));
+                              bodyText.contains("ivanov") || bodyText.contains("example.")
+                                  || bodyText.contains("999") || bodyText.contains("123-45-67")
+                                  || bodyText.contains("4532") || bodyText.contains("0151")
+                                  || bodyText.contains("1283"));
+                          assertTrue("compact JSON truncation notice missing at limit=" + limit,
+                              bodyText.contains("[truncated=true:"));
                           compactChecks++;
                       }
                       finally
@@ -149,28 +198,52 @@ jobs:
                           ToolCallScope.exit();
                       }
                   }
+                  System.out.println("AGENT15_PR225_MASKING_ON_COMPACT_JSON=PASS checks=" + compactChecks);
+              }
 
-                  // 3. Async tasks/result (finishedResultOf) with masking ON
+              @Test
+              public void agent15Pr225MaskingOnAsyncTasksResult() throws InterruptedException
+              {
+                  assertNotNull("OSGi preference store required", store);
+                  store.setValue(PrefKeys.PREF_PII_REDACT_ENABLED, true);
                   registry.clear();
                   registry.register(new StubProblemsTool("ok", DiagnosticsCompleteness.noSessionChanges()));
-                  TaskDirectory.Task settled = runSettledTask("get_project_errors", Map.of(), emailBody);
-                  ToolCallScope asyncScope = ToolCallScope.create(null);
-                  asyncScope.setResponseByteLimit(ResponseCap.byteLength("email ivanov@example."));
-                  ToolCallScope.enter(asyncScope);
-                  try
+
+                  String emailBody = "email ivanov@example.com tail padding";
+                  String multi = "card 4532 0151 1283 0366 phone +7 (999) 123-45-67 mail ivanov@example.com tail";
+                  int asyncChecks = 0;
+                  int rpcId = 910;
+                  for (String[] pair : new String[][] {
+                      { emailBody, "email ivanov@example." },
+                      { multi, "card 4532 0151" },
+                      { multi, "card 4532 0151 1283 0366 phone +7 (999) 123" },
+                      { multi, "card 4532 0151 1283 0366 phone +7 (999) 123-45-67 mail ivanov@example." },
+                  })
                   {
-                      JsonObject inner = callTasksResult(901, settled.taskId)
-                          .getAsJsonObject("result").getAsJsonObject("result");
-                      String asyncText = extractText(inner);
-                      assertFalse("async finishedResultOf leaked partial email: " + asyncText,
-                          asyncText.contains("ivanov") || asyncText.contains("example."));
-                      assertTrue(asyncText.contains("[truncated=true:"));
+                      TaskDirectory.Task settled = runSettledTask("get_project_errors", Map.of(), pair[0]);
+                      ToolCallScope asyncScope = ToolCallScope.create(null);
+                      asyncScope.setResponseByteLimit(ResponseCap.byteLength(pair[1]));
+                      ToolCallScope.enter(asyncScope);
+                      try
+                      {
+                          JsonObject inner = callTasksResult(rpcId++, settled.taskId)
+                              .getAsJsonObject("result").getAsJsonObject("result");
+                          String asyncText = extractText(inner);
+                          assertFalse("async finishedResultOf leaked PII: " + asyncText,
+                              asyncText.contains("ivanov") || asyncText.contains("example.")
+                                  || asyncText.contains("4532") || asyncText.contains("0151")
+                                  || asyncText.contains("1283") || asyncText.contains("999")
+                                  || asyncText.contains("123-45-67"));
+                          assertTrue("async truncation notice missing: " + asyncText,
+                              asyncText.contains("[truncated=true:"));
+                          asyncChecks++;
+                      }
+                      finally
+                      {
+                          ToolCallScope.exit();
+                      }
                   }
-                  finally
-                  {
-                      ToolCallScope.exit();
-                  }
-                  System.out.println("AGENT15_PR225_MASKING_ON=PASS syncChecks=" + syncChecks + " compactChecks=" + compactChecks);
+                  System.out.println("AGENT15_PR225_ASYNC_MASKING_ON=PASS checks=" + asyncChecks);
               }
 
               @Test
