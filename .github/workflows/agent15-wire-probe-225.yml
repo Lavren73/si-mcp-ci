@@ -1,4 +1,4 @@
-name: Agent 15 OSGi Wire Probe PR #225 (cce60d44)
+name: "Agent 15 OSGi Wire Probe PR #225 (68c61cd9)"
 
 on:
   push:
@@ -10,12 +10,12 @@ permissions:
   contents: read
 
 concurrency:
-  group: agent15-wire-probe-225-cce60d44
+  group: agent15-wire-probe-225-68c61cd9
   cancel-in-progress: false
 
 jobs:
   verify:
-    name: "Agent 15 Wire Probe PR #225 (exact cce60d44)"
+    name: "Agent 15 Wire Probe PR #225 (exact 68c61cd9)"
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
@@ -56,7 +56,7 @@ jobs:
           fi
           /opt/apache-maven-3.9.9/bin/mvn -version
 
-      - name: Checkout SI-MCP exact cce60d44fe3a (ephemeral copy)
+      - name: Checkout SI-MCP exact 68c61cd9f3ff (ephemeral copy)
         shell: bash
         run: |
           set -euo pipefail
@@ -66,12 +66,12 @@ jobs:
           export GIT_SSH_COMMAND="ssh -i $HOME/.ssh/si_mcp_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"
           git clone -q --branch agent/14-197-followup-unknown-cap --depth=20 git@github.com:Lavren73/SI-MCP.git src
           cd src
-          git checkout -q cce60d44fe3ab3dda091953d72f27969b12333d4
+          git checkout -q 68c61cd9f3fff6de807ad2713405af7a08c3b246
           ACTUAL_SHA=$(git rev-parse HEAD)
           echo "EXACT_PR225_SHA=$ACTUAL_SHA"
-          test "$ACTUAL_SHA" = "cce60d44fe3ab3dda091953d72f27969b12333d4"
+          test "$ACTUAL_SHA" = "68c61cd9f3fff6de807ad2713405af7a08c3b246"
 
-      - name: Append Agent 15 PR #225 OSGi wire tests and run targeted Tycho verify
+      - name: "Append Agent 15 PR #225 OSGi wire tests and run targeted Tycho verify"
         shell: bash
         run: |
           set -euo pipefail
@@ -282,7 +282,7 @@ jobs:
           set +e
           (cd src/server && xvfb-run -a /opt/apache-maven-3.9.9/bin/mvn -B -ntp -Dstyle.color=never \
             -pl targets/default,bundles/si.edt.mcp.server,tests/si.edt.mcp.server.tests -am \
-            -Dtest=ResponseCapTest,ThreeWayComparisonToolTest,DiagnosticsCompletenessWireTest,DiagnosticsCompletenessWireIsolationTest verify) > /tmp/mvn_wire.log 2>&1
+            -Dtest=ResponseCapTest,UpdateReportTest,ThreeWayComparisonToolTest,DiagnosticsCompletenessWireTest,DiagnosticsCompletenessWireIsolationTest verify) > /tmp/mvn_wire.log 2>&1
           RC=$?
           set -e
           echo "MVN_EXIT=$RC"
