@@ -94,20 +94,10 @@ jobs:
         run: |
           set +e
           echo "КОРПУС_НА_МЕСТЕ: $(ls -d ../data/bsl-corpus 2>/dev/null || echo нет) файлов .bsl: $(ls ../data/bsl-corpus/*.bsl 2>/dev/null | wc -l)"
-          python3 - <<'PY'
-import pathlib, re
-a = pathlib.Path("tests/test_bsl_parse.py"); s = a.read_text(encoding="utf-8")
-old = 'parent.parent.parent / "bsl-corpus"'
-new = 'parent.parent.parent / "data" / "bsl-corpus"'
-assert s.count(old) == 1, ("test_bsl_parse.py: совпадений " + str(s.count(old)))
-a.write_text(s.replace(old, new), encoding="utf-8")
-b = pathlib.Path("tests/test_bsl_tools.py"); t = b.read_text(encoding="utf-8")
-oldb = 'os.pardir, "bsl-corpus")'
-newb = 'os.pardir, "data", "bsl-corpus")'
-assert t.count(oldb) == 1, ("test_bsl_tools.py: совпадений " + str(t.count(oldb)))
-b.write_text(t.replace(oldb, newb), encoding="utf-8")
-print("PATCH_APPLIED=2")
-PY
+          sed -i 's|parent.parent.parent / "bsl-corpus"|parent.parent.parent / "data" / "bsl-corpus"|' tests/test_bsl_parse.py
+          sed -i 's|os.pardir, "bsl-corpus")|os.pardir, "data", "bsl-corpus")|' tests/test_bsl_tools.py
+          echo "PATCH_LINES_PARSE=$(grep -c 'data" / "bsl-corpus' tests/test_bsl_parse.py)"
+          echo "PATCH_LINES_TOOLS=$(grep -c 'os.pardir, "data", "bsl-corpus"' tests/test_bsl_tools.py)"
           echo "--- git diff --stat (в репозиторий не коммитится) ---"
           git diff --stat
           python3 -m pytest tests -q >/tmp/pytest_after.log 2>&1; CODE=$?
