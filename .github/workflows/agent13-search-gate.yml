@@ -1,0 +1,98 @@
+# №13 · Гейт качества поиска (P-18 из анализа 17.11.2026).
+# Репозиторий публичный, поэтому НИ логи, НИ артефакты не выгружаются: печатаются только
+# счётчики (top-1, top-3, MRR на набор), коды возврата и вердикт.
+# Запуск: workflow_dispatch, вход sha — точный SHA приватного SI-MCP.
+name: №13 — Гейт качества поиска (P-18, точный SHA)
+on:
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: 'Точный SHA SI-MCP для проверки'
+        required: true
+        default: '2269a6c3800cc444bcd2cd830c27730ef35ccddc'
+permissions:
+  contents: read
+concurrency:
+  group: si-mcp-search-gate-${{ github.event.inputs.sha }}
+  cancel-in-progress: false
+jobs:
+  gate:
+    name: гейт поиска (4 набора + причины)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      TARGET_SHA: ${{ github.event.inputs.sha }}
+      LANG: C.UTF-8
+      LC_ALL: C.UTF-8
+    steps:
+      - name: 1. Приватный исходник SI-MCP на точном SHA (deploy key)
+        env:
+          DEPLOY_KEY: ${{ secrets.SI_MCP_DEPLOY_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "${TARGET_SHA}"
+          mkdir -p "$RUNNER_TEMP/.ssh" && chmod 700 "$RUNNER_TEMP/.ssh"
+          if printf '%s' "$DEPLOY_KEY" | grep -q 'BEGIN [A-Z ]*PRIVATE KEY'; then
+            echo "KEY_KIND=ssh-private-key"
+            printf '%s\n' "$DEPLOY_KEY" > "$RUNNER_TEMP/.ssh/id_deploy"
+            chmod 600 "$RUNNER_TEMP/.ssh/id_deploy"
+            ssh-keyscan -t rsa,ecdsa,ed25519 github.com > "$RUNNER_TEMP/.ssh/known_hosts" 2>/dev/null
+            GIT_SSH_COMMAND="ssh -i $RUNNER_TEMP/.ssh/id_deploy -o UserKnownHostsFile=$RUNNER_TEMP/.ssh/known_hosts -o IdentitiesOnly=yes" \
+              git clone --no-checkout git@github.com:Lavren73/SI-MCP.git "$RUNNER_TEMP/src"
+          else
+            echo "KEY_KIND=token"
+            git clone --no-checkout "https://x-access-token:${DEPLOY_KEY}@github.com:Lavren73/SI-MCP.git" "$RUNNER_TEMP/src"
+          fi
+          cd "$RUNNER_TEMP/src"
+          git checkout --detach "$TARGET_SHA"
+          HEAD_SHA=$(git rev-parse HEAD)
+          echo "HEAD_SHA=$HEAD_SHA"
+          echo "HEAD_TREE=$(git rev-parse HEAD^{tree})"
+          echo "HEAD_SUBJECT=$(git log -1 --format=%s)"
+          test "$HEAD_SHA" = "$TARGET_SHA" || { echo "SHA MISMATCH"; exit 1; }
+          rm -f "$RUNNER_TEMP/.ssh/id_deploy"
+
+      - name: 2. Python и окружение
+        run: |
+          set -euo pipefail
+          python3 --version
+          echo "процессоров: $(nproc)"
+
+      - name: 3. Замеры (счётчики и коды возврата)
+        working-directory: ${{ runner.temp }}/src/client
+        run: |
+          set +e
+          FAILED=0
+          for f in tests/eval_search.py tests/eval_holdout.py tests/eval_search3.py tests/eval_search4.py; do
+            out=$(python3 "$f" 2>&1); code=$?
+            echo "== $f | код=$code"
+            printf '%s\n' "$out" | grep -aE "запр\.|top-1" | tail -3
+            if [ "$code" -ne 0 ]; then FAILED=$((FAILED+1)); fi
+          done
+          echo "НАБОРОВ_НИЖЕ_ПОРОГА=$FAILED"
+          exit 0
+
+      - name: 4. Тесты причин (search_quality)
+        working-directory: ${{ runner.temp }}/src/client
+        run: |
+          set +e
+          out=$(python3 -m pytest tests/test_search_quality.py -q 2>&1); code=$?
+          printf '%s\n' "$out" | tail -3
+          echo "SEARCH_QUALITY_EXIT=$code"
+          exit 0
+
+      - name: 5. Итог (вердикт по порогу 90 %)
+        working-directory: ${{ runner.temp }}/src/client
+        run: |
+          set +e
+          FAILED=0
+          for f in tests/eval_search.py tests/eval_holdout.py tests/eval_search3.py tests/eval_search4.py; do
+            python3 "$f" > /dev/null 2>&1 || FAILED=$((FAILED+1))
+          done
+          echo "SHA=$TARGET_SHA"
+          echo "HEAD_SHA=$(cd "$RUNNER_TEMP/src" && git rev-parse HEAD)"
+          echo "HEAD_TREE=$(cd "$RUNNER_TEMP/src" && git rev-parse HEAD^{tree})"
+          echo "НАБОРОВ_НИЖЕ_ПОРОГА=$FAILED из 4"
+          if [ "$FAILED" -eq 0 ]; then echo "ВЕРДИКТ: все наборы не ниже порога 90 %"; exit 0; fi
+          echo "ВЕРДИКТ: $FAILED набор(ов) ниже порога 90 % — гейт красный";
+          exit 1
