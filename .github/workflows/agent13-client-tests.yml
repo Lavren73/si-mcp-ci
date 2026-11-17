@@ -1,0 +1,127 @@
+# №13 · Клиентские тесты SI-MCP на hosted (точный SHA).
+# Зачем: клиентская методика проверена локально (1155 passed / 3 skipped / 110 subtests),
+# и её нужно подтвердить на чистой машине, где нет моего рабочего каталога и старых
+# артефактов сборки. Плюс здесь же проверяется прогноз по двум пропускам «корпус не рядом»:
+# тесты ищут <repo>/bsl-corpus, корпус лежит в data/bsl-corpus.
+# Репозиторий публичный, поэтому НИ логи, НИ артефакты не выгружаются: печатаются только
+# счётчики pytest, строки git diff --stat и коды возврата.
+# ВНИМАНИЕ. Имена переменных bash только латиницей.
+name: №13 — Клиентские тесты SI-MCP (методика с установщиком, точный SHA)
+on:
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: 'Точный SHA SI-MCP для проверки'
+        required: true
+        default: '7040384a47d37590d8ee512b6ad90aa2daa8aacf'
+      corpus_fix:
+        description: 'Проверить прогноз по двум пропускам: применить правку пути в рабочем каталоге (в репозиторий не коммитится)'
+        required: true
+        default: 'yes'
+permissions:
+  contents: read
+concurrency:
+  group: si-mcp-client-tests-${{ github.event.inputs.sha }}
+  cancel-in-progress: false
+jobs:
+  client:
+    name: pytest клиента на hosted
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      TARGET_SHA: ${{ github.event.inputs.sha }}
+      CORPUS_FIX: ${{ github.event.inputs.corpus_fix }}
+      LANG: C.UTF-8
+      LC_ALL: C.UTF-8
+    steps:
+      - name: 1. Приватный исходник SI-MCP на точном SHA (deploy key)
+        env:
+          DEPLOY_KEY: ${{ secrets.SI_MCP_DEPLOY_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "${TARGET_SHA}"
+          mkdir -p "$RUNNER_TEMP/.ssh" && chmod 700 "$RUNNER_TEMP/.ssh"
+          if printf '%s' "$DEPLOY_KEY" | grep -q 'BEGIN [A-Z ]*PRIVATE KEY'; then
+            echo "KEY_KIND=ssh-private-key"
+            printf '%s\n' "$DEPLOY_KEY" > "$RUNNER_TEMP/.ssh/id_deploy"
+            chmod 600 "$RUNNER_TEMP/.ssh/id_deploy"
+            ssh-keyscan -t rsa,ecdsa,ed25519 github.com > "$RUNNER_TEMP/.ssh/known_hosts" 2>/dev/null
+            GIT_SSH_COMMAND="ssh -i $RUNNER_TEMP/.ssh/id_deploy -o UserKnownHostsFile=$RUNNER_TEMP/.ssh/known_hosts -o IdentitiesOnly=yes" \
+              git clone --no-checkout git@github.com:Lavren73/SI-MCP.git "$RUNNER_TEMP/src"
+          else
+            echo "KEY_KIND=token"
+            git clone --no-checkout "https://x-access-token:${DEPLOY_KEY}@github.com/Lavren73/SI-MCP.git" "$RUNNER_TEMP/src"
+          fi
+          cd "$RUNNER_TEMP/src"
+          git checkout --detach "$TARGET_SHA"
+          HEAD_SHA=$(git rev-parse HEAD)
+          echo "HEAD_SHA=$HEAD_SHA"
+          echo "HEAD_TREE=$(git rev-parse HEAD^{tree})"
+          echo "HEAD_SUBJECT=$(git log -1 --format=%s)"
+          test "$HEAD_SHA" = "$TARGET_SHA" || { echo "SHA MISMATCH"; exit 1; }
+          rm -f "$RUNNER_TEMP/.ssh/id_deploy"
+
+      - name: 2. Python и зависимости
+        run: |
+          set -euo pipefail
+          python3 --version
+          echo "процессоров: $(nproc)"
+          python3 -m pip install --quiet --disable-pip-version-check pytest pyyaml
+          python3 -c "import pytest; print('pytest', pytest.__version__)"
+
+      - name: 3. Замер А — методика с установщиком (сборка, затем pytest)
+        working-directory: ${{ runner.temp }}/src/client
+        run: |
+          set +e
+          rm -f ../si-agent-setup.py ../si-agent-setup.zip
+          echo "до сборки артефакта: $(ls ../si-agent-setup.py 2>/dev/null || echo нет)"
+          python3 make_installer.py >/tmp/installer.log 2>&1; BUILD_CODE=$?
+          echo "BUILD_CODE=$BUILD_CODE"
+          if [ -f ../si-agent-setup.py ]; then
+            echo "INSTALLER_SIZE=$(stat -c %s ../si-agent-setup.py)"
+          else
+            echo "INSTALLER_SIZE=НЕТ_ФАЙЛА"
+          fi
+          python3 -m pytest tests -q >/tmp/pytest_before.log 2>&1; CODE=$?
+          echo "PYTEST_BEFORE_EXIT=$CODE"
+          grep -aE "^(=|[0-9]+ (passed|failed))" /tmp/pytest_before.log | tail -2
+          grep -aE "passed|failed|error" /tmp/pytest_before.log | tail -1
+          echo "SKIP_BEFORE:"; grep -a "SKIPPED" /tmp/pytest_before.log | sed -E 's/\[[0-9]+%\]//' | head -30
+
+      - name: 4. Замер Б — прогноз по двум пропускам «корпус не рядом»
+        if: ${{ github.event.inputs.corpus_fix == 'yes' }}
+        working-directory: ${{ runner.temp }}/src/client
+        run: |
+          set +e
+          echo "КОРПУС_НА_МЕСТЕ: $(ls -d ../data/bsl-corpus 2>/dev/null || echo нет) файлов .bsl: $(ls ../data/bsl-corpus/*.bsl 2>/dev/null | wc -l)"
+          python3 - <<'PY'
+import pathlib, re
+a = pathlib.Path("tests/test_bsl_parse.py"); s = a.read_text(encoding="utf-8")
+old = 'parent.parent.parent / "bsl-corpus"'
+new = 'parent.parent.parent / "data" / "bsl-corpus"'
+assert s.count(old) == 1, ("test_bsl_parse.py: совпадений " + str(s.count(old)))
+a.write_text(s.replace(old, new), encoding="utf-8")
+b = pathlib.Path("tests/test_bsl_tools.py"); t = b.read_text(encoding="utf-8")
+oldb = 'os.pardir, "bsl-corpus")'
+newb = 'os.pardir, "data", "bsl-corpus")'
+assert t.count(oldb) == 1, ("test_bsl_tools.py: совпадений " + str(t.count(oldb)))
+b.write_text(t.replace(oldb, newb), encoding="utf-8")
+print("PATCH_APPLIED=2")
+PY
+          echo "--- git diff --stat (в репозиторий не коммитится) ---"
+          git diff --stat
+          python3 -m pytest tests -q >/tmp/pytest_after.log 2>&1; CODE=$?
+          echo "PYTEST_AFTER_EXIT=$CODE"
+          grep -aE "passed|failed|error" /tmp/pytest_after.log | tail -1
+          echo "SKIP_AFTER:"; grep -a "SKIPPED" /tmp/pytest_after.log | sed -E 's/\[[0-9]+%\]//' | head -30
+          git checkout -- tests/ && echo "РАБОЧИЙ_КАТАЛОГ_ВОЗВРАЩЁН"
+
+      - name: 5. Итог
+        if: always()
+        run: |
+          echo "== СВОДКА =="
+          echo "HEAD_SHA=${TARGET_SHA}"
+          for f in /tmp/pytest_before.log /tmp/pytest_after.log; do
+            [ -f "$f" ] || continue
+            echo "-- $f: $(grep -aE 'passed|failed|error' "$f" | tail -1)"
+          done
