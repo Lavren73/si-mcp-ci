@@ -113,7 +113,7 @@ jobs:
                   int syncChecks = 0;
                   for (String payload : new String[] { "email ivanov@example.com tail padding", multi })
                   {
-                      int totalBytes = ResponseCap.byteLength(payload);
+                      long totalBytes = ResponseCap.byteLength(payload);
                       for (int limit = 10; limit < totalBytes; limit++)
                       {
                           registry.clear();
