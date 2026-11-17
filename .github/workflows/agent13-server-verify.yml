@@ -120,10 +120,13 @@ jobs:
           grep -E "Tests run|BUILD (SUCCESS|FAILURE)|ERROR.*Failed to execute" "$RUNNER_TEMP/mvn.log" | tail -40
           if [ "$code" -ne 0 ]; then
             echo "== отказ до тестов (только вид ошибки, без исходников) =="
-            grep -E "Could not resolve|Cannot resolve|Cannot complete the install|No goals have been specified|Failed to resolve|Unknown host|Connection refused|status code" "$RUNNER_TEMP/mvn.log" | tail -10
+            # «Missing requirement» и «Cannot satisfy dependency» добавлены после проверки №15:
+            # корневая строка отказа стояла прямо над прежней обрезкой tail -15 и терялась.
+            grep -E "Missing requirement|Cannot satisfy dependency|No solution found|Could not resolve|Cannot resolve|Cannot complete the install|No goals have been specified|Failed to resolve|Unknown host|Connection refused|status code" "$RUNNER_TEMP/mvn.log" | head -40
+            echo "== конец блока ошибок =="
           fi
           echo "== последние строки =="
-          tail -15 "$RUNNER_TEMP/mvn.log"
+          tail -30 "$RUNNER_TEMP/mvn.log"
           exit "$code"
 
       - name: 7. Сводка surefire по счётчикам
