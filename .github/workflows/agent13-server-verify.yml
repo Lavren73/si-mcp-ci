@@ -18,6 +18,10 @@ on:
         description: 'Цель Maven (по умолчанию verify)'
         required: true
         default: 'verify'
+      profile:
+        description: 'Профиль Maven без дефиса, например edt-2026.2 (пусто - профиль по умолчанию)'
+        required: false
+        default: ''
 permissions:
   contents: read
 concurrency:
@@ -31,6 +35,7 @@ jobs:
     env:
       TARGET_SHA: ${{ github.event.inputs.sha }}
       GOAL: ${{ github.event.inputs.goal }}
+      PROFILE: ${{ github.event.inputs.profile }}
       LANG: C.UTF-8
       LC_ALL: C.UTF-8
   # ВНИМАНИЕ. Имена переменных bash только латиницей (находка: кириллица в именах не работает).
@@ -98,11 +103,21 @@ jobs:
           MAVEN_OPTS: -Xmx3g
         run: |
           set +e
-          xvfb-run --auto-servernum mvn -B -ntp -Dstyle.color=never "$GOAL" > "$RUNNER_TEMP/mvn.log" 2>&1
+          # Профиль отдельным входом: цель в кавычках уходит в Maven одним словом, поэтому
+          # "-Pedt-2026.2 verify" в goal было бы прочитано как один аргумент -P "edt-2026.2 verify"
+          # и Maven ответил бы "No goals have been specified" (находка прогона 44028718674).
+          PROFILE_ARG=""
+          if [ -n "$PROFILE" ]; then PROFILE_ARG="-P$PROFILE"; fi
+          echo "команда: mvn -B -ntp -Dstyle.color=never $PROFILE_ARG $GOAL"
+          xvfb-run --auto-servernum mvn -B -ntp -Dstyle.color=never $PROFILE_ARG $GOAL > "$RUNNER_TEMP/mvn.log" 2>&1
           code=$?
           echo "MVN_EXIT=$code"
           echo "== вердикт =="
           grep -E "Tests run|BUILD (SUCCESS|FAILURE)|ERROR.*Failed to execute" "$RUNNER_TEMP/mvn.log" | tail -40
+          if [ "$code" -ne 0 ]; then
+            echo "== отказ до тестов (только вид ошибки, без исходников) =="
+            grep -E "Could not resolve|Cannot resolve|Cannot complete the install|No goals have been specified|Failed to resolve|Unknown host|Connection refused|status code" "$RUNNER_TEMP/mvn.log" | tail -10
+          fi
           echo "== последние строки =="
           tail -15 "$RUNNER_TEMP/mvn.log"
           exit "$code"
