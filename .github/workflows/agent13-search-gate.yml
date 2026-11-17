@@ -77,6 +77,13 @@ jobs:
         run: |
           set +e
           out=$(python3 -m pytest tests/test_search_quality.py -q 2>&1); code=$?
+          if printf '%s' "$out" | grep -q 'No module named pytest'; then
+            # На hosted-раннере python3 идёт без pytest: без этого шага зелёный набор
+            # выглядел бы красным (находка прогона 44041940309).
+            echo "PYTEST=missing — ставим"
+            python3 -m pip install --quiet --disable-pip-version-check pytest > /dev/null 2>&1
+            out=$(python3 -m pytest tests/test_search_quality.py -q 2>&1); code=$?
+          fi
           printf '%s\n' "$out" | tail -3
           echo "SEARCH_QUALITY_EXIT=$code"
           exit 0
