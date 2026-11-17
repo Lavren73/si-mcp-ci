@@ -22,6 +22,10 @@ on:
         description: 'Профиль Maven без дефиса, например edt-2026.2 (пусто - профиль по умолчанию)'
         required: false
         default: ''
+      java:
+        description: 'Версия JDK: 17 по умолчанию, для профиля edt-2026.2 нужен 25 (требование osgi.ee платформы)'
+        required: false
+        default: '17'
 permissions:
   contents: read
 concurrency:
@@ -84,7 +88,7 @@ jobs:
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '17'
+          java-version: ${{ github.event.inputs.java }}
 
       - name: 4. Версии инструментов
         run: |
