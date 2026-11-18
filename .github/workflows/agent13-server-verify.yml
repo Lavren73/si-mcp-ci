@@ -155,6 +155,17 @@ jobs:
             fi
             grep -c "Could not resolve module" "$f" | sed 's/^/-- строк «Could not resolve module»: /'
             grep -E "Unsatisfied|Missing Constraint|Cannot satisfy|osgi.wiring|requires bundle|no solutions" "$f" | head -20 | cut -c1-260
+            echo "-- есть ли в рантайме org.eclipse.swt*"
+            grep -o "org\.eclipse\.swt[a-zA-Z0-9._]*" "${f%.log}.log" 2>/dev/null | sort -u | head -10
+            cfg="$(dirname "$f")/config.ini"
+            if [ -f "$cfg" ]; then
+              echo "-- config.ini: свт-бандлы и число записей"
+              grep -c "reference:file" "$cfg" || true
+              grep -o "org\.eclipse\.swt[a-zA-Z0-9._]*" "$cfg" | sort -u | head -10
+              grep -n "eclipse.swt\|svg" "$cfg" | head -5 | cut -c1-200
+            else
+              echo "-- config.ini рядом нет"
+            fi
             echo "-- хвост лога (50 строк)"
             tail -50 "$f" | cut -c1-260
           done
