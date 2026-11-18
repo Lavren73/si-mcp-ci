@@ -133,6 +133,23 @@ jobs:
           tail -30 "$RUNNER_TEMP/mvn.log"
           exit "$code"
 
+      - name: 6b. Лог среды тестов Equinox (когда рантайм не стартовал)
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          # Прогон 44373422580: target резолвится, код компилируется, а tycho-surefire падает
+          # с «process returned error code 13» — это отказ ЛАУНЧЕРА Equinox, и причина лежит не
+          # в выводе Maven, а в логе рантайма. Печатаем только хвост и только строки-виды
+          # ошибок: ни исходников, ни данных проекта.
+          found=0
+          for f in $(find "${RUNNER_TEMP}/src/server" -path "*/target/work/data/.metadata/.log" -o -path "*/target/work/configuration/*.log" 2>/dev/null | head -5); do
+            found=1
+            echo "== лог среды: ${f#$RUNNER_TEMP/src/} (строк $(grep -c . "$f"))"
+            grep -E "!ENTRY|!MESSAGE|Caused by|Exception|Error|Could not|Unable|Missing|not found|requires" "$f" | tail -40 | cut -c1-300
+          done
+          if [ "$found" -eq 0 ]; then echo "логов среды нет — рантайм не дошёл до записи"; fi
+
       - name: 7. Сводка surefire по счётчикам
         if: always()
         shell: bash
