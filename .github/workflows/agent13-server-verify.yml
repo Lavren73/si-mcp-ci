@@ -194,17 +194,27 @@ jobs:
           echo "HEAD_TREE=$(cd "$RUNNER_TEMP/src" && git rev-parse HEAD^{tree})"
           grep -c . "$RUNNER_TEMP/mvn.log" | sed 's/^/MVN_LOG_LINES=/'
 
-      - name: 9. Суть падений (первые 80 символов сообщения, без стеков)
+      - name: 9. Суть падений (первые 90 символов сообщения из surefire XML, без стеков)
         if: always() && github.event.inputs.fail_heads == 'yes'
         working-directory: ${{ runner.temp }}/src
         run: |
           set +e
-          echo "== СУТЬ_ПАДЕНИЙ (только начало сообщения, без стеков и путей) =="
-          find . -path '*surefire-reports*' -name '*.txt' 2>/dev/null | while read -r f; do
-            case "$f" in
-              *settings*) ;;
-              *) continue ;;
-            esac
-            awk 'BEGIN{show=0;n=0} /^(Test set:|Tests run:)/{next} /^[a-zA-Z].*\(.*\)/ {if (n<6) {print substr($0,1,80); n++}}' "$f"
-          done
-          echo "== КОНЕЦ СУТИ =="
+          python3 - <<'PYEOF'
+          import glob, html, xml.etree.ElementTree as ET
+          print("== СУТЬ_ПАДЕНИЙ ==")
+          files = glob.glob('server/**/target/surefire-reports/TEST-*.xml', recursive=True)
+          print("xml файлов:", len(files))
+          for path in files:
+              if 'settings' not in path:
+                  continue
+              try:
+                  root = ET.parse(path).getroot()
+              except Exception as exc:
+                  print("не разобрал", path.split('/')[-1], type(exc).__name__)
+                  continue
+              for case in root.iter('testcase'):
+                  for bad in list(case.findall('failure')) + list(case.findall('error')):
+                      message = html.unescape((bad.get('message') or '').replace('\n', ' ')).strip()
+                      print(f"{case.get('name')} | {bad.tag} | {message[:90]}")
+          print("== КОНЕЦ СУТИ ==")
+          PYEOF
