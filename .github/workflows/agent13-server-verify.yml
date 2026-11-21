@@ -180,6 +180,15 @@ jobs:
           fi
           python3 "$GITHUB_WORKSPACE/tools/watchdog_verdict.py" "$STOZOR" "$RUNNER_TEMP/mvn.log" "$ETALON"
 
+      - name: 8b. Фиксированные признаки ошибок без содержимого логов
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m unittest discover -s "$GITHUB_WORKSPACE/tools" -p 'test_failure_shapes.py' -v
+          cd "$RUNNER_TEMP/src"
+          python3 "$GITHUB_WORKSPACE/tools/failure_shapes.py" 'server/**/target/surefire-reports/TEST-*.xml'
+
       - name: 9. Итог (только счётчики и хеши)
         if: always()
         shell: bash
