@@ -1,0 +1,256 @@
+name: "Agent 12 OSGi Probe #284 (IComparisonManager readiness)"
+
+on:
+  push:
+    branches:
+      - agent/12-osgi-probe-284
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'SI-MCP branch to clone'
+        required: false
+        default: 'final'
+      sha:
+        description: 'SI-MCP exact SHA to check out'
+        required: false
+        default: '6892e7546bc8cd4e3621efecb7af710d359b2125'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: agent12-osgi-probe-284
+  cancel-in-progress: false
+
+jobs:
+  probe:
+    name: "Agent 12 OSGi Probe #284 (exact SHA)"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      LANG: C.UTF-8
+      LC_ALL: C.UTF-8
+      MAVEN_OPTS: -Xmx4g
+      PROBE_REF: ${{ github.event.inputs.ref || 'final' }}
+      PROBE_SHA: ${{ github.event.inputs.sha || '6892e7546bc8cd4e3621efecb7af710d359b2125' }}
+    steps:
+      - name: Setup JDK 17 and Python 3.13
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Cache Maven and p2 repository
+        uses: actions/cache@v4
+        with:
+          path: ~/.m2/repository
+          key: ${{ runner.os }}-m2-simcp-v1
+          restore-keys: |
+            ${{ runner.os }}-m2-simcp-
+
+      - name: Install Maven 3.9.9, Xvfb and GTK3
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq xvfb xauth libgtk-3-0 >/dev/null
+          if [ ! -x /opt/apache-maven-3.9.9/bin/mvn ]; then
+            curl -fsSL --retry 4 --retry-delay 2 https://archive.apache.org/dist/maven/maven/3/3.9.9/binaries/apache-maven-3.9.9-bin.tar.gz -o /tmp/mvn.tgz \
+              || curl -fsSL --retry 4 --retry-delay 2 https://downloads.apache.org/maven/maven/3/3.9.9/binaries/apache-maven-3.9.9-bin.tar.gz -o /tmp/mvn.tgz \
+              || curl -fsSL --retry 4 --retry-delay 2 https://repo.maven.apache.org/maven2/org/apache/maven/apache-maven/3.9.9/apache-maven-3.9.9-bin.tar.gz -o /tmp/mvn.tgz
+            sudo tar -xzf /tmp/mvn.tgz -C /opt
+          fi
+          /opt/apache-maven-3.9.9/bin/mvn -version
+
+      - name: Checkout SI-MCP exact SHA (ephemeral copy)
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.ssh" && chmod 700 "$HOME/.ssh"
+          printf '%s\n' "${{ secrets.SI_MCP_DEPLOY_KEY }}" > "$HOME/.ssh/si_mcp_key"
+          chmod 600 "$HOME/.ssh/si_mcp_key"
+          export GIT_SSH_COMMAND="ssh -i $HOME/.ssh/si_mcp_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"
+          git clone -q --branch "$PROBE_REF" --depth=30 git@github.com:Lavren73/SI-MCP.git src
+          cd src
+          git checkout -q "$PROBE_SHA"
+          ACTUAL_SHA=$(git rev-parse HEAD)
+          echo "AGENT12_284_EXACT_SHA=$ACTUAL_SHA"
+          test "$ACTUAL_SHA" = "$PROBE_SHA"
+
+      - name: Add ephemeral readiness-journal test (CI copy only, never committed to SI-MCP)
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > src/server/tests/si.edt.mcp.server.tests/src/si/edt/mcp/server/toolkit/ops/ComparisonServiceReadinessTest.java <<'JAVA'
+          package si.edt.mcp.server.toolkit.ops;
+
+          import java.util.HashMap;
+          import java.util.Map;
+
+          import org.junit.Test;
+          import org.osgi.framework.Bundle;
+          import org.osgi.framework.BundleContext;
+          import org.osgi.framework.FrameworkUtil;
+          import org.osgi.framework.ServiceReference;
+
+          import com._1c.g5.v8.dt.compare.core.IComparisonManager;
+          import com._1c.g5.wiring.ServiceAccess;
+
+          /**
+           * AGENT12_284 diagnostic: when does IComparisonManager become available in a cold
+           * headless Tycho JVM, and what does the tool answer before and after that moment?
+           * Prints a journal; asserts nothing about timing.
+           */
+          public class ComparisonServiceReadinessTest
+          {
+              @Test
+              public void comparisonServiceReadinessJournal() throws Exception
+              {
+                  BundleContext ctx = FrameworkUtil.getBundle(ThreeWayComparisonTool.class)
+                      .getBundleContext();
+                  long t0 = System.currentTimeMillis();
+                  Map<String, String> args = new HashMap<>();
+                  args.put("projectName", "P"); //$NON-NLS-1$ //$NON-NLS-2$
+                  args.put("otherPath", "no such directory"); //$NON-NLS-1$ //$NON-NLS-2$
+
+                  String atStart = new ThreeWayComparisonTool().execute(args);
+                  log(t0, "SYMPTOM_AT_START answer=" + atStart.replace('\n', ' ')); //$NON-NLS-1$
+                  printCompareBundles(ctx, t0, "AT_START"); //$NON-NLS-1$
+
+                  boolean available = false;
+                  long deadline = t0 + 180_000L;
+                  int attempt = 0;
+                  while (System.currentTimeMillis() < deadline)
+                  {
+                      attempt++;
+                      ServiceReference<IComparisonManager> ref =
+                          ctx.getServiceReference(IComparisonManager.class);
+                      try
+                      {
+                          IComparisonManager manager = ServiceAccess.get(IComparisonManager.class);
+                          if (manager != null)
+                          {
+                              log(t0, "AVAILABLE attempts=" + attempt //$NON-NLS-1$
+                                  + " refPresent=" + (ref != null)); //$NON-NLS-1$
+                              available = true;
+                              break;
+                          }
+                          log(t0, "GET_RETURNED_NULL attempt=" + attempt); //$NON-NLS-1$
+                      }
+                      catch (RuntimeException e)
+                      {
+                          if (attempt == 1 || attempt % 20 == 0)
+                          {
+                              log(t0, "NOT_YET attempt=" + attempt //$NON-NLS-1$
+                                  + " refPresent=" + (ref != null) //$NON-NLS-1$
+                                  + " ex=" + e.getClass().getName() + ": " + e.getMessage()); //$NON-NLS-1$ //$NON-NLS-2$
+                          }
+                      }
+                      Thread.sleep(500L);
+                  }
+                  if (!available)
+                  {
+                      log(t0, "NEVER_AVAILABLE within 180s attempts=" + attempt); //$NON-NLS-1$
+                  }
+                  printCompareBundles(ctx, t0, "AT_END"); //$NON-NLS-1$
+                  ServiceReference<IComparisonManager> refEnd =
+                      ctx.getServiceReference(IComparisonManager.class);
+                  log(t0, "SERVICE_REF_AT_END=" + (refEnd == null //$NON-NLS-1$
+                      ? "null" //$NON-NLS-1$
+                      : "registeredBy=" + refEnd.getBundle().getSymbolicName() //$NON-NLS-1$
+                          + " state=" + stateName(refEnd.getBundle().getState()))); //$NON-NLS-1$
+
+                  String atEnd = new ThreeWayComparisonTool().execute(args);
+                  log(t0, "SYMPTOM_AT_END answer=" + atEnd.replace('\n', ' ')); //$NON-NLS-1$
+              }
+
+              private static void printCompareBundles(BundleContext ctx, long t0, String when)
+              {
+                  for (Bundle b : ctx.getBundles())
+                  {
+                      String name = b.getSymbolicName();
+                      if (name != null && (name.contains("compare") //$NON-NLS-1$
+                          || name.contains("wiring") //$NON-NLS-1$
+                          || name.equals("si.edt.mcp.server"))) //$NON-NLS-1$
+                      {
+                          log(t0, "BUNDLE " + when + " " + name + " state=" //$NON-NLS-1$ //$NON-NLS-2$
+                              + stateName(b.getState()));
+                      }
+                  }
+              }
+
+              private static void log(long t0, String what)
+              {
+                  System.out.println("AGENT12_284 t+" + (System.currentTimeMillis() - t0) //$NON-NLS-1$
+                      + "ms " + what); //$NON-NLS-1$
+              }
+
+              private static String stateName(int state)
+              {
+                  switch (state)
+                  {
+                      case Bundle.UNINSTALLED: return "UNINSTALLED"; //$NON-NLS-1$
+                      case Bundle.INSTALLED: return "INSTALLED"; //$NON-NLS-1$
+                      case Bundle.RESOLVED: return "RESOLVED"; //$NON-NLS-1$
+                      case Bundle.STARTING: return "STARTING"; //$NON-NLS-1$
+                      case Bundle.STOPPING: return "STOPPING"; //$NON-NLS-1$
+                      case Bundle.ACTIVE: return "ACTIVE"; //$NON-NLS-1$
+                      default: return "?" + state; //$NON-NLS-1$
+                  }
+              }
+          }
+          JAVA
+          echo "AGENT12_284 diagnostic test added to ephemeral copy"
+
+      - name: Run targeted attempts and print journal
+        shell: bash
+        run: |
+          set -uo pipefail
+          MVN=/opt/apache-maven-3.9.9/bin/mvn
+          MODULES=targets/default,bundles/si.edt.mcp.server,tests/si.edt.mcp.server.tests
+
+          parse_reports() {
+            python3 - "$1" <<'PY'
+          import glob, sys, xml.etree.ElementTree as ET
+          label = sys.argv[1]
+          tt = ff = ee = ss = 0
+          for xp in sorted(glob.glob('src/server/tests/si.edt.mcp.server.tests/target/surefire-reports/TEST-*.xml')):
+              root = ET.parse(xp).getroot()
+              t = int(root.attrib.get('tests', 0)); f = int(root.attrib.get('failures', 0))
+              e = int(root.attrib.get('errors', 0)); s = int(root.attrib.get('skipped', 0))
+              tt += t; ff += f; ee += e; ss += s
+              print(f"AGENT12_284_XML {label} {root.attrib.get('name')}: T={t} F={f} E={e} S={s}")
+              for tc in root.findall('testcase'):
+                  st = 'PASS'
+                  for tag in ('failure', 'error', 'skipped'):
+                      el = tc.find(tag)
+                      if el is not None:
+                          st = f"{tag.upper()}: {el.attrib.get('message','')}"
+                  print(f"AGENT12_284_CASE {label} {tc.attrib.get('name')}: {st[:300]}")
+          print(f"AGENT12_284_TOTAL {label}: T={tt} F={ff} E={ee} S={ss}")
+          PY
+          }
+
+          run_one() {
+            local label="$1" classes="$2"
+            rm -rf src/server/tests/si.edt.mcp.server.tests/target/surefire-reports
+            echo "AGENT12_284_RUN_BEGIN $label classes=$classes"
+            (cd src/server && xvfb-run -a $MVN -B -ntp -Dstyle.color=never \
+              -pl $MODULES -am -Dtest="$classes" verify) > "/tmp/mvn_${label}.log" 2>&1
+            local rc=$?
+            echo "AGENT12_284_MVN_EXIT $label rc=$rc"
+            grep "AGENT12_284 t+" "/tmp/mvn_${label}.log" || true
+            parse_reports "$label"
+            echo "AGENT12_284_RUN_END $label"
+            return 0
+          }
+
+          run_one attempt1 ThreeWayComparisonToolTest
+          run_one readiness ComparisonServiceReadinessTest
+          run_one attempt2 ThreeWayComparisonToolTest
+          run_one attempt3 ThreeWayComparisonToolTest
+          exit 0
