@@ -27,7 +27,7 @@ on:
         required: false
         default: '17'
       fail_heads:
-        description: 'yes - печатать первые 80 символов сообщений падений (только суть, без стеков и путей). По умолчанию no.'
+        description: 'Устаревший вход, совместимость; сообщения об ошибках никогда не печатаются.'
         required: false
         default: 'no'
 permissions:
@@ -46,8 +46,14 @@ jobs:
       PROFILE: ${{ github.event.inputs.profile }}
       LANG: C.UTF-8
       LC_ALL: C.UTF-8
-  # ВНИМАНИЕ. Имена переменных bash только латиницей (находка: кириллица в именах не работает).
+  # ВНИМАНИЕ. Имена переменных bash только латиницей.
     steps:
+      - name: Код обёртки публичного workflow
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Самопроверка сторожа workflow
+        run: python3 -m unittest discover -s tools -p 'test_watchdog_verdict.py' -v
       - name: 1. Приватный исходник SI-MCP на точном SHA (deploy key)
         env:
           DEPLOY_KEY: ${{ secrets.SI_MCP_DEPLOY_KEY }}
@@ -61,19 +67,20 @@ jobs:
             chmod 600 "$RUNNER_TEMP/.ssh/id_deploy"
             ssh-keyscan -t rsa,ecdsa,ed25519 github.com > "$RUNNER_TEMP/.ssh/known_hosts" 2>/dev/null
             GIT_SSH_COMMAND="ssh -i $RUNNER_TEMP/.ssh/id_deploy -o UserKnownHostsFile=$RUNNER_TEMP/.ssh/known_hosts -o IdentitiesOnly=yes" \
-              git clone --no-checkout git@github.com:Lavren73/SI-MCP.git "$RUNNER_TEMP/src"
+              git clone --quiet --no-checkout git@github.com:Lavren73/SI-MCP.git "$RUNNER_TEMP/src"
           else
             echo "KEY_KIND=token"
-            git clone --no-checkout "https://x-access-token:${DEPLOY_KEY}@github.com:Lavren73/SI-MCP.git" "$RUNNER_TEMP/src"
+            printf '%s\n' '#!/bin/sh' 'case "$1" in *Username*) printf "x-access-token\n";; *) printf "%s\n" "$DEPLOY_KEY";; esac' > "$RUNNER_TEMP/.ssh/askpass"
+            chmod 700 "$RUNNER_TEMP/.ssh/askpass"
+            GIT_ASKPASS="$RUNNER_TEMP/.ssh/askpass" GIT_TERMINAL_PROMPT=0 git clone --quiet --no-checkout https://github.com/Lavren73/SI-MCP.git "$RUNNER_TEMP/src"
           fi
           cd "$RUNNER_TEMP/src"
-          git checkout --detach "$TARGET_SHA"
+          git checkout --quiet --detach "$TARGET_SHA"
           HEAD_SHA=$(git rev-parse HEAD)
           echo "HEAD_SHA=$HEAD_SHA"
           echo "HEAD_TREE=$(git rev-parse HEAD^{tree})"
-          echo "HEAD_SUBJECT=$(git log -1 --format=%s)"
           test "$HEAD_SHA" = "$TARGET_SHA" || { echo "SHA MISMATCH"; exit 1; }
-          rm -f "$RUNNER_TEMP/.ssh/id_deploy"
+          rm -f "$RUNNER_TEMP/.ssh/id_deploy" "$RUNNER_TEMP/.ssh/askpass"
 
       - name: 2. Память и диск раннера
         run: |
@@ -120,56 +127,9 @@ jobs:
           xvfb-run --auto-servernum mvn -B -ntp -Dstyle.color=never $PROFILE_ARG $GOAL > "$RUNNER_TEMP/mvn.log" 2>&1
           code=$?
           echo "MVN_EXIT=$code"
-          echo "== вердикт =="
-          grep -E "Tests run|BUILD (SUCCESS|FAILURE)|ERROR.*Failed to execute" "$RUNNER_TEMP/mvn.log" | tail -40
-          if [ "$code" -ne 0 ]; then
-            echo "== отказ до тестов (только вид ошибки, без исходников) =="
-            # «Missing requirement» и «Cannot satisfy dependency» добавлены после проверки №15:
-            # корневая строка отказа стояла прямо над прежней обрезкой tail -15 и терялась.
-            grep -E "Missing requirement|Cannot satisfy dependency|No solution found|Could not resolve|Cannot resolve|Cannot complete the install|No goals have been specified|Failed to resolve|Unknown host|Connection refused|status code" "$RUNNER_TEMP/mvn.log" | head -40
-            echo "== конец блока ошибок =="
-          fi
-          echo "== последние строки =="
-          tail -30 "$RUNNER_TEMP/mvn.log"
+          # Maven log, failures, paths, and stack traces may contain private data.
+          # They stay local on the ephemeral runner and are never printed or uploaded.
           exit "$code"
-
-      - name: 6b. Лог среды тестов Equinox (когда рантайм не стартовал)
-        if: always()
-        shell: bash
-        run: |
-          set +e
-          # Прогон 44375144731: причина отказа рантайма найдена — «Bundle si.edt.mcp.server.tests
-          # is not found», перед этим сотни «Could not resolve module». Теперь печатаем НЕ список
-          # имён, а первый блок неразрешения целиком (строки «Unsatisfied requirement(s)» и
-          # «->» показывают, какого пакета/бандла не хватает) и хвост лога.
-          cd "${RUNNER_TEMP}/src" || exit 0
-          found=0
-          for f in $(find server -path "*/target/work/configuration/*.log" 2>/dev/null | head -6); do
-            found=1
-            n=$(grep -c . "$f")
-            echo "== лог среды: $f (строк $n)"
-            line=$(grep -n "Could not resolve module" "$f" | head -1 | cut -d: -f1)
-            if [ -n "$line" ]; then
-              echo "-- первый блок неразрешения (строка $line)"
-              sed -n "${line},$((line+25))p" "$f" | cut -c1-260
-            fi
-            grep -c "Could not resolve module" "$f" | sed 's/^/-- строк «Could not resolve module»: /'
-            grep -E "Unsatisfied|Missing Constraint|Cannot satisfy|osgi.wiring|requires bundle|no solutions" "$f" | head -20 | cut -c1-260
-            echo "-- есть ли в рантайме org.eclipse.swt*"
-            grep -o "org\.eclipse\.swt[a-zA-Z0-9._]*" "${f%.log}.log" 2>/dev/null | sort -u | head -10
-            cfg="$(dirname "$f")/config.ini"
-            if [ -f "$cfg" ]; then
-              echo "-- config.ini: свт-бандлы и число записей"
-              grep -c "reference:file" "$cfg" || true
-              grep -o "org\.eclipse\.swt[a-zA-Z0-9._]*" "$cfg" | sort -u | head -10
-              grep -n "eclipse.swt\|svg" "$cfg" | head -5 | cut -c1-200
-            else
-              echo "-- config.ini рядом нет"
-            fi
-            echo "-- хвост лога (50 строк)"
-            tail -50 "$f" | cut -c1-260
-          done
-          if [ "$found" -eq 0 ]; then echo "логов среды нет — рантайм не дошёл до записи"; fi
 
       - name: 7. Сводка surefire по счётчикам
         if: always()
@@ -178,7 +138,7 @@ jobs:
           set +e
           cd "$RUNNER_TEMP/src"
           python3 - <<'PY'
-          import glob, xml.etree.ElementTree as ET
+          import glob, re, xml.etree.ElementTree as ET
           files = glob.glob('server/**/target/surefire-reports/TEST-*.xml', recursive=True)
           tests = fail = err = skip = 0
           bad = []
@@ -200,28 +160,25 @@ jobs:
           print('SUREFIRE_FILES=%d' % len(files))
           print('TESTS=%d FAILURES=%d ERRORS=%d SKIPPED=%d' % (tests, fail, err, skip))
           print('BAD_UNIQUE=%d' % len(set(bad)))
-          for b in sorted(set(bad))[:25]:
-              print('FAILED:', b)
+          for b in sorted(set(bad)):
+              if re.fullmatch(r'[A-Za-z_$][A-Za-z0-9_.$]*#[A-Za-z_$][A-Za-z0-9_.$]*(?:\[[A-Za-z0-9_.$-]+\])?', b):
+                  print('FAILED:', b)
+              else:
+                  print('FAILED: <identifier omitted>')
           PY
 
-      - name: 8. Сторож красных (если есть эталон)
+      - name: 8. Сторож красных (fail-closed)
         if: always()
         shell: bash
         run: |
-          set +e
+          set -euo pipefail
           cd "$RUNNER_TEMP/src"
           STOZOR=server/scripts/сторож-красных.py
           ETALON=$(ls docs/отчёты-проверок/эталон-красных-*.txt 2>/dev/null | tail -1)
-          if [ ! -f "$STOZOR" ] || [ -z "$ETALON" ]; then
-            echo "WATCHDOG=skipped (нет сторожа или эталона)"; exit 0
+          if [ ! -f "$STOZOR" ] || [ -z "$ETALON" ] || [ ! -f "$RUNNER_TEMP/mvn.log" ]; then
+            echo 'WATCHDOG=missing-input'; exit 1
           fi
-          echo "ETALON=$ETALON"
-          vyvod=$(python3 "$STOZOR" "$RUNNER_TEMP/mvn.log" "$ETALON"); code=$?
-          printf '%s\n' "$vyvod" | tail -20
-          echo "WATCHDOG_EXIT=$code"
-          if printf '%s' "$vyvod" | grep -q 'Список красных совпал'; then exit 0; fi
-          if printf '%s' "$vyvod" | grep -q 'Ушли из списка'; then exit 0; fi
-          exit 1
+          python3 "$GITHUB_WORKSPACE/tools/watchdog_verdict.py" "$STOZOR" "$RUNNER_TEMP/mvn.log" "$ETALON"
 
       - name: 9. Итог (только счётчики и хеши)
         if: always()
@@ -232,27 +189,3 @@ jobs:
           echo "HEAD_TREE=$(cd "$RUNNER_TEMP/src" && git rev-parse HEAD^{tree})"
           grep -c . "$RUNNER_TEMP/mvn.log" | sed 's/^/MVN_LOG_LINES=/'
 
-      - name: 9. Суть падений (первые 90 символов сообщения из surefire XML, без стеков)
-        if: always() && github.event.inputs.fail_heads == 'yes'
-        working-directory: ${{ runner.temp }}/src
-        run: |
-          set +e
-          python3 - <<'PYEOF'
-          import glob, html, xml.etree.ElementTree as ET
-          print("== СУТЬ_ПАДЕНИЙ ==")
-          files = glob.glob('server/**/target/surefire-reports/TEST-*.xml', recursive=True)
-          print("xml файлов:", len(files))
-          for path in files:
-              if 'settings' not in path:
-                  continue
-              try:
-                  root = ET.parse(path).getroot()
-              except Exception as exc:
-                  print("не разобрал", path.split('/')[-1], type(exc).__name__)
-                  continue
-              for case in root.iter('testcase'):
-                  for bad in list(case.findall('failure')) + list(case.findall('error')):
-                      message = html.unescape((bad.get('message') or '').replace('\n', ' ')).strip()
-                      print(f"{case.get('name')} | {bad.tag} | {message[:90]}")
-          print("== КОНЕЦ СУТИ ==")
-          PYEOF
