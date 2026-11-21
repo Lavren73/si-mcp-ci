@@ -210,6 +210,7 @@ jobs:
         shell: bash
         run: |
           set -uo pipefail
+          set +e
           MVN=/opt/apache-maven-3.9.9/bin/mvn
           MODULES=targets/default,bundles/si.edt.mcp.server,tests/si.edt.mcp.server.tests
 
@@ -243,6 +244,7 @@ jobs:
               -pl $MODULES -am -Dtest="$classes" verify) > "/tmp/mvn_${label}.log" 2>&1
             local rc=$?
             echo "AGENT12_284_MVN_EXIT $label rc=$rc"
+            tail -n 25 "/tmp/mvn_${label}.log"
             grep "AGENT12_284 t+" "/tmp/mvn_${label}.log" || true
             parse_reports "$label"
             echo "AGENT12_284_RUN_END $label"
