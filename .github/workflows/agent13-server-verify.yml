@@ -121,16 +121,33 @@ jobs:
           # Профиль отдельным входом: цель в кавычках уходит в Maven одним словом, поэтому
           # "-Pedt-2026.2 verify" в goal было бы прочитано как один аргумент -P "edt-2026.2 verify"
           # и Maven ответил бы "No goals have been specified" (находка прогона 44028718674).
-          PROFILE_ARG=""
-          if [ -n "$PROFILE" ]; then PROFILE_ARG="-P$PROFILE"; fi
-          # Все модули reactor должны получить шанс выполниться даже на известном
-          # красном фоне. Запретить конфликтующие флаги в goal (fail-never скрыл бы отказ).
-          case " $GOAL " in
-            *" -ff "*|*" --fail-fast "*|*" -fn "*|*" --fail-never "*)
-              echo 'GOAL_REJECTED=conflicting Maven reactor failure policy'; exit 2 ;;
-          esac
-          echo "команда: mvn -B -ntp -fae -Dstyle.color=never $PROFILE_ARG $GOAL"
-          xvfb-run --auto-servernum mvn -B -ntp -fae -Dstyle.color=never $PROFILE_ARG $GOAL > "$RUNNER_TEMP/mvn.log" 2>&1
+          # Inputs are parsed once as arguments, never expanded as shell words/globs.
+          # In particular a profile containing " -fn" must not be able to sneak a
+          # second reactor policy past the goal check.
+          PROFILE_ARGS=()
+          if [ -n "$PROFILE" ]; then
+            if [[ ! "$PROFILE" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]]; then
+              echo 'PROFILE_REJECTED=invalid Maven profile'; exit 2
+            fi
+            PROFILE_ARGS=("-P$PROFILE")
+          fi
+          if [[ "$GOAL" == *$'\n'* || "$GOAL" == *$'\r'* ]]; then
+            echo 'GOAL_REJECTED=multiline input'; exit 2
+          fi
+          read -r -a GOAL_ARGS <<< "$GOAL"
+          if [ "${#GOAL_ARGS[@]}" -eq 0 ]; then
+            echo 'GOAL_REJECTED=empty'; exit 2
+          fi
+          for arg in "${GOAL_ARGS[@]}"; do
+            case "$arg" in
+              -ff|--fail-fast|--fail-fast=*|-fn|--fail-never|--fail-never=*)
+                echo 'GOAL_REJECTED=conflicting Maven reactor failure policy'; exit 2 ;;
+            esac
+          done
+          printf 'команда: mvn -B -ntp -fae -Dstyle.color=never'
+          printf ' %q' "${PROFILE_ARGS[@]}" "${GOAL_ARGS[@]}"
+          printf '\n'
+          xvfb-run --auto-servernum mvn -B -ntp -fae -Dstyle.color=never "${PROFILE_ARGS[@]}" "${GOAL_ARGS[@]}" > "$RUNNER_TEMP/mvn.log" 2>&1
           code=$?
           echo "MVN_EXIT=$code"
           # Maven log, failures, paths, and stack traces may contain private data.
