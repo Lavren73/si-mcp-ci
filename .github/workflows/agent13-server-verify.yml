@@ -173,6 +173,40 @@ jobs:
                   print('FAILED: <identifier omitted>')
           PY
 
+      - name: 7b. Evidence exact seven oform tests (#439)
+        if: always()
+        shell: bash
+        run: |
+          cd "$RUNNER_TEMP/src"
+          python3 - <<'PY'
+          import glob, xml.etree.ElementTree as ET, sys
+          cls='si.edt.mcp.oform.AContainerRefusesCyclicAndTruncatedDocumentsTest'
+          expected=(
+              'aZeroSizeBlockThatPointsAtItselfIsRefusedNotLoopedOn',
+              'twoZeroSizeBlocksPointingAtEachOtherAreRefused',
+              'aChainThatEndsBeforeTheDeclaredSizeIsRefused',
+              'aNextBlockOutsideTheFileIsRefused',
+              'aNegativeTableOffsetIsRefusedNotReadAsEmpty',
+              'aTableOffsetNearIntMaxIsRefusedNotAnIndexError',
+              'theValidContainerStillReads',
+          )
+          seen={n:[] for n in expected}
+          unreadable=0
+          for f in glob.glob('server/**/target/surefire-reports/TEST-*.xml',recursive=True):
+              try:root=ET.parse(f).getroot()
+              except Exception:unreadable+=1;continue
+              for tc in root.iter('testcase'):
+                  if tc.get('classname')==cls and tc.get('name') in seen:
+                      status='FAIL' if tc.find('failure') is not None or tc.find('error') is not None else ('SKIP' if tc.find('skipped') is not None else 'PASS')
+                      seen[tc.get('name')].append(status)
+          for n in expected:
+              values=seen[n]
+              print('OFORM_CASE '+n+'='+('MISSING' if not values else ','.join(values)))
+          ok=unreadable==0 and all(seen[n]==['PASS'] for n in expected)
+          print('OFORM_SEVEN='+('PASS' if ok else 'NO_VERDICT_OR_FAIL')+' UNREADABLE_XML='+str(unreadable))
+          sys.exit(0 if ok else 1)
+          PY
+
       - name: 8. Сторож красных (fail-closed)
         if: always()
         shell: bash
