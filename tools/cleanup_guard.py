@@ -57,6 +57,32 @@ def protected(path):
     return False
 
 
+HELD = re.compile(r'do not clean|не удалять|не трогать|do not touch', re.I)
+
+
+def held_by(directory):
+    """Имя записки, которая запрещает чистить эту папку (обычно её вешает тот, кто
+    в ней живёт: у агента 16 это 'do not clean or repeat'). Нужна, потому что под
+    однимruns-корнем лежат и общие установки (напр. EDT-стенд), и их удаление -
+    не уборка мусора, а обрыв чужого прогона."""
+    try:
+        files = [p for p in directory.iterdir() if p.is_file()]
+    except OSError:
+        return None
+    for entry in sorted(files, key=lambda p: p.name):
+        if entry.suffix.lower() not in ('.txt', '.md', ''):
+            continue
+        if HELD.search(entry.name):
+            return entry.name
+        try:
+            if entry.stat().st_size <= 4096 and HELD.search(entry.read_text(encoding='utf-8',
+                                                                              errors='replace')):
+                return entry.name
+        except OSError:
+            continue
+    return None
+
+
 def marker_owner(directory):
     """Чья папка по метке: 'agent-16', 'agent-11' (по OWNER.txt-тексту) или None."""
     try:
@@ -120,6 +146,9 @@ def decide(path, requester=SELF, consent_from=None, now=None, min_age=MIN_AGE_MI
         return False, 'unreadable'
     if stat.st_uid != os.getuid():
         return False, 'foreign-uid'
+    записка = held_by(directory)
+    if записка:
+        return False, 'held-by-' + записка
     age = ((now or time.time()) - stat.st_mtime) / 60.0
     if age < min_age:
         return False, 'too-fresh'

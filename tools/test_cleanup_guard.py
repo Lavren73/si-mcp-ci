@@ -56,11 +56,26 @@ class СвоёИЧужое(Фундамент):
         self.assertEqual('too-fresh', причина)
 
     def test_чужую_без_согласия_не_удаляем(self):
-        d = self.папка_прогона(метка=('OWNER-Agent-16.txt',
-                                      'Личная постоянная тестовая папка агента 16. Не удалять автоматически.'))
+        d = self.папка_прогона(метка=('OWNER-Agent-16.txt', 'Личная тестовая папка агента 16'))
         можно, причина = guard.decide(str(d), requester='agent-11', now=self.now)
         self.assertFalse(можно)
         self.assertEqual('needs-consent-from-agent-16', причина)
+        # и с согласием чужое берёт только то, что разрешил владелец чужого
+        можно, причина = guard.decide(str(d), requester='agent-11', consent_from='agent-11',
+                                      now=self.now)
+        self.assertFalse(можно)
+        self.assertEqual('needs-consent-from-agent-16', причина)
+        можно, причина = guard.decide(str(d), requester='agent-11', consent_from='agent-16',
+                                      now=self.now)
+        self.assertTrue(можно, причина)
+
+    def test_письменное_не_удалять_сильнее_согласия(self):
+        d = self.папка_прогона(метка=('OWNER-Agent-16.txt',
+                                      'Личная постоянная тестовая папка агента 16. Не удалять автоматически.'))
+        для, причина = guard.decide(str(d), requester='agent-16', consent_from='agent-16',
+                                    now=self.now)
+        self.assertFalse(для)
+        self.assertEqual('held-by-OWNER-Agent-16.txt', причина)
 
     def test_моё_у_другого_только_по_моему_согласию(self):
         d = self.папка_прогона(метка=('OWNER.txt', 'provisioned by agent 11'))
@@ -85,6 +100,21 @@ class СвоёИЧужое(Фундамент):
         self.assertFalse(можно)
         self.assertEqual('unmarked', причина)
 
+
+    def test_записка_не_удалять_держит_даже_свою_папку(self):
+        d = self.папка_прогона(метка=('OWNER.txt', 'provisioned by agent 11'))
+        (d / 'do-not-clean.txt').write_text(
+            'EDT stand shared with the team; do not clean or repeat\n', encoding='utf-8')
+        можно, причина = guard.decide(str(d), now=self.now)
+        self.assertFalse(можно)
+        self.assertEqual('held-by-do-not-clean.txt', причина)
+
+    def test_записка_в_тексте_метки_тоже_держит(self):
+        d = self.папка_прогона(метка=('OWNER-Agent-11.txt',
+                                      'постоянный стенд, не удалять'))
+        можно, причина = guard.decide(str(d), now=self.now)
+        self.assertFalse(можно)
+        self.assertEqual('held-by-OWNER-Agent-11.txt', причина)
 
 class ЗащитаУстановки(Фундамент):
     def test_лицензионную_1с_не_удаляет_никто_и_ни_под_каким_согласием(self):
@@ -140,7 +170,7 @@ class ФормаПути(Фундамент):
 class Удаление(Фундамент):
     def test_удаляются_только_разрешённые_и_это_записано_в_журнал(self):
         своя = self.папка_прогона('11111111111-1', метка=('OWNER.txt', 'provisioned by agent 11'))
-        чужая = self.папка_прогона('22222222222-1', метка=('OWNER-Agent-16.txt', 'агент 16'))
+        чужая = self.папка_прогона('22222222222-1', метка=('OWNER-Agent-16.txt', 'папка агента 16'))
         journal = self.root / 'журнал.json'
         rows = guard.scan()
         удалено, отказ = guard.apply_deletions(rows, str(journal))
