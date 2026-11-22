@@ -34,6 +34,10 @@ on:
         description: 'Диагностика: обёртка запуска Maven 3.9.9 под Java 17 (профиль по умолчанию)'
         required: false
         default: 'yes'
+      merge_ref:
+        description: 'Диагностика: SHA, локально вливаемый в TARGET_SHA перед verify (ничего не пушится)'
+        required: false
+        default: ''
 permissions:
   contents: read
 concurrency:
@@ -47,6 +51,7 @@ jobs:
     env:
       TARGET_SHA: ${{ github.event.inputs.sha }}
       JDK17_LAUNCHER: ${{ github.event.inputs.jdk17_launcher }}
+      MERGE_REF: ${{ github.event.inputs.merge_ref }}
       GOAL: ${{ github.event.inputs.goal }}
       PROFILE: ${{ github.event.inputs.profile }}
       LANG: C.UTF-8
@@ -86,6 +91,17 @@ jobs:
           echo "HEAD_TREE=$(git rev-parse HEAD^{tree})"
           test "$HEAD_SHA" = "$TARGET_SHA" || { echo "SHA MISMATCH"; exit 1; }
           rm -f "$RUNNER_TEMP/.ssh/id_deploy" "$RUNNER_TEMP/.ssh/askpass"
+
+      - name: 1a. Локальное пробное слияние (только в раннере, ничего не пушится)
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/src"
+          if [ -z "$MERGE_REF" ]; then echo 'MERGE_REF=none'; exit 0; fi
+          git -c user.name=probe -c user.email=probe@example.invalid merge --no-ff --no-edit "$MERGE_REF"
+          echo "MERGED_HEAD=$(git rev-parse HEAD)"
+          echo "MERGED_TREE=$(git rev-parse HEAD^{tree})"
+          echo "PARENTS=$(git rev-list --parents -n1 HEAD | wc -w)"
 
       - name: 2. Память и диск раннера
         run: |
