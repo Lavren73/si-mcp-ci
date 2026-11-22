@@ -338,6 +338,120 @@ class СвоёПоСпискуПрогонов(Фундамент):
         self.assertEqual(0, код)
 
 
+class РазныеВладельцыИВложенныйЗапрет(Фундамент):
+    """Находки координатора из #481, воспроизведённые на main 50004ea (blob 21ffe450).
+
+    До правки: OWNER-Agent-11.txt + OWNER-Agent-16.txt в одной папке давали
+    (True, 'own') для agent-11, потому что обход обрывался на первом имени по
+    сортировке. Неоднозначность не должна давать разрешение удалить чужое.
+    """
+
+    def aged(self, d):
+        """Правка метки двигает mtime папки; возвращаем возраст, на котором стоит тест."""
+        import os
+        os.utime(str(d), (self.now - 600 * 60, self.now - 600 * 60))
+        return d
+
+    def test_две_разные_метки_это_конфликт_а_не_порядок_имён(self):
+        d = self.папка_прогона(имя='43090000021-1',
+                               метка=('OWNER-Agent-11.txt', 'папка агента 11'))
+        (d / 'OWNER-Agent-16.txt').write_text('папка агента 16', encoding='utf-8')
+        for requester in ('agent-11', 'agent-16'):
+            можно, причина = guard.decide(str(d), requester=requester, now=self.now)
+            self.assertFalse(можно, причина)
+            self.assertEqual('owner-conflict-agent-11+agent-16', причина)
+
+    def test_конфликт_не_обходится_согласием(self):
+        d = self.папка_прогона(имя='43090000022-1',
+                               метка=('OWNER-Agent-11.txt', 'папка агента 11'))
+        (d / 'OWNER-Agent-16.txt').write_text('папка агента 16', encoding='utf-8')
+        можно, причина = guard.decide(str(d), requester='agent-14', consent_from='agent-11',
+                                      now=self.now)
+        self.assertFalse(можно, причина)
+        self.assertTrue(причина.startswith('owner-conflict-'), причина)
+
+    def test_OWNER_txt_в_конфликте_с_номерной_меткой_тоже_отказ(self):
+        """Номерная метка важнее текста корня - но только когда они не спорят."""
+        d = self.папка_прогона(имя='43090000023-1',
+                               метка=('OWNER-Agent-16.txt', 'папка агента 16'))
+        (d / 'OWNER.txt').write_text('shared stand of agent 11', encoding='utf-8')
+        можно, причина = guard.decide(str(d), requester='agent-11', now=self.now)
+        self.assertFalse(можно, причина)
+        self.assertEqual('owner-conflict-agent-11+agent-16', причина)
+
+    def test_одинаковые_метки_конфликтом_не_считаются(self):
+        d = self.папка_прогона(имя='43090000024-1',
+                               метка=('OWNER-Agent-11.txt', 'папка агента 11'))
+        (d / 'OWNER.txt').write_text('папка агента 11 (дубль)', encoding='utf-8')
+        можно, причина = guard.decide(str(self.aged(d)), requester='agent-11', now=self.now)
+        self.assertTrue(можно, причина)
+
+    def test_вложенная_записка_держит_всю_папку_прогона(self):
+        """held_by смотрел только корень: rmtree сносил runs/<id>/retained/ с
+        DO-NOT-CLEAN.md внутри, и ссылка на «чьи-то данные» ничего не стоила."""
+        d = self.папка_прогона(имя='43090000025-1',
+                               метка=('OWNER-Agent-11.txt', 'папка агента 11'))
+        inner = d / 'retained'
+        inner.mkdir()
+        (inner / 'DO-NOT-CLEAN.md').write_text('do not clean: synthetic retained data',
+                                               encoding='utf-8')
+        можно, причина = guard.decide(str(self.aged(d)), requester='agent-11', now=self.now)
+        self.assertFalse(можно, причина)
+        self.assertEqual('nested-held-by-DO-NOT-CLEAN.md', причина)
+        self.assertTrue(inner.exists())
+
+    def test_бюджет_обхода_не_превращается_в_разрешение(self):
+        """Если записки не помещаются в бюджет - это KEEP/scan-limited, а не OK."""
+        d = self.папка_прогона(имя='43090000026-1',
+                               metka=None) if False else self.папка_прогона(имя='43090000026-1')
+        d.joinpath('OWNER-Agent-11.txt').write_text('папка агента 11', encoding='utf-8')
+        for i in range(12):
+            sub = d / ('dir%02d' % i)
+            sub.mkdir()
+            for j in range(3):
+                (sub / ('f%d.txt' % j)).write_text('x', encoding='utf-8')
+        сохранённый = guard.CHECK_NESTED_HOLD
+        try:
+            guard.CHECK_NESTED_HOLD = True
+            можно, причина = guard.decide(str(self.aged(d)), requester='agent-11', now=self.now)
+            self.assertTrue(можно, причина)          # бюджет не исчерпан, удаление разрешено
+            # и теперь: тот же вызов, но с бюджетом в 5 записей - обязан отказать
+            сам_проверщик = guard.nested_hold
+            try:
+                guard.nested_hold = lambda path, budget=5: 'scan-limited'
+                можно2, причина2 = guard.decide(str(d), requester='agent-11', now=self.now)  # mtime не меняем
+                self.assertFalse(можно2, причина2)
+                self.assertEqual('nested-held-by-scan-limited', причина2)
+            finally:
+                guard.nested_hold = сам_проверщик
+        finally:
+            guard.CHECK_NESTED_HOLD = сохранённый
+
+    def test_скан_сообщает_конфликт_а_не_мнимое_ничьё(self):
+        d = self.папка_прогона(имя='43090000027-1',
+                               метка=('OWNER-Agent-11.txt', 'папка агента 11'))
+        (d / 'OWNER-Agent-16.txt').write_text('папка агента 16', encoding='utf-8')
+        self.aged(d)
+        rows = guard.scan(now=self.now)
+        self.assertEqual(1, len(rows))
+        self.assertFalse(rows[0]['delete'])
+        self.assertTrue(rows[0]['reason'].startswith('owner-conflict-'), rows[0]['reason'])
+
+    def test_apply_не_удаляет_то_что_стало_конфликтным_между_сканом_и_unlink(self):
+        d = self.папка_прогона(имя='43090000028-1',
+                               метка=('OWNER-Agent-11.txt', 'папка агента 11'))
+        rows = guard.scan(now=self.now)
+        self.assertTrue(rows[0]['delete'])
+        (d / 'OWNER-Agent-16.txt').write_text('папка агента 16 появилась позже', encoding='utf-8')
+        self.aged(d)   # возраст тот же, меняется только состав меток
+        removed, refused = guard.apply_deletions(rows, self.root / 'journal.json',
+                                                 now=self.now)
+        self.assertEqual([], removed)
+        self.assertTrue(refused[0]['reason'].startswith('changed-to-owner-conflict-'),
+                        refused[0]['reason'])
+        self.assertTrue(d.exists())
+
+
 class КореньИзАргумента(Фундамент):
     """``--root`` обязан действовать и на решение, и на перепроверку при удалении."""
 

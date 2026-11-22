@@ -50,6 +50,7 @@ MIN_AGE_MINUTES = 90
 
 
 CLAIM_LIST = None   # файл заявленных «своих» прогонов, если задан
+CHECK_NESTED_HOLD = True   # заглядывать ли внутрь папки перед rmtree (#481)
 
 
 def claims():
@@ -110,6 +111,41 @@ def held_by(directory):
     return None
 
 
+def nested_hold(directory, budget=20000):
+    """Запрет «не удалять» где-то внутри папки прогона, а не только в её корне.
+
+    Записка в runs/<id>/retained/DO-NOT-CLEAN.md означает, что внутри лежат
+    чужие или постоянные данные, а удаление всей папки - это rmtree. Обход
+    ограничен бюджетом записей и не идёт за симлинками; если бюджет кончился,
+    решение - «не удалять, пока не посмотришь»: непросканированное глубже
+    не может быть разрешением.
+    """
+    try:
+        it = os.walk(str(directory), followlinks=False)
+        seen = 0
+        for dirpath, dirnames, filenames in it:
+            for fn in filenames:
+                seen += 1
+                if seen > budget:
+                    return 'scan-limited'
+                if HELD.search(fn):
+                    return fn
+            for fn in sorted(filenames):
+                if not fn.lower().endswith(('.txt', '.md')):
+                    continue
+                try:
+                    fp = pathlib.Path(dirpath) / fn
+                    if fp.stat().st_size > 4096:
+                        continue
+                    if HELD.search(fp.read_text(encoding='utf-8', errors='replace')):
+                        return fn
+                except OSError:
+                    continue
+    except OSError:
+        return None
+    return None
+
+
 def stand_owner(root=None):
     """Чей этот стенд по метке корня (``$RUN_ROOT/OWNER.txt``).
 
@@ -128,25 +164,42 @@ def stand_owner(root=None):
     return 'agent-%s' % int(found.group(1)) if found else None
 
 
-def marker_owner(directory):
-    """Чья папка по метке: 'agent-16', 'agent-11' (по OWNER.txt-тексту) или None."""
+def marker_owners(directory):
+    """Все владельцы, заявленные метками в этой папке: {'agent-11', 'agent-16'}.
+
+    Обход НЕ прерывается на первом совпадении: «первое по сортировке имя»
+    превращало две разные метки в разрешение удалить чужое (находка координатора
+    #481, воспроизведена на main 50004ea / blob 21ffe450). Прочитать нужно все.
+    """
+    owners = set()
     try:
         names = sorted(p.name for p in directory.iterdir() if p.is_file())
     except OSError:
-        return None
+        return owners
     for name in names:
         match = MARKER.match(name)
         if not match:
             continue
         if match.group(1):
-            return 'agent-%s' % int(match.group(1))
+            owners.add('agent-%s' % int(match.group(1)))
+            continue
         try:
             text = (directory / name).read_text(encoding='utf-8', errors='replace')
         except OSError:
-            return None
+            owners.add('unreadable-marker')
+            continue
         found = AGENT_NAME.search(text)
-        return 'agent-%s' % int(found.group(1)) if found else None
-    return None
+        if found:
+            owners.add('agent-%s' % int(found.group(1)))
+    return owners
+
+
+def marker_owner(directory):
+    """Чья папка по метке: 'agent-16', 'agent-11' (по OWNER.txt-тексту) или None."""
+    owners = marker_owners(directory)
+    if len(owners) != 1:
+        return None          # ни одной - или конфликт: решает decide(), а не сортировка имён
+    return next(iter(owners))
 
 
 def inside_run_root(path, root=None):
@@ -190,11 +243,21 @@ def decide(path, requester=SELF, consent_from=None, now=None, min_age=MIN_AGE_MI
     if not ok:
         return False, where
     directory = pathlib.Path(raw)
+    # Разные владельцы в одной папке - это не «победил тот, чьё имя раньше по
+    # алфавиту», а признак, что папку используют вдвоём. Такое не удаляет никто,
+    # в том числе по согласию: согласие одного из двух не отменяет второго.
+    owners = marker_owners(directory)
+    if len(owners) > 1:
+        return False, 'owner-conflict-' + '+'.join(sorted(owners))
     # Записку «не удалять» читаем раньше всего остального: она отказывает и
     # владельцу, и тому, кто принёс согласие.
     записка = held_by(directory)
     if записка:
         return False, 'held-by-' + записка
+    if CHECK_NESTED_HOLD:
+        вложенная = nested_hold(directory)
+        if вложенная:
+            return False, 'nested-held-by-' + вложенная
     try:
         stat = directory.stat()
     except OSError:
@@ -280,7 +343,9 @@ def apply_deletions(rows, journal, requester=SELF, consent_from=None,
         shutil.rmtree(path)
         removed.append({'path': path, 'reason': reason})
     pathlib.Path(journal).write_text(json.dumps(
-        {'removed': removed, 'refused': refused, 'protected_roots': list(PROTECTED_ROOTS)},
+        {'removed': removed, 'refused': refused, 'protected_roots': list(PROTECTED_ROOTS),
+         'consent_claimed_by': consent_from,
+         'consent_note': 'consent-from is the caller assertion, not an authentication'},
         indent=2), encoding='utf-8')
     return removed, refused
 
@@ -290,7 +355,9 @@ def main(argv=None):
     parser.add_argument('--root', default=RUN_ROOT)
     parser.add_argument('--requester', default=SELF)
     parser.add_argument('--consent-from', default='',
-                        help='от кого получено согласие (имя владельца папки, напр. agent-11)')
+                        help='от кого получено согласие (имя владельца папки, напр. agent-11). '
+                             'Внимание: это утверждение вызывающего, а не аутентификация - '
+                             'сторож не умеет проверить, что согласование действительно было')
     parser.add_argument('--min-age', type=float, default=MIN_AGE_MINUTES)
     parser.add_argument('--apply', action='store_true',
                         help='удалять; без флага - только отчёт')
