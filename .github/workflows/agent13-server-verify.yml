@@ -173,12 +173,23 @@ jobs:
         run: |
           set -euo pipefail
           cd "$RUNNER_TEMP/src"
-          STOZOR=server/scripts/сторож-красных.py
-          ETALON=$(ls docs/отчёты-проверок/эталон-красных-*.txt 2>/dev/null | tail -1)
+          # Абсолютные пути обязательны: обёртка из домика работает в СВОЁМ каталоге
+          # ($GITHUB_WORKSPACE), поэтому относительный «server/scripts/...» у неё не существует.
+          STOZOR="$RUNNER_TEMP/src/server/scripts/сторож-красных.py"
+          ETALON=$(ls "$RUNNER_TEMP/src"/docs/отчёты-проверок/эталон-красных-*.txt 2>/dev/null | tail -1)
+          # Почему ARGV — массив, а не одна строка (найдено №13 на прогоне 45066035766):
+          # `python3 tools/watchdog_verdict.py "$STOZOR" ...` запускал ОБЁРТКУ из домика
+          # (это нормально), но её sys.argv[1:] попадали в subprocess как ЕДИНСТВЕННЫЙ аргумент.
+          # Обёртка вызывала сторож в собственном рабочем каталоге, а не в "$RUNNER_TEMP/src".
+          # Отсюда два дефекта: (1) при любой правке обёртки прогон падал `invalid-arguments`;
+          # (2) эталон читался из копии домика, а не из проверяемого дерева — на final после
+          # #496 вердикт «ПРОГОН НЕ ПОЛНЫЙ» относится к чужому эталону, а не к прогону.
           if [ ! -f "$STOZOR" ] || [ -z "$ETALON" ] || [ ! -f "$RUNNER_TEMP/mvn.log" ]; then
             echo 'WATCHDOG=missing-input'; exit 1
           fi
-          python3 "$GITHUB_WORKSPACE/tools/watchdog_verdict.py" "$STOZOR" "$RUNNER_TEMP/mvn.log" "$ETALON"
+          ARGV=()
+          while IFS= read -r -d '' a; do ARGV+=("$a"); done < <(printf '%s\0' "$STOZOR" "$RUNNER_TEMP/mvn.log" "$ETALON")
+          python3 "$GITHUB_WORKSPACE/tools/watchdog_verdict.py" "${ARGV[@]}"
 
       - name: 9. Итог (только счётчики и хеши)
         if: always()
