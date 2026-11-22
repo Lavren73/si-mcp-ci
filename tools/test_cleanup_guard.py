@@ -400,10 +400,11 @@ class РазныеВладельцыИВложенныйЗапрет(Фунда�
         self.assertEqual('nested-held-by-DO-NOT-CLEAN.md', причина)
         self.assertTrue(inner.exists())
 
-    def test_бюджет_обхода_не_превращается_в_разрешение(self):
-        """Если записки не помещаются в бюджет - это KEEP/scan-limited, а не OK."""
-        d = self.папка_прогона(имя='43090000026-1',
-                               metka=None) if False else self.папка_прогона(имя='43090000026-1')
+    def test_бюджет_обхода_не_выдаёт_отказ_за_находку(self):
+        """Лимит обхода - предупреждение, а не KEEP: иначе self-cleanup прогона
+        с деревом на сотни тысяч файлов не работал бы никогда. Настоящая
+        записка, найденная глубоко, обязана отказать."""
+        d = self.папка_прогона(имя='43090000026-1')
         d.joinpath('OWNER-Agent-11.txt').write_text('папка агента 11', encoding='utf-8')
         for i in range(12):
             sub = d / ('dir%02d' % i)
@@ -412,16 +413,16 @@ class РазныеВладельцыИВложенныйЗапрет(Фунда�
                 (sub / ('f%d.txt' % j)).write_text('x', encoding='utf-8')
         сохранённый = guard.CHECK_NESTED_HOLD
         try:
-            guard.CHECK_NESTED_HOLD = True
-            можно, причина = guard.decide(str(self.aged(d)), requester='agent-11', now=self.now)
-            self.assertTrue(можно, причина)          # бюджет не исчерпан, удаление разрешено
-            # и теперь: тот же вызов, но с бюджетом в 5 записей - обязан отказать
+            self.assertTrue(guard.decide(str(self.aged(d)), requester='agent-11', now=self.now)[0])
+            # лимит исчерпан и ничего не найдено -> решение остаётся прежним
+            self.assertIsNone(guard.nested_hold(d, budget=1))
+            # а найденный глубоко запрет отказывает и с маленьким бюджетом
             сам_проверщик = guard.nested_hold
             try:
-                guard.nested_hold = lambda path, budget=5: 'scan-limited'
-                можно2, причина2 = guard.decide(str(d), requester='agent-11', now=self.now)  # mtime не меняем
-                self.assertFalse(можно2, причина2)
-                self.assertEqual('nested-held-by-scan-limited', причина2)
+                guard.nested_hold = lambda path, budget=20000: 'DO-NOT-CLEAN.md'
+                можно, причина = guard.decide(str(d), requester='agent-11', now=self.now)
+                self.assertFalse(можно, причина)
+                self.assertEqual('nested-held-by-DO-NOT-CLEAN.md', причина)
             finally:
                 guard.nested_hold = сам_проверщик
         finally:
