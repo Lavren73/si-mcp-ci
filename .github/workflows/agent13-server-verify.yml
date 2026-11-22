@@ -142,6 +142,7 @@ jobs:
           files = glob.glob('server/**/target/surefire-reports/TEST-*.xml', recursive=True)
           tests = fail = err = skip = 0
           bad = []
+          skipped = []
           for f in files:
               try:
                   r = ET.parse(f).getroot()
@@ -155,11 +156,23 @@ jobs:
               err += int(s.get('errors') or 0)
               skip += int(s.get('skipped') or 0)
               for tc in s.findall('testcase'):
+                  ident = tc.get('classname', '?') + '#' + tc.get('name', '?')
                   if tc.find('failure') is not None or tc.find('error') is not None:
-                      bad.append(tc.get('classname', '?') + '#' + tc.get('name', '?'))
+                      bad.append(ident)
+                  elif tc.find('skipped') is not None:
+                      skipped.append(ident)
           print('SUREFIRE_FILES=%d' % len(files))
           print('TESTS=%d FAILURES=%d ERRORS=%d SKIPPED=%d' % (tests, fail, err, skip))
           print('BAD_UNIQUE=%d' % len(set(bad)))
+          # Имена пропущенных: без них «15 skipped» не говорит, что именно не проверено.
+          # №15 (issue #298) просил именно это: отличить «те же 15, что и раньше» от
+          # «настройки v7 тихо спрятались в Assume». Печатается только идентификатор.
+          print('SKIPPED_UNIQUE=%d' % len(set(skipped)))
+          for sname in sorted(set(skipped)):
+              if re.fullmatch(r'[A-Za-z_$][A-Za-z0-9_.$]*#[A-Za-z_$][A-Za-z0-9_.$]*(?:\\[[A-Za-z0-9_.$-]+\\])?', sname):
+                  print('SKIPPED: ' + sname)
+              else:
+                  print('SKIPPED: <identifier omitted>')
           for b in sorted(set(bad)):
               if re.fullmatch(r'[A-Za-z_$][A-Za-z0-9_.$]*#[A-Za-z_$][A-Za-z0-9_.$]*(?:\[[A-Za-z0-9_.$-]+\])?', b):
                   print('FAILED:', b)
