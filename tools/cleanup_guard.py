@@ -49,6 +49,33 @@ AGENT_NAME = re.compile(r'agent[\s-]*(\d+)')
 MIN_AGE_MINUTES = 90
 
 
+CLAIM_LIST = None   # файл заявленных «своих» прогонов, если задан
+
+
+def claims():
+    """Свои прогоны: строки вида runs/<число>[-<attempt>] или просто <число>."""
+    if not CLAIM_LIST:
+        return frozenset()
+    try:
+        text = pathlib.Path(CLAIM_LIST).read_text(encoding='utf-8', errors='replace')
+    except OSError:
+        return frozenset()
+    out = set()
+    for line in text.splitlines():
+        line = line.strip().rstrip('/')
+        if not line or line.startswith('#'):
+            continue
+        tail = line.split('/')[-1]
+        if re.fullmatch(r'\d+(?:-\d+)?', tail):
+            out.add(tail)
+    return frozenset(out)
+
+
+def claimed(path):
+    """Заявлено ли это своим прогоном - по авторству прогона, а не по диску."""
+    return pathlib.Path(path).name in claims()
+
+
 def protected(path):
     """True если путь лежит под защищённым корнем (или им является)."""
     for root in PROTECTED_ROOTS:
@@ -150,8 +177,12 @@ def inside_run_root(path, root=None):
 
 
 def decide(path, requester=SELF, consent_from=None, now=None, min_age=MIN_AGE_MINUTES,
-           root=None):
+           root=None, claim_list=None):
     """(можно_ли, причина) для одной папки. Причина - всегда проверяемый факт."""
+    global CLAIM_LIST
+    if claim_list is not None:
+        CLAIM_LIST = claim_list
+    claimed_own = False
     raw = str(path)
     if protected(raw):
         return False, 'licensed-or-shared'
@@ -172,19 +203,22 @@ def decide(path, requester=SELF, consent_from=None, now=None, min_age=MIN_AGE_MI
         return False, 'foreign-uid'
     owner = marker_owner(directory)
     if owner is None:
-        # Без метки непонятно, чужое это или ничьё; а ничьё на общем раннере -
-        # не моё. Разрешаем такое только в одном случае: папка лежит внутри
-        # стенда, который по метке корня принадлежит просящему, и на диске её
-        # владелец - он же. Иначе оставляем и говорим почему.
-        if stand_owner(root) == requester:
+        # Инвентарь 22.11 показал, почему нельзя было опознавать по диску: на si1c
+        # все 83 папки прогона принадлежат одному пользователю runner - uid агентов
+        # не различает, и «своя по uid» легко оказывается чужой: в том же runs/
+        # лежит общий EDT-стенд runs/43070810460-1, и он тоже без метки. Без метки
+        # папка своя только если она заявлена списком своих прогонов (--claim-list),
+        # построенным по авторству прогона в GitHub, а не по файловой системе.
+        if claimed(raw):
             owner = requester
+            claimed_own = True
         else:
             return False, 'unmarked'
     age = ((now or time.time()) - stat.st_mtime) / 60.0
     if age < min_age:
         return False, 'too-fresh'
     if owner == requester:
-        return True, 'own'
+        return True, 'claimed-own' if claimed_own else 'own'
     # Согласие должен принести владелец папки, а не тот, кто удаляет: иначе
     # «согласование» превращается в формальность, которую подставляет удалающий.
     if consent_from == owner:
@@ -193,7 +227,7 @@ def decide(path, requester=SELF, consent_from=None, now=None, min_age=MIN_AGE_MI
 
 
 def scan(root=None, requester=SELF, consent_from=None, now=None, min_age=MIN_AGE_MINUTES,
-         only=None):
+         only=None, claim_list=None):
     """Все пути решаются относительно того же корня, что и передан в --root."""
     """Отчёт по всем папкам прогонов: что удалим, что нет и почему.
 
@@ -208,7 +242,7 @@ def scan(root=None, requester=SELF, consent_from=None, now=None, min_age=MIN_AGE
         if not target.exists():
             return rows
         allowed, reason = decide(str(target), requester=requester, consent_from=consent_from,
-                                 now=now, min_age=min_age, root=root)
+                                 now=now, min_age=min_age, root=root, claim_list=claim_list)
         return [{'path': str(target), 'delete': allowed, 'reason': reason,
                  'owner': marker_owner(target) or 'unmarked'}]
     if not base.is_dir():
@@ -217,14 +251,14 @@ def scan(root=None, requester=SELF, consent_from=None, now=None, min_age=MIN_AGE
         if not entry.is_dir() or entry.is_symlink():
             continue
         allowed, reason = decide(str(entry), requester=requester, consent_from=consent_from,
-                                 now=now, min_age=min_age, root=root)
+                                 now=now, min_age=min_age, root=root, claim_list=claim_list)
         rows.append({'path': str(entry), 'delete': allowed, 'reason': reason,
                      'owner': marker_owner(entry) or 'unmarked'})
     return rows
 
 
 def apply_deletions(rows, journal, requester=SELF, consent_from=None,
-                    now=None, min_age=MIN_AGE_MINUTES, root=None):
+                    now=None, min_age=MIN_AGE_MINUTES, root=None, claim_list=None):
     """Удаляет только то, что разрешил decide; перед unlink - повторная проверка.
 
     Перепроверка обязана идти с теми же requester и согласием, что и скан:
@@ -238,7 +272,8 @@ def apply_deletions(rows, journal, requester=SELF, consent_from=None,
             refused.append({'path': path, 'reason': row['reason']})
             continue
         allowed, reason = decide(path, requester=requester, consent_from=consent_from,
-                                  now=now, min_age=min_age, root=root)  # диск мог измениться
+                                  now=now, min_age=min_age, root=root,
+                                  claim_list=claim_list)   # диск мог измениться
         if not allowed:
             refused.append({'path': path, 'reason': 'changed-to-' + reason})
             continue
@@ -263,10 +298,14 @@ def main(argv=None):
     parser.add_argument('--only', default='',
                         help='ровно эта папка прогона (самоуборка своего прогона); '
                              'ничего другого не сканируется и не удаляется')
+    parser.add_argument('--claim-list', default='',
+                        help='файл со списком своих прогонов: убирает их без метки, '
+                             'потому что на si1c у всех один uid; чужое по метке этот '
+                             'список своим не делает')
     args = parser.parse_args(argv)
     rows = scan(args.root, requester=args.requester,
                  consent_from=(args.consent_from or None), min_age=args.min_age,
-                 only=(args.only or None))
+                 only=(args.only or None), claim_list=(args.claim_list or None))
     verb = 'DELETE' if args.apply else 'WOULD '
     for row in rows:
         print('%s %s [%s]' % (verb if row['delete'] else 'KEEP   ',
@@ -276,7 +315,8 @@ def main(argv=None):
         journal = args.journal or os.path.join(args.root, 'runs', 'cleanup-journal.json')
         removed, refused = apply_deletions(rows, journal, requester=args.requester,
                                             consent_from=(args.consent_from or None),
-                                            min_age=args.min_age, root=args.root)
+                                            min_age=args.min_age, root=args.root,
+                                            claim_list=(args.claim_list or None))
         print('REMOVED=%d REFUSED=%d JOURNAL=%s' % (len(removed), len(refused), journal))
     print('CANDIDATES=%d ALLOWED=%d' % (len(rows), sum(1 for r in rows if r['delete'])))
     return 0

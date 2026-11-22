@@ -25,12 +25,14 @@ class Фундамент(unittest.TestCase):
         (self.root / 'runs').mkdir()
         (self.root / 'licensed-1cv8').mkdir()
         self._root, self._protected = guard.RUN_ROOT, guard.PROTECTED_ROOTS
+        self._claims = guard.CLAIM_LIST
         guard.RUN_ROOT = str(self.root)
         guard.PROTECTED_ROOTS = (str(self.root / 'licensed-1cv8'),)
         self.now = time.time()
 
     def tearDown(self):
         guard.RUN_ROOT, guard.PROTECTED_ROOTS = self._root, self._protected
+        guard.CLAIM_LIST = self._claims
         self.tmp.cleanup()
 
     def папка_прогона(self, имя='43084355230-1', метка=None, возраст_минут=600):
@@ -199,43 +201,81 @@ class Удаление(Фундамент):
 
 
 
-class НичьёПодМоимСтендом(Фундамент):
-    """Папка без метки - не «моё» по умолчанию: только если стенд мой и uid мой."""
+class СвоёПоСпискуПрогонов(Фундамент):
+    """Папка без метки - не «моё» по диску: на si1c у всех один uid.
 
-    def test_без_метки_под_моим_стендом_это_моё(self):
-        (self.root / 'OWNER.txt').write_text(
-            'SI-MCP team test stand; provisioned by agent 11', encoding='utf-8')
+    Инвентарь 22.11.2026: 83 папки, у всех uid=1000(runner), меток нет ни у
+    одной; под тем же runs/ лежит общий EDT-стенд runs/43070810460-1. Значит
+    «своё» доказывается авторством прогона (список --claim-list), а не диском.
+    """
+
+    def claim(self, *имена):
+        f = self.root / 'my-runs.txt'
+        f.write_text("\n".join('runs/' + i for i in имена) + "\n", encoding='utf-8')
+        return str(f)
+
+    def test_без_метки_но_заявлено_своим_прогоном(self):
         d = self.папка_прогона(имя='43090000001-1')
-        можно, причина = guard.decide(str(d), now=self.now)
+        можно, причина = guard.decide(str(d), now=self.now, claim_list=self.claim('43090000001-1'))
         self.assertTrue(можно, причина)
+        self.assertEqual('claimed-own', причина)
 
-    def test_без_метки_если_стенд_не_мой_не_трогаем(self):
-        (self.root / 'OWNER.txt').write_text('stand provisioned by agent 13', encoding='utf-8')
+    def test_без_метки_и_без_списка_не_трогаем(self):
         d = self.папка_прогона(имя='43090000002-1')
-        можно, причина = guard.decide(str(d), requester='agent-11', now=self.now)
+        можно, причина = guard.decide(str(d), now=self.now, claim_list=None)
         self.assertFalse(можно)
         self.assertEqual('unmarked', причина)
 
-    def test_без_метки_и_без_метки_корня_вообще_не_трогаем(self):
-        d = self.папка_прогона(имя='43090000003-1')
-        можно, причина = guard.decide(str(d), now=self.now)
-        self.assertFalse(можно)
-        self.assertEqual('unmarked', причина)
-
-    def test_записка_держит_и_папку_без_метки_под_моим_стендом(self):
+    def test_метка_корня_стенда_не_делает_папку_своей(self):
+        """Эвристика uid+метка-корня снята именно из-за инвентаря: она присвоила
+        бы нам и чужую папку (общий EDT-стенд), потому что uid общий."""
         (self.root / 'OWNER.txt').write_text('provisioned by agent 11', encoding='utf-8')
+        d = self.папка_прогона(имя='43070810460-1')
+        можно, причина = guard.decide(str(d), now=self.now, claim_list=None)
+        self.assertFalse(можно)
+        self.assertEqual('unmarked', причина)
+
+    def test_записка_держит_даже_заявленную_папку(self):
         d = self.папка_прогона(имя='43090000004-1',
                                метка=('DO-NOT-CLEAN.md', 'общий EDT-стенд, do not clean'))
-        можно, причина = guard.decide(str(d), now=self.now)
+        можно, причина = guard.decide(str(d), now=self.now, claim_list=self.claim('43090000004-1'))
         self.assertFalse(можно)
         self.assertTrue(причина.startswith('held-by-'), причина)
 
-    def test_согласие_не_обязано_молчать_при_перепроверке(self):
-        """Чужое с согласием владельца удаляется и после перепроверки тоже.
+    def test_список_не_переписывает_чужую_метку(self):
+        d = self.папка_прогона(имя='43090000009-1',
+                               метка=('OWNER-Agent-16.txt', 'Личная папка агента 16'))
+        можно, причина = guard.decide(str(d), requester='agent-11', now=self.now,
+                                      claim_list=self.claim('43090000009-1'))
+        self.assertFalse(можно)
+        self.assertEqual('needs-consent-from-agent-16', причина)
 
-        Раньше apply_deletions перепроверял без requester и согласия: легитимная
-        уборка от чужого имени превращалась в отказ с записью в журнале.
-        """
+    def test_список_не_обходит_свежесть(self):
+        d = self.папка_прогона(имя='43090000010-1', возраст_минут=4)
+        можно, причина = guard.decide(str(d), now=self.now, claim_list=self.claim('43090000010-1'))
+        self.assertFalse(можно)
+        self.assertEqual('too-fresh', причина)
+
+    def test_список_не_обходит_защиту_лицензии(self):
+        можно, причина = guard.decide(str(self.root / 'licensed-1cv8'), now=self.now,
+                                      claim_list=self.claim('licensed-1cv8'))
+        self.assertFalse(можно)
+        self.assertEqual('licensed-or-shared', причина)
+
+    def test_строки_не_по_форме_в_списке_игнорируются(self):
+        """Список принимает только имена папок прогонов: «runs/..» туда не пройдёт."""
+        f = self.root / 'my-runs.txt'
+        f.write_text('# комментарий\nruns/..\nwhatever\n42\n', encoding='utf-8')
+        сохранённый = guard.CLAIM_LIST
+        try:
+            guard.CLAIM_LIST = str(f)
+            self.assertEqual(frozenset({'42'}), guard.claims())
+            self.assertFalse(guard.claimed(str(self.root)))
+        finally:
+            guard.CLAIM_LIST = сохранённый
+
+    def test_согласие_не_обязано_молчать_при_перепроверке(self):
+        """Чужое с согласием владельца удаляется и после перепроверки тоже."""
         d = self.папка_прогона(имя='43090000005-1',
                                метка=('OWNER-Agent-16.txt', 'папка агента 16'))
         rows = guard.scan(requester='agent-14', consent_from='agent-16', now=self.now, min_age=0)
@@ -248,15 +288,15 @@ class НичьёПодМоимСтендом(Фундамент):
         self.assertFalse(d.exists())
 
     def test_точечно_виден_только_свой_прогон(self):
-        (self.root / 'OWNER.txt').write_text('provisioned by agent 11', encoding='utf-8')
         mine = self.папка_прогона(имя='43090000006-1')
         other = self.папка_прогона(имя='43090000007-1',
                                    метка=('OWNER-Agent-16.txt', 'папка агента 16'))
-        rows = guard.scan(only=str(mine), now=self.now)
+        rows = guard.scan(only=str(mine), now=self.now, claim_list=self.claim('43090000006-1'))
         self.assertEqual([str(mine)], [r['path'] for r in rows])
         self.assertTrue(rows[0]['delete'])
         self.assertTrue(mine.exists() and other.exists())
-        guard.apply_deletions(rows, self.root / 'journal.json', now=self.now)
+        guard.apply_deletions(rows, self.root / 'journal.json', now=self.now,
+                              claim_list=self.claim('43090000006-1'))
         self.assertFalse(mine.exists())
         self.assertTrue(other.exists())
 
@@ -268,10 +308,10 @@ class НичьёПодМоимСтендом(Фундамент):
         self.assertTrue((self.root / 'licensed-1cv8').exists())
 
     def test_клиент_точечно_удаляет_и_пишет_журнал(self):
-        (self.root / 'OWNER.txt').write_text('provisioned by agent 11', encoding='utf-8')
         mine = self.папка_прогона(имя='43090000008-1')
         код = guard.main(['--root', str(self.root), '--requester', 'agent-11', '--min-age', '0',
-                         '--only', str(mine), '--apply', '--journal', str(self.root / 'j.json')])
+                         '--only', str(mine), '--claim-list', self.claim('43090000008-1'),
+                         '--apply', '--journal', str(self.root / 'j.json')])
         self.assertEqual(0, код)
         self.assertFalse(mine.exists())
         журнал = json.loads((self.root / 'j.json').read_text(encoding='utf-8'))
