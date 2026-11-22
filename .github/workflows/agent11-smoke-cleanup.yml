@@ -1,6 +1,19 @@
 name: SI-MCP — inspect and stop only our own smoke remnants (11)
 on:
   workflow_dispatch:
+    inputs:
+      mode:
+        description: 'report - только показать решения сторожа; clean-own - удалить свои просроченные папки прогонов'
+        required: true
+        default: 'report'
+      consent_from:
+        description: 'Имя владельца, чьё согласие получено (напр. agent-11). Без него чужое не удаляется никогда.'
+        required: false
+        default: ''
+      min_age_minutes:
+        description: 'Младше этого возраста папку не трогать (параллельный прогон может в ней жить)'
+        required: false
+        default: '90'
 permissions:
   contents: read
 concurrency:
@@ -11,6 +24,15 @@ jobs:
     runs-on: [self-hosted, Linux, X64, si1c]
     timeout-minutes: 4
     steps:
+      - name: 0. Код домика (нужен tools/cleanup_guard.py)
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: 1. Самопроверка сторожа уборки (правила владельца на 22.11.2026)
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m unittest discover -s tools -p 'test_cleanup_guard.py' 2>&1 | tail -3
       - name: Verify socket addresses and stop only exact own workspace processes; no GUI launch
         shell: bash
         run: |
@@ -77,6 +99,30 @@ jobs:
           with open(os.environ['GITHUB_ENV'],'a') as f:f.write('CLEANUP_REPORT='+str(out/'cleanup.json')+'\n')
           if remaining:raise SystemExit('Own processes remain; inspect without killing anything else')
           PY
+      - name: 2. Инвентарь и решение по каждой папке прогонов
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE="$HOME/si1c-team-tests"
+          test ! -L "$BASE" && test -O "$BASE"
+          echo "МЕСТО_ДО:"; df -h "$BASE" | tail -1; du -sh "$BASE/runs" 2>/dev/null || echo 'нет каталога runs'
+          ARGS=(--root "$BASE" --requester agent-11 --min-age "${{ github.event.inputs.min_age_minutes || '90' }}")
+          if [ -n "${{ github.event.inputs.consent_from }}" ]; then ARGS+=(--consent-from "${{ github.event.inputs.consent_from }}"); fi
+          if [ "${{ github.event.inputs.mode }}" = 'clean-own' ]; then
+            ARGS+=(--apply --journal "$BASE/runs/cleanup-journal-${{ github.run_id }}.json")
+          fi
+          python3 tools/cleanup_guard.py "${ARGS[@]}"
+          echo "МЕСТО_ПОСЛЕ:"; df -h "$BASE" | tail -1; du -sh "$BASE/runs" 2>/dev/null || true
+          echo 'Правило: чужое не трогаем; своё по метке OWNER и старше min-age удаляем; /opt/1cv8, /opt/1cedt, test-ib, toolcache, locks - никогда.'
+      - name: 3. Отчёт сторожа и журнал уборки
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE="$HOME/si1c-team-tests"
+          { [ -f "$BASE/runs/cleanup-journal-${{ github.run_id }}.json" ] \
+            && cp "$BASE/runs/cleanup-journal-${{ github.run_id }}.json" "$RUNNER_TEMP/cleanup-journal.json"; } || true
+          test ! -e "$RUNNER_TEMP/cleanup-journal.json" || echo "JOURNAL=$RUNNER_TEMP/cleanup-journal.json" >> "$GITHUB_ENV"
       - name: Preserve cleanup metadata only
         if: always() && env.CLEANUP_REPORT != ''
         uses: actions/upload-artifact@v4
