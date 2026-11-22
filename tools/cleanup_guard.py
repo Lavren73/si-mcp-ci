@@ -52,6 +52,14 @@ MIN_AGE_MINUTES = 90
 CLAIM_LIST = None   # файл заявленных «своих» прогонов, если задан
 CHECK_NESTED_HOLD = True   # заглядывать ли внутрь папки перед rmtree (#481)
 
+# Сколько записей дерева максимум просматриваем в поисках записки «не удалять».
+NESTED_HOLD_BUDGET = 20000
+
+# Разрешение удалять папку, дерево которой не обошли до конца: список путей
+# (файл построчно) или 'runs/<папка> [-разрешение]'. Точное разрешение на
+# конкретный путь, а не общий флаг «не досматриваем нигде»: находка #481.
+WHOLE_RUN_ALLOWLIST = None
+
 
 def claims():
     """Свои прогоны: строки вида runs/<число>[-<attempt>] или просто <число>."""
@@ -75,6 +83,41 @@ def claims():
 def claimed(path):
     """Заявлено ли это своим прогоном - по авторству прогона, а не по диску."""
     return pathlib.Path(path).name in claims()
+
+
+def allowlist_paths():
+    """Пути, для которых разрешено whole-run удаление при недообследованном дереве."""
+    if not WHOLE_RUN_ALLOWLIST:
+        return frozenset()
+    try:
+        text = pathlib.Path(WHOLE_RUN_ALLOWLIST).read_text(encoding='utf-8', errors='replace')
+    except OSError:
+        return frozenset()
+    out = set()
+    for line in text.splitlines():
+        line = line.split('#', 1)[0].strip().rstrip('/')
+        if not line:
+            continue
+        out.add(line)
+        # и форма «runs/<id>», и просто «<id>», и абсолютный путь - чтобы
+        # разрешение нельзя было потерять из-за способа записи
+        out.add(pathlib.PurePath(line).name)
+    return frozenset(out)
+
+
+def allowed_whole_run(path, root=None):
+    """Есть ли точное разрешение на эту папку (по имени или по относительному пути)."""
+    paths = allowlist_paths()
+    if not paths:
+        return False
+    cand = pathlib.Path(path)
+    if cand.name in paths:
+        return True
+    try:
+        rel = str(cand.resolve().relative_to(pathlib.Path(root or RUN_ROOT).resolve()))
+    except (OSError, ValueError):
+        rel = ''
+    return bool(rel) and (rel in paths or str(cand) in paths)
 
 
 def protected(path):
@@ -111,17 +154,23 @@ def held_by(directory):
     return None
 
 
-def nested_hold(directory, budget=20000):
-    """Запрет «не удалять» где-то внутри папки прогона, а не только в её корне.
+def nested_hold(directory, budget=None):
+    """(записка, обошли_ли_дерево_до_конца) - запрет «не удалять» ВНУТРИ папки.
 
     Записка в runs/<id>/retained/DO-NOT-CLEAN.md означает, что внутри лежат
     чужие или постоянные данные, а удаление всей папки - это rmtree. Обход
-    ограничен бюджетом записей и не идёт за симлинками. Если бюджет кончился,
-    а запрет не найден, решение не меняется: в папке прогона лежат рабочие
-    каталоги на сотни тысяч файлов, и отказ по лимиту навсегда запретил бы
-    self-cleanup собственного прогона. О сработавшем лимите печатается
-    предупреждение - оно видно в логе, но не притворяется находкой.
+    ограничен бюджетом записей и не идёт за симлинками.
+
+    Второе поле - ответ на находку #481 (независимое подтверждение): «не нашли»
+    и «не досмотрели» - разные факты, и смешивать их нельзя. Прежний вариант
+    «досрочно остановились -> просто предупреждаем и удаляем» позволял снести
+    real DO-NOT-CLEAN.md, лежащий за лимитом. Теперь это scan-incomplete: по
+    умолчанию KEEP, а удаление такого дерева возможно только по точному
+    разрешению на конкретный путь (см. allowed_whole_run).
     """
+    # задерживаем чтение бюджета до вызова: тесты (и домик) подменяют
+    # guard.NESTED_HOLD_BUDGET уже после определения функции
+    budget = NESTED_HOLD_BUDGET if budget is None else budget
     try:
         it = os.walk(str(directory), followlinks=False)
         seen = 0
@@ -130,10 +179,11 @@ def nested_hold(directory, budget=20000):
                 seen += 1
                 if seen > budget:
                     sys.stderr.write('warning: nested-hold scan of %s stopped after '
-                                     '%d files, no hold found\n' % (directory, budget))
-                    return None
+                                     '%d files, no hold found (scan-incomplete)\n'
+                                     % (directory, budget))
+                    return None, False
                 if HELD.search(fn):
-                    return fn
+                    return fn, True
             for fn in sorted(filenames):
                 if not fn.lower().endswith(('.txt', '.md')):
                     continue
@@ -142,12 +192,13 @@ def nested_hold(directory, budget=20000):
                     if fp.stat().st_size > 4096:
                         continue
                     if HELD.search(fp.read_text(encoding='utf-8', errors='replace')):
-                        return fn
+                        return fn, True
                 except OSError:
                     continue
     except OSError:
-        return None
-    return None
+        # дерево не прочитать вообще - это тоже «не проверено», а не «чисто»
+        return None, False
+    return None, True
 
 
 def stand_owner(root=None):
@@ -234,11 +285,13 @@ def inside_run_root(path, root=None):
 
 
 def decide(path, requester=SELF, consent_from=None, now=None, min_age=MIN_AGE_MINUTES,
-           root=None, claim_list=None):
+           root=None, claim_list=None, allow_list=None):
     """(можно_ли, причина) для одной папки. Причина - всегда проверяемый факт."""
-    global CLAIM_LIST
+    global CLAIM_LIST, WHOLE_RUN_ALLOWLIST
     if claim_list is not None:
         CLAIM_LIST = claim_list
+    if allow_list is not None:
+        WHOLE_RUN_ALLOWLIST = allow_list
     claimed_own = False
     raw = str(path)
     if protected(raw):
@@ -259,9 +312,14 @@ def decide(path, requester=SELF, consent_from=None, now=None, min_age=MIN_AGE_MI
     if записка:
         return False, 'held-by-' + записка
     if CHECK_NESTED_HOLD:
-        вложенная = nested_hold(directory)
+        вложенная, обошли = nested_hold(directory)
         if вложенная:
             return False, 'nested-held-by-' + вложенная
+        if not обошли:
+            # «не проверено» не равно «чисто»: см. docstring nested_hold
+            if allowed_whole_run(raw, root=root):
+                return True, 'own-scan-incomplete-allowed'
+            return False, 'nested-scan-incomplete'
     try:
         stat = directory.stat()
     except OSError:
@@ -294,7 +352,7 @@ def decide(path, requester=SELF, consent_from=None, now=None, min_age=MIN_AGE_MI
 
 
 def scan(root=None, requester=SELF, consent_from=None, now=None, min_age=MIN_AGE_MINUTES,
-         only=None, claim_list=None):
+         only=None, claim_list=None, allow_list=None):
     """Все пути решаются относительно того же корня, что и передан в --root."""
     """Отчёт по всем папкам прогонов: что удалим, что нет и почему.
 
@@ -309,7 +367,8 @@ def scan(root=None, requester=SELF, consent_from=None, now=None, min_age=MIN_AGE
         if not target.exists():
             return rows
         allowed, reason = decide(str(target), requester=requester, consent_from=consent_from,
-                                 now=now, min_age=min_age, root=root, claim_list=claim_list)
+                                 now=now, min_age=min_age, root=root, claim_list=claim_list,
+                                 allow_list=allow_list)
         return [{'path': str(target), 'delete': allowed, 'reason': reason,
                  'owner': marker_owner(target) or 'unmarked'}]
     if not base.is_dir():
@@ -318,14 +377,16 @@ def scan(root=None, requester=SELF, consent_from=None, now=None, min_age=MIN_AGE
         if not entry.is_dir() or entry.is_symlink():
             continue
         allowed, reason = decide(str(entry), requester=requester, consent_from=consent_from,
-                                 now=now, min_age=min_age, root=root, claim_list=claim_list)
+                                 now=now, min_age=min_age, root=root, claim_list=claim_list,
+                                 allow_list=allow_list)
         rows.append({'path': str(entry), 'delete': allowed, 'reason': reason,
                      'owner': marker_owner(entry) or 'unmarked'})
     return rows
 
 
 def apply_deletions(rows, journal, requester=SELF, consent_from=None,
-                    now=None, min_age=MIN_AGE_MINUTES, root=None, claim_list=None):
+                    now=None, min_age=MIN_AGE_MINUTES, root=None, claim_list=None,
+                    allow_list=None):
     """Удаляет только то, что разрешил decide; перед unlink - повторная проверка.
 
     Перепроверка обязана идти с теми же requester и согласием, что и скан:
@@ -340,7 +401,8 @@ def apply_deletions(rows, journal, requester=SELF, consent_from=None,
             continue
         allowed, reason = decide(path, requester=requester, consent_from=consent_from,
                                   now=now, min_age=min_age, root=root,
-                                  claim_list=claim_list)   # диск мог измениться
+                                  claim_list=claim_list,   # диск мог измениться
+                                  allow_list=allow_list)
         if not allowed:
             refused.append({'path': path, 'reason': 'changed-to-' + reason})
             continue
@@ -349,6 +411,7 @@ def apply_deletions(rows, journal, requester=SELF, consent_from=None,
     pathlib.Path(journal).write_text(json.dumps(
         {'removed': removed, 'refused': refused, 'protected_roots': list(PROTECTED_ROOTS),
          'consent_claimed_by': consent_from,
+         'whole_run_allowlist': WHOLE_RUN_ALLOWLIST,
          'consent_note': 'consent-from is the caller assertion, not an authentication'},
         indent=2), encoding='utf-8')
     return removed, refused
@@ -373,10 +436,15 @@ def main(argv=None):
                         help='файл со списком своих прогонов: убирает их без метки, '
                              'потому что на si1c у всех один uid; чужое по метке этот '
                              'список своим не делает')
+    parser.add_argument('--allow-list', default='',
+                        help='файл с точными путями (runs/<папка> или <id>), для которых '
+                             'разрешено whole-run удаление, если дерево не обошли до конца; '
+                             'без него недообследованная папка - это KEEP scan-incomplete')
     args = parser.parse_args(argv)
     rows = scan(args.root, requester=args.requester,
                  consent_from=(args.consent_from or None), min_age=args.min_age,
-                 only=(args.only or None), claim_list=(args.claim_list or None))
+                 only=(args.only or None), claim_list=(args.claim_list or None),
+                 allow_list=(args.allow_list or None))
     verb = 'DELETE' if args.apply else 'WOULD '
     for row in rows:
         print('%s %s [%s]' % (verb if row['delete'] else 'KEEP   ',
@@ -387,7 +455,8 @@ def main(argv=None):
         removed, refused = apply_deletions(rows, journal, requester=args.requester,
                                             consent_from=(args.consent_from or None),
                                             min_age=args.min_age, root=args.root,
-                                            claim_list=(args.claim_list or None))
+                                            claim_list=(args.claim_list or None),
+                                            allow_list=(args.allow_list or None))
         print('REMOVED=%d REFUSED=%d JOURNAL=%s' % (len(removed), len(refused), journal))
     print('CANDIDATES=%d ALLOWED=%d' % (len(rows), sum(1 for r in rows if r['delete'])))
     return 0

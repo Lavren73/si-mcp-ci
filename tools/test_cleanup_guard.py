@@ -26,6 +26,7 @@ class Фундамент(unittest.TestCase):
         (self.root / 'licensed-1cv8').mkdir()
         self._root, self._protected = guard.RUN_ROOT, guard.PROTECTED_ROOTS
         self._claims = guard.CLAIM_LIST
+        self._allow = guard.WHOLE_RUN_ALLOWLIST
         guard.RUN_ROOT = str(self.root)
         guard.PROTECTED_ROOTS = (str(self.root / 'licensed-1cv8'),)
         self.now = time.time()
@@ -33,6 +34,7 @@ class Фундамент(unittest.TestCase):
     def tearDown(self):
         guard.RUN_ROOT, guard.PROTECTED_ROOTS = self._root, self._protected
         guard.CLAIM_LIST = self._claims
+        guard.WHOLE_RUN_ALLOWLIST = self._allow
         self.tmp.cleanup()
 
     def папка_прогона(self, имя='43084355230-1', метка=None, возраст_минут=600):
@@ -338,6 +340,109 @@ class СвоёПоСпискуПрогонов(Фундамент):
         self.assertEqual(0, код)
 
 
+class НедообследованноеДерево(Фундамент):
+    """«Не нашли» и «не досмотрели» - разные факты (уточнение к #481).
+
+    Первая версия правки печатала warning и разрешала rmtree - независимая
+    проба на main 6dd8979 показала, что так real DO-NOT-CLEAN.md за лимитом
+    уходил в (True, own). Теперь по умолчанию это KEEP scan-incomplete, а
+    удаление большого одноразового прогона - только по точному разрешению на
+    конкретный путь.
+    """
+
+    def дерево_с_запретом_за_лимитом(self, имя, запрет=True):
+        d = self.папка_прогона(имя=имя)
+        d.joinpath('OWNER-Agent-11.txt').write_text('папка агента 11', encoding='utf-8')
+        for i in range(6):
+            sub = d / ('dir%02d' % i)
+            sub.mkdir()
+            for j in range(4):
+                (sub / ('f%d.bin' % j)).write_text('x', encoding='utf-8')
+        if запрет:
+            late = d / 'zz-поздний'      # обход идёт по алфавиту: этот каталог - последним
+            late.mkdir()
+            (late / 'DO-NOT-CLEAN.md').write_text('do not clean', encoding='utf-8')
+        os.utime(d, (self.now - 600 * 60, self.now - 600 * 60))
+        return d
+
+    def allow(self, *строки):
+        f = self.root / 'allow.txt'
+        f.write_text('\n'.join(строки) + '\n', encoding='utf-8')
+        return str(f)
+
+    def test_недосмотр_без_разрешения_это_KEEP(self):
+        d = self.дерево_с_запретом_за_лимитом('43090000031-1', запрет=False)
+        сохранённый = guard.NESTED_HOLD_BUDGET
+        try:
+            guard.NESTED_HOLD_BUDGET = 3          # реальному вложенному HOLD не даём кончаться
+            можно, причина = guard.decide(str(d), requester='agent-11', now=self.now)
+            self.assertFalse(можно, причина)
+            self.assertEqual('nested-scan-incomplete', причина)
+        finally:
+            guard.NESTED_HOLD_BUDGET = сохранённый
+
+    def test_за_лимитом_бывает_и_настоящий_hold(self):
+        d = self.дерево_с_запретом_за_лимитом('43090000032-1')
+        сохранённый = guard.NESTED_HOLD_BUDGET
+        try:
+            guard.NESTED_HOLD_BUDGET = 3
+            можно, причина = guard.decide(str(d), requester='agent-11', now=self.now)
+            self.assertFalse(можно, причина)
+        finally:
+            guard.NESTED_HOLD_BUDGET = сохранённый
+
+    def test_точное_разрешение_по_id_открывает_удаление(self):
+        d = self.дерево_с_запретом_за_лимитом('43090000033-1', запрет=False)
+        сохранённый = guard.NESTED_HOLD_BUDGET
+        try:
+            guard.NESTED_HOLD_BUDGET = 3
+            можно, причина = guard.decide(str(d), requester='agent-11', now=self.now,
+                                          allow_list=self.allow('runs/43090000033-1'))
+            self.assertTrue(можно, причина)
+            self.assertEqual('own-scan-incomplete-allowed', причина)
+        finally:
+            guard.NESTED_HOLD_BUDGET = сохранённый
+
+    def test_разрешение_не_распространяется_на_соседей(self):
+        d = self.дерево_с_запретом_за_лимитом('43090000034-1', запрет=False)
+        сохранённый = guard.NESTED_HOLD_BUDGET
+        try:
+            guard.NESTED_HOLD_BUDGET = 3
+            можно, причина = guard.decide(str(d), requester='agent-11', now=self.now,
+                                          allow_list=self.allow('43090000099-1'))
+            self.assertFalse(можно, причина)
+            self.assertEqual('nested-scan-incomplete', причина)
+        finally:
+            guard.NESTED_HOLD_BUDGET = сохранённый
+
+    def test_разрешение_не_обходит_найденный_hold(self):
+        """Точное разрешение снимает «недосмотр», но не реальный запрет внутри."""
+        d = self.дерево_с_запретом_за_лимитом('43090000035-1')
+        сохранённый = guard.NESTED_HOLD_BUDGET
+        try:
+            guard.NESTED_HOLD_BUDGET = 100000     # дерево обошли целиком и нашли запрет
+            можно, причина = guard.decide(str(d), requester='agent-11', now=self.now,
+                                          allow_list=self.allow('43090000035-1'))
+            self.assertFalse(можно, причина)
+            self.assertEqual('nested-held-by-DO-NOT-CLEAN.md', причина)
+        finally:
+            guard.NESTED_HOLD_BUDGET = сохранённый
+
+    def test_журнал_помнит_какое_разрешение_применяли(self):
+        d = self.дерево_с_запретом_за_лимитом('43090000036-1', запрет=False)
+        сохранённый = guard.NESTED_HOLD_BUDGET
+        try:
+            guard.NESTED_HOLD_BUDGET = 3
+            al = self.allow('43090000036-1')
+            rows = guard.scan(now=self.now, allow_list=al)
+            self.assertTrue(rows[0]['delete'], rows[0])
+            guard.apply_deletions(rows, self.root / 'j.json', now=self.now, allow_list=al)
+            журнал = json.loads((self.root / 'j.json').read_text(encoding='utf-8'))
+            self.assertEqual(al, журнал['whole_run_allowlist'])
+        finally:
+            guard.NESTED_HOLD_BUDGET = сохранённый
+
+
 class РазныеВладельцыИВложенныйЗапрет(Фундамент):
     """Находки координатора из #481, воспроизведённые на main 50004ea (blob 21ffe450).
 
@@ -415,11 +520,13 @@ class РазныеВладельцыИВложенныйЗапрет(Фунда�
         try:
             self.assertTrue(guard.decide(str(self.aged(d)), requester='agent-11', now=self.now)[0])
             # лимит исчерпан и ничего не найдено -> решение остаётся прежним
-            self.assertIsNone(guard.nested_hold(d, budget=1))
+            hold, обошли = guard.nested_hold(d, budget=1)
+            self.assertIsNone(hold)
+            self.assertFalse(обошли)     # «не досмотрели» теперь отличается от «чисто»
             # а найденный глубоко запрет отказывает и с маленьким бюджетом
             сам_проверщик = guard.nested_hold
             try:
-                guard.nested_hold = lambda path, budget=20000: 'DO-NOT-CLEAN.md'
+                guard.nested_hold = lambda path, budget=None: ('DO-NOT-CLEAN.md', True)
                 можно, причина = guard.decide(str(d), requester='agent-11', now=self.now)
                 self.assertFalse(можно, причина)
                 self.assertEqual('nested-held-by-DO-NOT-CLEAN.md', причина)
