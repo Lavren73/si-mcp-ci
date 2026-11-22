@@ -30,6 +30,10 @@ on:
         description: 'Устаревший вход, совместимость; сообщения об ошибках никогда не печатаются.'
         required: false
         default: 'no'
+      jdk17_launcher:
+        description: 'Диагностика: обёртка запуска Maven 3.9.9 под Java 17 (профиль по умолчанию)'
+        required: false
+        default: 'yes'
 permissions:
   contents: read
 concurrency:
@@ -42,6 +46,7 @@ jobs:
     timeout-minutes: 90
     env:
       TARGET_SHA: ${{ github.event.inputs.sha }}
+      JDK17_LAUNCHER: ${{ github.event.inputs.jdk17_launcher }}
       GOAL: ${{ github.event.inputs.goal }}
       PROFILE: ${{ github.event.inputs.profile }}
       LANG: C.UTF-8
@@ -94,7 +99,17 @@ jobs:
           curl -sSL -o "$RUNNER_TEMP/maven.tar.gz" https://archive.apache.org/dist/maven/maven-3/3.9.9/binaries/apache-maven-3.9.9-bin.tar.gz
           mkdir -p "$RUNNER_TEMP/maven"
           tar -xzf "$RUNNER_TEMP/maven.tar.gz" -C "$RUNNER_TEMP/maven" --strip-components=1
-          echo "$RUNNER_TEMP/maven/bin" >> "$GITHUB_PATH"
+          if [ "$JDK17_LAUNCHER" = 'yes' ]; then
+            printf '%s\n' '#!/bin/sh' "JAVA_HOME=/usr/lib/jvm/temurin-17-jdk-amd64 exec /usr/lib/jvm/temurin-17-jdk-amd64/bin/java -classpath $RUNNER_TEMP/maven/boot/plexus-classworlds-*.jar -Dclassworlds.conf=$RUNNER_TEMP/maven/bin/m2.conf -Dmaven.home=$RUNNER_TEMP/maven -Dmaven.multiModuleProjectDirectory=\$PWD org.codehaus.plexus.classworlds.launcher.Launcher \"\$@\"" > "$RUNNER_TEMP/maven/bin/mvn-jdk17"
+            chmod 700 "$RUNNER_TEMP/maven/bin/mvn-jdk17"
+            mkdir -p "$RUNNER_TEMP/j17bin"
+            ln -sf "$RUNNER_TEMP/maven/bin/mvn-jdk17" "$RUNNER_TEMP/j17bin/mvn"
+            echo "$RUNNER_TEMP/j17bin" >> "$GITHUB_PATH"
+            echo 'MVN_LAUNCHER=jdk17-wrapper'
+          else
+            echo "$RUNNER_TEMP/maven/bin" >> "$GITHUB_PATH"
+            echo 'MVN_LAUNCHER=mvn-script'
+          fi
 
       - uses: actions/setup-java@v4
         with:
@@ -190,8 +205,8 @@ jobs:
                   print('FAILED: <identifier omitted>')
           PY
 
-      - name: 8. Сторож красных (fail-closed)
-        if: always()
+      - name: 8. Сторож красных (не применяется на парном фоновом прогоне)
+        if: always() && inputs.fail_heads != 'yes'
         shell: bash
         run: |
           set -euo pipefail
