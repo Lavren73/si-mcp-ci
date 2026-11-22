@@ -138,17 +138,31 @@ jobs:
           if [ "${#GOAL_ARGS[@]}" -eq 0 ]; then
             echo 'GOAL_REJECTED=empty'; exit 2
           fi
+          # Разрешён только обычный вызов: биндинги целей без опций, профиль — отдельным
+          # входом. Иначе красное можно сделать зелёным незаметно: -Dmaven.test.failure.ignore=true,
+          # -DskipTests, -pl (часть реактора), -o/-U (другие артефакты), -s/-gs (свой settings).
+          GOAL_HINT='GOAL_REJECTED=options and properties are not allowed in goal; pass profile via the profile input'
           for arg in "${GOAL_ARGS[@]}"; do
             case "$arg" in
-              -ff|--fail-fast|--fail-fast=*|-fn|--fail-never|--fail-never=*)
-                echo 'GOAL_REJECTED=conflicting Maven reactor failure policy'; exit 2 ;;
+              -*)
+                echo "$GOAL_HINT"; exit 2 ;;
             esac
+            if [[ ! "$arg" =~ ^[A-Za-z][A-Za-z0-9_.:-]*$ ]]; then
+              echo 'GOAL_REJECTED=only lifecycle goals and plugin:goal are allowed'; exit 2
+            fi
           done
           printf 'команда: mvn -B -ntp -fae -Dstyle.color=never'
           printf ' %q' "${PROFILE_ARGS[@]}" "${GOAL_ARGS[@]}"
           printf '\n'
           xvfb-run --auto-servernum mvn -B -ntp -fae -Dstyle.color=never "${PROFILE_ARGS[@]}" "${GOAL_ARGS[@]}" > "$RUNNER_TEMP/mvn.log" 2>&1
           code=$?
+          # Признаки того, что тесты фактически не работали: тогда красное молча стало бы зелёным.
+          if grep -qE 'Tests are skipped|maven\.test\.skip|\[INFO\] Skipping .*(tests|Surefire)' "$RUNNER_TEMP/mvn.log"; then
+            echo 'MVN_REJECTED=build reports skipped tests'; code=95
+          fi
+          if ! find server -name 'TEST-*.xml' -path '*surefire-reports*' -print -quit 2>/dev/null | grep -q .; then
+            echo 'MVN_REJECTED=no surefire reports produced'; code=96
+          fi
           echo "MVN_EXIT=$code"
           # Maven log, failures, paths, and stack traces may contain private data.
           # They stay local on the ephemeral runner and are never printed or uploaded.
