@@ -158,10 +158,17 @@ jobs:
           code=$?
           # Признаки того, что тесты фактически не работали: тогда красное молча стало бы зелёным.
           if grep -qE 'Tests are skipped|maven\.test\.skip|\[INFO\] Skipping .*(tests|Surefire)' "$RUNNER_TEMP/mvn.log"; then
-            echo 'MVN_REJECTED=build reports skipped tests'; code=95
+            echo 'MVN_REJECTED=build reports skipped tests'
+            [ "$code" -eq 0 ] && code=95
           fi
-          if ! find server -name 'TEST-*.xml' -path '*surefire-reports*' -print -quit 2>/dev/null | grep -q .; then
-            echo 'MVN_REJECTED=no surefire reports produced'; code=96
+          # Шаг выполняется в runner.temp/src/server, поэтому ищем и там, и от корня src.
+          # Если отчёты есть, но exit code не 1 (аварийный), сохраняем исходный код — он информативнее.
+          if ! find . "$RUNNER_TEMP/src/server" -name 'TEST-*.xml' -path '*surefire-reports*' -print -quit 2>/dev/null | grep -q .; then
+            echo 'MVN_REJECTED=no surefire reports produced'
+            code=96
+          else
+            echo "MVN_REPORTS=present original_exit=$code"
+            [ "$code" -eq 0 ] && echo 'MVN_NOTE=exit0 with reports'
           fi
           echo "MVN_EXIT=$code"
           # Maven log, failures, paths, and stack traces may contain private data.
