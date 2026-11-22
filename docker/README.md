@@ -67,3 +67,24 @@ docker run -d --name hermes --restart unless-stopped \
 xvfb-run --auto-servernum mvn -B -ntp -Dstyle.color=never verify
 # 1C / YAxUnit / Vanessa run inside 1C:Enterprise via the mounted platform + license.
 ```
+**The license must be under the HOME of the process that runs 1cv8.** 1cv8 reads
+`$HOME/.1cv8/1C/1cv8/conf/`, and the agent's HOME is `/opt/data/home`, not `/opt/data`.
+Observed 2026-11-22 (agent №2, Linux container): with the `.lic` only in `/opt/data/.1cv8/…`,
+`1cv8c CREATEINFOBASE` hung in `poll()` (socket-fd, 9 threads) with zero error output; the
+working `si1c-ci` runner on the same host keeps the identical `.lic` at
+`/home/runner/.1cv8/…` (= its HOME). Make the conf dir visible in the agent HOME:
+```bash
+docker exec -u hermes hermes mkdir -p /opt/data/home/.1cv8/1C/1cv8
+docker exec -u hermes hermes ln -s /opt/data/.1cv8/1C/1cv8/conf /opt/data/home/.1cv8/1C/1cv8/conf
+```
+(Hang cause = license search — logic, fix verification in progress by agent №2.)
+
+## Known pitfalls
+- **EDT needs the bundled Axiom JDK 25, never the system JDK 17.** Launching `1cedt` with
+  `JAVA_HOME=/opt/jdk-17` hangs the native launcher: it never spawns a JVM
+  (`eclipse_native_launcher.log`: `findJavaComponentFuncPtr returned empty string`).
+  Set `JAVA_HOME`/`PATH` to `/opt/tools/si-edt/components/axiom-jdk-full-25.0.4+5-x86_64`
+  (the `1cedt` launcher in `/opt/tools/bin` already does this). Verified 2026-11-22
+  20:34–20:39 UTC by agent №2: SIGTERM stop → restart with the bundled JDK →
+  «SI-EDT endpoint came up automatically on port 12260», `/health` → `phase:ready`,
+  disk `mcpAuthToken` adopted as-is (`adoptStoredToken`), bearer 200 / no-token 401.
