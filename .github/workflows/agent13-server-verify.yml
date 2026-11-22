@@ -161,14 +161,17 @@ jobs:
             echo 'MVN_REJECTED=build reports skipped tests'
             [ "$code" -eq 0 ] && code=95
           fi
-          # Шаг выполняется в runner.temp/src/server, поэтому ищем и там, и от корня src.
-          # Если отчёты есть, но exit code не 1 (аварийный), сохраняем исходный код — он информативнее.
-          if ! find . "$RUNNER_TEMP/src/server" -name 'TEST-*.xml' -path '*surefire-reports*' -print -quit 2>/dev/null | grep -q .; then
-            echo 'MVN_REJECTED=no surefire reports produced'
-            code=96
-          else
+          # Диагностика без содержимого лога (репозиторий публичный): только счётчики.
+          echo "MVN_LOG_BYTES=$(wc -c < "$RUNNER_TEMP/mvn.log" 2>/dev/null || echo 0)"
+          echo "MVN_LOG_LINES_MID=$(grep -c . "$RUNNER_TEMP/mvn.log" 2>/dev/null || echo 0)"
+          # Шаг идёт в runner.temp/src/server, поэтому смотрим и от текущего каталога, и от корня src.
+          # Отчёты считаем фактом: если их нет — тесты не запускались, красное стало бы зелёным.
+          if find . "$RUNNER_TEMP/src/server" -name 'TEST-*.xml' -path '*surefire-reports*' -print -quit 2>/dev/null | grep -q .; then
             echo "MVN_REPORTS=present original_exit=$code"
             [ "$code" -eq 0 ] && echo 'MVN_NOTE=exit0 with reports'
+          else
+            echo 'MVN_REJECTED=no surefire reports produced'
+            [ "$code" -eq 0 ] && code=96
           fi
           echo "MVN_EXIT=$code"
           # Maven log, failures, paths, and stack traces may contain private data.
