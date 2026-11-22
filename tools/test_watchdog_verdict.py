@@ -25,3 +25,36 @@ class WatchdogVerdictTest(unittest.TestCase):
         self.assertFalse(classify(2,'  - A.old')[0])
         self.assertFalse(classify(2,'Ушли из списка (1)\n  - A.old\nСписок красных совпал с эталоном.')[0])
 if __name__=='__main__':unittest.main()
+
+
+class RawOutputOnFailure(unittest.TestCase):
+    """При не-«same» обёрка обязана показать сырой stdout сторожа (урок #491)."""
+
+    def _run(self, code, out, err=''):
+        import subprocess as sp
+        real = sp.run
+        class P:
+            returncode, stdout, stderr = code, out, err
+        import watchdog_verdict as wv
+        wv.subprocess.run = lambda *a, **k: P()
+        try:
+            import io, contextlib
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                import sys as _s
+                _s.argv = ['watchdog_verdict.py', 'x', 'y', 'z']
+                wv.main()
+            return buf.getvalue()
+        finally:
+            wv.subprocess.run = real
+
+    def test_verdict_new_prints_raw_stdout(self):
+        out = 'НОВЫЕ падения (1)\n  + A.t | msg detail\n'
+        printed = self._run(1, out)
+        self.assertIn('--- сторож: сырой stdout ---', printed)
+        self.assertIn('+ A.t | msg detail', printed)
+
+    def test_same_verdict_stays_quiet(self):
+        out = 'Список красных совпал с эталоном.\n'
+        printed = self._run(0, out)
+        self.assertNotIn('сырой stdout', printed)

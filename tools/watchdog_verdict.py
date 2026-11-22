@@ -51,6 +51,16 @@ def main():
     for name in new: print('WATCHDOG_NEW='+name)
     print('WATCHDOG_REMOVED_COUNT='+str(len(removed)))
     for name in removed: print('WATCHDOG_REMOVED='+name)
+    if not ok:
+        # при не-«same» печатаем сырой вывод сторожа: в нём идентичность
+        # «имя | сообщение» целиком. Без этого переснять строки эталона
+        # не может никто — сообщение есть только в stdout вызова (урок #491:
+        # №14 перенёс сообщения руками из-за недоступности лога в песочнице).
+        print('--- сторож: сырой stdout ---')
+        print(proc.stdout.rstrip())
+        if proc.stderr.strip():
+            print('--- сторож: stderr ---')
+            print(proc.stderr.rstrip())
     return 0 if ok else 1
 
 if __name__ == '__main__':
