@@ -62,8 +62,8 @@ def claims():
         return frozenset()
     out = set()
     for line in text.splitlines():
-        line = line.strip().rstrip('/')
-        if not line or line.startswith('#'):
+        line = line.split('#', 1)[0].strip().rstrip('/')   # хвостовые пояснения допустимы
+        if not line:
             continue
         tail = line.split('/')[-1]
         if re.fullmatch(r'\d+(?:-\d+)?', tail):

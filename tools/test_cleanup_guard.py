@@ -262,6 +262,21 @@ class СвоёПоСпискуПрогонов(Фундамент):
         self.assertFalse(можно)
         self.assertEqual('licensed-or-shared', причина)
 
+    def test_пояснение_в_строке_списка_не_ломает_разбор(self):
+        """Файл перечитывается глазами, поэтому строка имеет вид
+        ``runs/<id>-1  # почему моё`` - хвост после # обязан отрезаться."""
+        f = self.root / 'my-runs.txt'
+        f.write_text('runs/43200301928-1  # agent11-release-followup.yml  1978.1 MiB\n'
+                     '# комментарий целиком\n', encoding='utf-8')
+        сохранённый = guard.CLAIM_LIST
+        try:
+            guard.CLAIM_LIST = str(f)
+            self.assertEqual(frozenset({'43200301928-1'}), guard.claims())
+        finally:
+            guard.CLAIM_LIST = сохранённый
+        d = self.папка_прогона(имя='43200301928-1')
+        можно, причина = guard.decide(str(d), now=self.now, claim_list=str(f))
+        self.assertTrue(можно, причина)
     def test_строки_не_по_форме_в_списке_игнорируются(self):
         """Список принимает только имена папок прогонов: «runs/..» туда не пройдёт."""
         f = self.root / 'my-runs.txt'
