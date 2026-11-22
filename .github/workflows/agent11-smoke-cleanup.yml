@@ -22,7 +22,7 @@ concurrency:
 jobs:
   cleanup:
     runs-on: [self-hosted, Linux, X64, si1c]
-    timeout-minutes: 4
+    timeout-minutes: 15
     steps:
       - name: 0. Код домика (нужен tools/cleanup_guard.py)
         uses: actions/checkout@v4
