@@ -15,7 +15,7 @@ on:
         required: true
         default: '7f001a3a28306c77102743a2879c9542491f52e8'
       goal:
-        description: 'Цель Maven (по умолчанию verify)'
+        description: 'Цель Maven (по умолчанию verify); -fae обязателен'
         required: true
         default: 'verify'
       profile:
@@ -123,8 +123,14 @@ jobs:
           # и Maven ответил бы "No goals have been specified" (находка прогона 44028718674).
           PROFILE_ARG=""
           if [ -n "$PROFILE" ]; then PROFILE_ARG="-P$PROFILE"; fi
-          echo "команда: mvn -B -ntp -Dstyle.color=never $PROFILE_ARG $GOAL"
-          xvfb-run --auto-servernum mvn -B -ntp -Dstyle.color=never $PROFILE_ARG $GOAL > "$RUNNER_TEMP/mvn.log" 2>&1
+          # Все модули reactor должны получить шанс выполниться даже на известном
+          # красном фоне. Запретить конфликтующие флаги в goal (fail-never скрыл бы отказ).
+          case " $GOAL " in
+            *" -ff "*|*" --fail-fast "*|*" -fn "*|*" --fail-never "*)
+              echo 'GOAL_REJECTED=conflicting Maven reactor failure policy'; exit 2 ;;
+          esac
+          echo "команда: mvn -B -ntp -fae -Dstyle.color=never $PROFILE_ARG $GOAL"
+          xvfb-run --auto-servernum mvn -B -ntp -fae -Dstyle.color=never $PROFILE_ARG $GOAL > "$RUNNER_TEMP/mvn.log" 2>&1
           code=$?
           echo "MVN_EXIT=$code"
           # Maven log, failures, paths, and stack traces may contain private data.
