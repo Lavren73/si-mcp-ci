@@ -28,7 +28,7 @@ RUN ln -sf /opt/hermes/tools/node-*/bin/pnpm /usr/local/bin/pnpm && \
 # --- 1C:EDT / SWT / headless OSGi test runtime (Debian 13 trixie, t64 libs) ---
 # xvfb-run wraps `mvn verify` (Tycho surefire needs a display); GTK3+WebKit run the EDT IDE.
 RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-      xvfb libgtk-3-0t64 libxtst6 libxi6 libxrender1 libxext6 libx11-6 libxcb1 \
+      xvfb xauth libgtk-3-0t64 libxtst6 libxi6 libxrender1 libxext6 libx11-6 libxcb1 \
       libwebkit2gtk-4.1-0 libgl1 libegl1 libgbm1 libsecret-1-0 libasound2t64 libnss3 \
       fontconfig fonts-dejavu-core libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 \
       libxrandr2 libpango-1.0-0 libcairo2 libdrm2 libatk1.0-0t64 libatk-bridge2.0-0t64 \
