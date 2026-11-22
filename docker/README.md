@@ -50,6 +50,12 @@ A 1C software license is bound to computer parameters. Containers on the **same 
 share the hardware, so the copied license is often accepted; if 1C reports a license error,
 re-activate it (enter the pin code via the 1C licensing dialog / `1cv8` license acquisition, or
 web activation at `https://portal.1c.ru`). The license file itself is private — keep it out of git.
+**Confirmed 2026-11-22 20:53–20:55 UTC (agent №2, LIC techlog):** the copied license IS accepted
+in the `hermes` container on the same host — `getLicense res=seize` in 0.35 s (developer license,
+«Available in current computer configuration»); the hardware-bound hypothesis was disproven by
+measurement. Note: the `.lic` may be **renamed to a new `<timestamp>.lic`** during acquisition
+(observed 20:48:34 UTC: `20261110195555.lic` → `20261122204834.lic`, same 5166 bytes; whether the
+platform or the session renamed it is unverified) — reference the conf dir, not a fixed filename.
 
 ## Run
 ```bash
@@ -77,7 +83,9 @@ working `si1c-ci` runner on the same host keeps the identical `.lic` at
 docker exec -u hermes hermes mkdir -p /opt/data/home/.1cv8/1C/1cv8
 docker exec -u hermes hermes ln -s /opt/data/.1cv8/1C/1cv8/conf /opt/data/home/.1cv8/1C/1cv8/conf
 ```
-(Hang cause = license search — logic, fix verification in progress by agent №2.)
+Fix **CONFIRMED** 2026-11-22 20:53–20:55 UTC by agent №2 via LIC techlog (`getLicense res=seize`
+in 0.35 s from the symlinked path). The remaining `CREATEINFOBASE` hang is a GUI modal dialog,
+not the license — see pitfalls below.
 
 ## Known pitfalls
 - **EDT needs the bundled Axiom JDK 25, never the system JDK 17.** Launching `1cedt` with
@@ -88,3 +96,16 @@ docker exec -u hermes hermes ln -s /opt/data/.1cv8/1C/1cv8/conf /opt/data/home/.
   20:34–20:39 UTC by agent №2: SIGTERM stop → restart with the bundled JDK →
   «SI-EDT endpoint came up automatically on port 12260», `/health` → `phase:ready`,
   disk `mcpAuthToken` adopted as-is (`adoptStoredToken`), bearer 200 / no-token 401.
+- **`1cv8c` needs an X display even in console mode.** Without `DISPLAY` it exits instantly
+  rc=255: «*** Unable to initialize GTK+ or connect to the windowing system. Is DISPLAY set
+  properly?» Run it under `Xvfb :99` with `XAUTHORITY` set (and `LD_LIBRARY_PATH` pointing at
+  the 1C libs). Measured 2026-11-22 20:47–20:56 UTC by agent №2.
+- **`CREATEINFOBASE` can block on modal GUI dialogs (observed, open).** With the license fixed
+  and a display present, `1cv8c CREATEINFOBASE File=…` still hung (killed by timeout, `/Out`
+  0 bytes, no infobase dir). A screenshot of `:99` during the hang shows the modal
+  «1C:Enterprise startup» infobase-list window plus a «1C:Workmate is not activated» info popup;
+  the process sits in `do_poll` on X11 sockets with no techlog events after LIC — it waits for
+  user input. `/DisableStartupMessages` does NOT suppress these dialogs. Workaround under
+  investigation by agent №2's tuning session: close the dialogs via X automation (e.g.
+  `xdotool`, «Don't show again» on the Workmate popup) during the attempt, or find a headless
+  key. Do not multiply parallel attempts on the same infobase path.
