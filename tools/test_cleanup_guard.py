@@ -409,7 +409,7 @@ class НедообследованноеДерево(Фундамент):
         try:
             guard.NESTED_HOLD_BUDGET = 3
             можно, причина = guard.decide(str(d), requester='agent-11', now=self.now,
-                                          allow_list=self.allow('43090000099-1'))
+                                          allow_list=self.allow('runs/43090000099-1'))
             self.assertFalse(можно, причина)
             self.assertEqual('nested-scan-incomplete', причина)
         finally:
@@ -422,7 +422,7 @@ class НедообследованноеДерево(Фундамент):
         try:
             guard.NESTED_HOLD_BUDGET = 100000     # дерево обошли целиком и нашли запрет
             можно, причина = guard.decide(str(d), requester='agent-11', now=self.now,
-                                          allow_list=self.allow('43090000035-1'))
+                                          allow_list=self.allow('runs/43090000035-1'))
             self.assertFalse(можно, причина)
             self.assertEqual('nested-held-by-DO-NOT-CLEAN.md', причина)
         finally:
@@ -433,7 +433,7 @@ class НедообследованноеДерево(Фундамент):
         сохранённый = guard.NESTED_HOLD_BUDGET
         try:
             guard.NESTED_HOLD_BUDGET = 3
-            al = self.allow('43090000036-1')
+            al = self.allow('runs/43090000036-1')
             rows = guard.scan(now=self.now, allow_list=al)
             self.assertTrue(rows[0]['delete'], rows[0])
             guard.apply_deletions(rows, self.root / 'j.json', now=self.now, allow_list=al)
@@ -509,6 +509,35 @@ class AllowListНеОбходитВладельца(Фундамент):
                                           consent_from='agent-16', allow_list=al)
             self.assertTrue(можно, причина)
             self.assertEqual('consented-by-agent-16+scan-incomplete-allowed', причина)
+        finally:
+            guard.NESTED_HOLD_BUDGET = сохранённый
+
+
+    def test_чужой_absolute_путь_не_авторизует_тот_же_basename(self):
+        """Дописка координатору (18:07): разрешение — путь, не имя.
+
+        Строка /unrelated/runs/<id> не должна открывать реальный runs/<id>
+        только потому, что basename совпал; прежнее извлечение имени из
+        allowlist_paths это позволяло.
+        """
+        d, al0 = self.небогатое_дерево('43091000005-1', метка=('OWNER.txt', 'agent 11'))
+        чужой = pathlib.Path('/unrelated/runs/43091000005-1')
+        al = self.root / 'allow-wrong.txt'
+        al.write_text('%s\n' % чужой, encoding='utf-8')
+        сохранённый = guard.NESTED_HOLD_BUDGET
+        try:
+            guard.NESTED_HOLD_BUDGET = 3
+            можно, причина = guard.decide(str(d), requester='agent-11', now=self.now,
+                                          allow_list=str(al))
+            self.assertFalse(можно, причина)
+            self.assertEqual('nested-scan-incomplete', причина)
+            # а точная относительная строка — открывает
+            al2 = self.root / 'allow-right.txt'
+            al2.write_text('runs/43091000005-1\n', encoding='utf-8')
+            можно, причина = guard.decide(str(d), requester='agent-11', now=self.now,
+                                          allow_list=str(al2))
+            self.assertTrue(можно, причина)
+            self.assertEqual('own+scan-incomplete-allowed', причина)
         finally:
             guard.NESTED_HOLD_BUDGET = сохранённый
 

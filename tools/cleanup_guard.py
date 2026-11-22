@@ -98,10 +98,17 @@ def allowlist_paths():
         line = line.split('#', 1)[0].strip().rstrip('/')
         if not line:
             continue
+        # только полный путь или путь относительно корня прогонов; basename из
+        # чужого дерева НЕ извлекаем (находка координатора 18:07): строка
+        # /unrelated/runs/12345-1 не должна авторизовать реальный runs/12345-1
         out.add(line)
-        # и форма «runs/<id>», и просто «<id>», и абсолютный путь - чтобы
-        # разрешение нельзя было потерять из-за способа записи
-        out.add(pathlib.PurePath(line).name)
+        try:
+            rel = str(pathlib.PurePath(line).relative_to(
+                pathlib.Path(RUN_ROOT).resolve()))
+            if rel and rel != line:
+                out.add(rel)
+        except (ValueError, OSError):
+            pass
     return frozenset(out)
 
 
@@ -111,13 +118,14 @@ def allowed_whole_run(path, root=None):
     if not paths:
         return False
     cand = pathlib.Path(path)
-    if cand.name in paths:
-        return True
     try:
-        rel = str(cand.resolve().relative_to(pathlib.Path(root or RUN_ROOT).resolve()))
+        resolved = cand.resolve()
+        rel = str(resolved.relative_to(pathlib.Path(root or RUN_ROOT).resolve()))
     except (OSError, ValueError):
         rel = ''
-    return bool(rel) and (rel in paths or str(cand) in paths)
+    # совпадение либо по относительному пути («runs/<id>»), либо по полному
+    # абсолютному пути строкой; одиночный basename больше не ключ
+    return bool(rel) and (rel in paths or str(resolved) in paths or str(cand) in paths)
 
 
 def protected(path):
