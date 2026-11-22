@@ -117,10 +117,9 @@ def nested_hold(directory, budget=20000):
     Записка в runs/<id>/retained/DO-NOT-CLEAN.md означает, что внутри лежат
     чужие или постоянные данные, а удаление всей папки - это rmtree. Обход
     ограничен бюджетом записей и не идёт за симлинками. Если бюджет кончился,
-    а запрет не найден, решение не меняется: в папке прогона лежат рабочие
-    каталоги на сотни тысяч файлов, и отказ по лимиту навсегда запретил бы
-    self-cleanup собственного прогона. О сработавшем лимите печатается
-    предупреждение - оно видно в логе, но не притворяется находкой.
+    а запрет не найден, возвращается scan-incomplete: разрешать rmtree по
+    непросканированному дереву нельзя. Большой собственный прогон требует
+    отдельного полного обследования, а не молчаливого обхода HOLD.
     """
     try:
         it = os.walk(str(directory), followlinks=False)
@@ -130,8 +129,8 @@ def nested_hold(directory, budget=20000):
                 seen += 1
                 if seen > budget:
                     sys.stderr.write('warning: nested-hold scan of %s stopped after '
-                                     '%d files, no hold found\n' % (directory, budget))
-                    return None
+                                     '%d files; scan incomplete, keep directory\n' % (directory, budget))
+                    return 'scan-incomplete'
                 if HELD.search(fn):
                     return fn
             for fn in sorted(filenames):

@@ -414,8 +414,8 @@ class РазныеВладельцыИВложенныйЗапрет(Фунда�
         сохранённый = guard.CHECK_NESTED_HOLD
         try:
             self.assertTrue(guard.decide(str(self.aged(d)), requester='agent-11', now=self.now)[0])
-            # лимит исчерпан и ничего не найдено -> решение остаётся прежним
-            self.assertIsNone(guard.nested_hold(d, budget=1))
+            # лимит исчерпан -> неизвестность не разрешает удаление
+            self.assertEqual('scan-incomplete', guard.nested_hold(d, budget=1))
             # а найденный глубоко запрет отказывает и с маленьким бюджетом
             сам_проверщик = guard.nested_hold
             try:
