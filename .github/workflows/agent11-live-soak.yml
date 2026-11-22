@@ -413,3 +413,30 @@ jobs:
           echo "RETAINED=$SMOKE_RUN"
           df -h "$SMOKE_RUN"
         fi
+    - name: "Самоуборка: сторож решает по папке прогона, своё удаляем сразу"
+      if: always() && env.SMOKE_RUN != ''
+      shell: bash
+      run: |
+        set -uo pipefail
+        BASE="${TEAM_BASE:-$HOME/si1c-team-tests}"
+        RUN="${{ env.SMOKE_RUN }}"
+        if [ ! -d "$RUN" ] || [ -L "$RUN" ]; then echo "Нечего убирать: $RUN"; exit 0; fi
+        printf '%s\n' 'Run dir of agent-11; safe to delete once this run is over.' > "$RUN/OWNER-Agent-11.txt"
+        printf 'job-status=%s\nat=%s\n' '${{ job.status }}' "$(date -u +%FT%TZ)" > "$RUN/JANITOR.txt"
+        GUARD="$RUNNER_TEMP/cleanup_guard.py"
+        curl -fsS -H "Authorization: Bearer $GITHUB_TOKEN" \
+             -H "Accept: application/vnd.github.raw" \
+             "https://api.github.com/repos/$GITHUB_REPOSITORY/contents/tools/cleanup_guard.py?ref=$GITHUB_SHA" \
+             -o "$GUARD" || true
+        if [ ! -s "$GUARD" ]; then
+          echo "::warning::сторож уборки не загружен - папку оставляем помеченной, следующая уборка уберёт её по правилу"
+          exit 0
+        fi
+        ARGS=(--root "$BASE" --requester agent-11 --min-age 0 --only "$RUN")
+        if [ '${{ job.status }}' = 'success' ]; then
+          ARGS+=(--apply --journal "$RUNNER_TEMP/cleanup-journal.json")
+        else
+          echo "Прогон не завершился успешно - папку оставляем для разбора, только помечаем."
+        fi
+        python3 "$GUARD" "${ARGS[@]}" | tee "$RUNNER_TEMP/janitor.log"
+        { echo '### Самоуборка папки прогона'; echo '```'; tail -n 5 "$RUNNER_TEMP/janitor.log"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"

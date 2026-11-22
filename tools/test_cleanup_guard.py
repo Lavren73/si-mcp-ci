@@ -4,6 +4,7 @@
 чужого не трогать; моё - только по моему согласию; своё - удалять;
 лицензионную 1С не удаляет никто.
 """
+import json
 import os
 import pathlib
 import shutil
@@ -196,6 +197,116 @@ class Удаление(Фундамент):
         self.assertTrue(rows)
         self.assertTrue(all(not guard.protected(r['path']) for r in rows))
 
+
+
+class НичьёПодМоимСтендом(Фундамент):
+    """Папка без метки - не «моё» по умолчанию: только если стенд мой и uid мой."""
+
+    def test_без_метки_под_моим_стендом_это_моё(self):
+        (self.root / 'OWNER.txt').write_text(
+            'SI-MCP team test stand; provisioned by agent 11', encoding='utf-8')
+        d = self.папка_прогона(имя='43090000001-1')
+        можно, причина = guard.decide(str(d), now=self.now)
+        self.assertTrue(можно, причина)
+
+    def test_без_метки_если_стенд_не_мой_не_трогаем(self):
+        (self.root / 'OWNER.txt').write_text('stand provisioned by agent 13', encoding='utf-8')
+        d = self.папка_прогона(имя='43090000002-1')
+        можно, причина = guard.decide(str(d), requester='agent-11', now=self.now)
+        self.assertFalse(можно)
+        self.assertEqual('unmarked', причина)
+
+    def test_без_метки_и_без_метки_корня_вообще_не_трогаем(self):
+        d = self.папка_прогона(имя='43090000003-1')
+        можно, причина = guard.decide(str(d), now=self.now)
+        self.assertFalse(можно)
+        self.assertEqual('unmarked', причина)
+
+    def test_записка_держит_и_папку_без_метки_под_моим_стендом(self):
+        (self.root / 'OWNER.txt').write_text('provisioned by agent 11', encoding='utf-8')
+        d = self.папка_прогона(имя='43090000004-1',
+                               метка=('DO-NOT-CLEAN.md', 'общий EDT-стенд, do not clean'))
+        можно, причина = guard.decide(str(d), now=self.now)
+        self.assertFalse(можно)
+        self.assertTrue(причина.startswith('held-by-'), причина)
+
+    def test_согласие_не_обязано_молчать_при_перепроверке(self):
+        """Чужое с согласием владельца удаляется и после перепроверки тоже.
+
+        Раньше apply_deletions перепроверял без requester и согласия: легитимная
+        уборка от чужого имени превращалась в отказ с записью в журнале.
+        """
+        d = self.папка_прогона(имя='43090000005-1',
+                               метка=('OWNER-Agent-16.txt', 'папка агента 16'))
+        rows = guard.scan(requester='agent-14', consent_from='agent-16', now=self.now, min_age=0)
+        self.assertEqual([{'delete': True}], [{'delete': r['delete']} for r in rows])
+        removed, refused = guard.apply_deletions(rows, self.root / 'journal.json',
+                                                 requester='agent-14', consent_from='agent-16',
+                                                 now=self.now, min_age=0)
+        self.assertEqual(1, len(removed))
+        self.assertFalse(refused)
+        self.assertFalse(d.exists())
+
+    def test_точечно_виден_только_свой_прогон(self):
+        (self.root / 'OWNER.txt').write_text('provisioned by agent 11', encoding='utf-8')
+        mine = self.папка_прогона(имя='43090000006-1')
+        other = self.папка_прогона(имя='43090000007-1',
+                                   метка=('OWNER-Agent-16.txt', 'папка агента 16'))
+        rows = guard.scan(only=str(mine), now=self.now)
+        self.assertEqual([str(mine)], [r['path'] for r in rows])
+        self.assertTrue(rows[0]['delete'])
+        self.assertTrue(mine.exists() and other.exists())
+        guard.apply_deletions(rows, self.root / 'journal.json', now=self.now)
+        self.assertFalse(mine.exists())
+        self.assertTrue(other.exists())
+
+    def test_точечно_за_пределами_runs_отказ(self):
+        rows = guard.scan(only=str(self.root / 'licensed-1cv8'), now=self.now)
+        self.assertEqual(1, len(rows))
+        self.assertFalse(rows[0]['delete'])
+        self.assertIn(rows[0]['reason'], ('outside-runs', 'licensed-or-shared'))
+        self.assertTrue((self.root / 'licensed-1cv8').exists())
+
+    def test_клиент_точечно_удаляет_и_пишет_журнал(self):
+        (self.root / 'OWNER.txt').write_text('provisioned by agent 11', encoding='utf-8')
+        mine = self.папка_прогона(имя='43090000008-1')
+        код = guard.main(['--root', str(self.root), '--requester', 'agent-11', '--min-age', '0',
+                         '--only', str(mine), '--apply', '--journal', str(self.root / 'j.json')])
+        self.assertEqual(0, код)
+        self.assertFalse(mine.exists())
+        журнал = json.loads((self.root / 'j.json').read_text(encoding='utf-8'))
+        self.assertEqual([str(mine)], [r['path'] for r in журнал['removed']])
+
+    def test_клиент_точечно_ничего_не_находит_и_не_падает(self):
+        код = guard.main(['--root', str(self.root), '--requester', 'agent-11',
+                          '--only', str(self.root / 'runs' / '00000000000-1'), '--apply'])
+        self.assertEqual(0, код)
+
+
+class КореньИзАргумента(Фундамент):
+    """``--root`` обязан действовать и на решение, и на перепроверку при удалении."""
+
+    def test_чужой_root_не_отвергает_всё_подряд(self):
+        # Дефолтный RUN_ROOT уводим в сторону: решение должно браться из --root.
+        root, protected = guard.RUN_ROOT, guard.PROTECTED_ROOTS
+        try:
+            guard.RUN_ROOT = '/home/other-runner/other-stand'
+            guard.PROTECTED_ROOTS = (str(self.root / 'licensed-1cv8'),)
+            d = self.папка_прогона(имя='43091000001-1',
+                                   метка=('OWNER.txt', 'provisioned by agent 11'))
+            можно, причина = guard.decide(str(d), now=self.now)
+            self.assertFalse(можно)
+            self.assertEqual('outside-runs', причина)      # без root - отказ, как и должно
+            можно, причина = guard.decide(str(d), now=self.now, root=str(self.root))
+            self.assertTrue(можно, причина)
+            rows = guard.scan(str(self.root), now=self.now)
+            self.assertEqual([True], [r['delete'] for r in rows])
+            removed, refused = guard.apply_deletions(rows, self.root / 'j.json', now=self.now,
+                                                      root=str(self.root))
+            self.assertEqual(1, len(removed))
+            self.assertFalse(refused)
+        finally:
+            guard.RUN_ROOT, guard.PROTECTED_ROOTS = root, protected
 
 if __name__ == '__main__':
     unittest.main()

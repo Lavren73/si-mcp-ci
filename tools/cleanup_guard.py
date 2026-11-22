@@ -83,6 +83,24 @@ def held_by(directory):
     return None
 
 
+def stand_owner(root=None):
+    """Чей этот стенд по метке корня (``$RUN_ROOT/OWNER.txt``).
+
+    Стенд на si1c провизил один агент, и метка корня - единственная письменная
+    подсказка, чей вообще этот ``runs/``. Нужна она для папок без собственной
+    метки: «ничьё» на общем раннере остаётся «не моё», если только папка не
+    лежит внутри стенда, который принадлежит просящему, и не создана тем же
+    пользователем на диске.
+    """
+    try:
+        text = (pathlib.Path(root or RUN_ROOT) / 'OWNER.txt').read_text(
+            encoding='utf-8', errors='replace')
+    except OSError:
+        return None
+    found = AGENT_NAME.search(text)
+    return 'agent-%s' % int(found.group(1)) if found else None
+
+
 def marker_owner(directory):
     """Чья папка по метке: 'agent-16', 'agent-11' (по OWNER.txt-тексту) или None."""
     try:
@@ -104,9 +122,14 @@ def marker_owner(directory):
     return None
 
 
-def inside_run_root(path):
-    """Разрешено удалять только непосредственно папки прогонов: runs/<число>[-<число>]."""
-    root = pathlib.Path(RUN_ROOT).resolve()
+def inside_run_root(path, root=None):
+    """Разрешено удалять только непосредственно папки прогонов: runs/<число>[-<число>].
+
+    Корень берётся из вызова: ``--root`` на раннере и ``root=`` в тестах обязан
+    влиять и на это решение, иначе сверка с дефолтным RUN_ROOT отвергала бы
+    всё подряд на машине, где домашний каталог называется иначе.
+    """
+    root = pathlib.Path(root or RUN_ROOT).resolve()
     candidate = pathlib.Path(path)
     if candidate.is_symlink():
         return False, 'symlink'
@@ -126,29 +149,37 @@ def inside_run_root(path):
     return True, 'ok'
 
 
-def decide(path, requester=SELF, consent_from=None, now=None, min_age=MIN_AGE_MINUTES):
+def decide(path, requester=SELF, consent_from=None, now=None, min_age=MIN_AGE_MINUTES,
+           root=None):
     """(можно_ли, причина) для одной папки. Причина - всегда проверяемый факт."""
     raw = str(path)
     if protected(raw):
         return False, 'licensed-or-shared'
-    ok, where = inside_run_root(raw)
+    ok, where = inside_run_root(raw, root=root)
     if not ok:
         return False, where
     directory = pathlib.Path(raw)
-    owner = marker_owner(directory)
-    if owner is None:
-        # Без метки непонятно, чужое это или ничьё; а ничьё на общем раннере -
-        # не моё. Такую папку оставляем и говорим почему.
-        return False, 'unmarked'
+    # Записку «не удалять» читаем раньше всего остального: она отказывает и
+    # владельцу, и тому, кто принёс согласие.
+    записка = held_by(directory)
+    if записка:
+        return False, 'held-by-' + записка
     try:
         stat = directory.stat()
     except OSError:
         return False, 'unreadable'
     if stat.st_uid != os.getuid():
         return False, 'foreign-uid'
-    записка = held_by(directory)
-    if записка:
-        return False, 'held-by-' + записка
+    owner = marker_owner(directory)
+    if owner is None:
+        # Без метки непонятно, чужое это или ничьё; а ничьё на общем раннере -
+        # не моё. Разрешаем такое только в одном случае: папка лежит внутри
+        # стенда, который по метке корня принадлежит просящему, и на диске её
+        # владелец - он же. Иначе оставляем и говорим почему.
+        if stand_owner(root) == requester:
+            owner = requester
+        else:
+            return False, 'unmarked'
     age = ((now or time.time()) - stat.st_mtime) / 60.0
     if age < min_age:
         return False, 'too-fresh'
@@ -161,7 +192,9 @@ def decide(path, requester=SELF, consent_from=None, now=None, min_age=MIN_AGE_MI
     return False, 'needs-consent-from-%s' % owner
 
 
-def scan(root=None, requester=SELF, consent_from=None, now=None, min_age=MIN_AGE_MINUTES):
+def scan(root=None, requester=SELF, consent_from=None, now=None, min_age=MIN_AGE_MINUTES,
+         only=None):
+    """Все пути решаются относительно того же корня, что и передан в --root."""
     """Отчёт по всем папкам прогонов: что удалим, что нет и почему.
 
     Корень читается в момент вызова, а не в момент определения: тесты (и домик)
@@ -169,27 +202,43 @@ def scan(root=None, requester=SELF, consent_from=None, now=None, min_age=MIN_AGE
     """
     base = pathlib.Path(root or RUN_ROOT) / 'runs'
     rows = []
+    if only:
+        # Точечная уборка: ровно своя папка прогона, ничего вокруг не сканим.
+        target = pathlib.Path(only)
+        if not target.exists():
+            return rows
+        allowed, reason = decide(str(target), requester=requester, consent_from=consent_from,
+                                 now=now, min_age=min_age, root=root)
+        return [{'path': str(target), 'delete': allowed, 'reason': reason,
+                 'owner': marker_owner(target) or 'unmarked'}]
     if not base.is_dir():
         return rows
     for entry in sorted(base.iterdir()):
         if not entry.is_dir() or entry.is_symlink():
             continue
         allowed, reason = decide(str(entry), requester=requester, consent_from=consent_from,
-                                 now=now, min_age=min_age)
+                                 now=now, min_age=min_age, root=root)
         rows.append({'path': str(entry), 'delete': allowed, 'reason': reason,
                      'owner': marker_owner(entry) or 'unmarked'})
     return rows
 
 
-def apply_deletions(rows, journal):
-    """Удаляет только то, что разрешил decide; перед unlink - повторная проверка."""
+def apply_deletions(rows, journal, requester=SELF, consent_from=None,
+                    now=None, min_age=MIN_AGE_MINUTES, root=None):
+    """Удаляет только то, что разрешил decide; перед unlink - повторная проверка.
+
+    Перепроверка обязана идти с теми же requester и согласием, что и скан:
+    иначе прогон от имени agent-14 снесёт чужие папки только потому, что в
+    момент удаления их посчитали своими по умолчанию.
+    """
     removed, refused = [], []
     for row in rows:
         path = row['path']
         if not row['delete']:
             refused.append({'path': path, 'reason': row['reason']})
             continue
-        allowed, reason = decide(path)      # перепроверка: диск мог измениться между сканом и удалением
+        allowed, reason = decide(path, requester=requester, consent_from=consent_from,
+                                  now=now, min_age=min_age, root=root)  # диск мог измениться
         if not allowed:
             refused.append({'path': path, 'reason': 'changed-to-' + reason})
             continue
@@ -211,16 +260,23 @@ def main(argv=None):
     parser.add_argument('--apply', action='store_true',
                         help='удалять; без флага - только отчёт')
     parser.add_argument('--journal', default='')
+    parser.add_argument('--only', default='',
+                        help='ровно эта папка прогона (самоуборка своего прогона); '
+                             'ничего другого не сканируется и не удаляется')
     args = parser.parse_args(argv)
     rows = scan(args.root, requester=args.requester,
-                 consent_from=(args.consent_from or None), min_age=args.min_age)
+                 consent_from=(args.consent_from or None), min_age=args.min_age,
+                 only=(args.only or None))
+    verb = 'DELETE' if args.apply else 'WOULD '
     for row in rows:
-        print('%s %s [%s]' % ('DELETE' if row['delete'] else 'KEEP  ',
+        print('%s %s [%s]' % (verb if row['delete'] else 'KEEP   ',
                               row['path'], row['reason']))
     removed, refused = ([], [])
     if args.apply:
         journal = args.journal or os.path.join(args.root, 'runs', 'cleanup-journal.json')
-        removed, refused = apply_deletions(rows, journal)
+        removed, refused = apply_deletions(rows, journal, requester=args.requester,
+                                            consent_from=(args.consent_from or None),
+                                            min_age=args.min_age, root=args.root)
         print('REMOVED=%d REFUSED=%d JOURNAL=%s' % (len(removed), len(refused), journal))
     print('CANDIDATES=%d ALLOWED=%d' % (len(rows), sum(1 for r in rows if r['delete'])))
     return 0
