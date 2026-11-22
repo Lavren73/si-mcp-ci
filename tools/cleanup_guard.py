@@ -311,15 +311,23 @@ def decide(path, requester=SELF, consent_from=None, now=None, min_age=MIN_AGE_MI
     записка = held_by(directory)
     if записка:
         return False, 'held-by-' + записка
+    scan_incomplete_allowed = False
     if CHECK_NESTED_HOLD:
         вложенная, обошли = nested_hold(directory)
         if вложенная:
             return False, 'nested-held-by-' + вложенная
         if not обошли:
-            # «не проверено» не равно «чисто»: см. docstring nested_hold
+            # «не проверено» не равно «чисто»: см. docstring nested_hold.
+            # Разрешение из --allow-list снимает ЗДЕСЬ только блокировку
+            # недообследованного дерева; оно НЕ переносит решение через
+            # владельца, согласие, возраст и uid — находка координатора по
+            # b3c2b11dd: ранний return True пропускал их все. Флаг доезжает
+            # до конца функции, и окончательный вердикт выносится обычным
+            # порядком, а к причине дописывается +scan-incomplete-allowed.
             if allowed_whole_run(raw, root=root):
-                return True, 'own-scan-incomplete-allowed'
-            return False, 'nested-scan-incomplete'
+                scan_incomplete_allowed = True
+            else:
+                return False, 'nested-scan-incomplete'
     try:
         stat = directory.stat()
     except OSError:
@@ -343,12 +351,17 @@ def decide(path, requester=SELF, consent_from=None, now=None, min_age=MIN_AGE_MI
     if age < min_age:
         return False, 'too-fresh'
     if owner == requester:
-        return True, 'claimed-own' if claimed_own else 'own'
+        reason = 'claimed-own' if claimed_own else 'own'
     # Согласие должен принести владелец папки, а не тот, кто удаляет: иначе
     # «согласование» превращается в формальность, которую подставляет удалающий.
-    if consent_from == owner:
-        return True, 'consented-by-%s' % owner
-    return False, 'needs-consent-from-%s' % owner
+    elif consent_from == owner:
+        reason = 'consented-by-%s' % owner
+    else:
+        return False, 'needs-consent-from-%s' % owner
+    if scan_incomplete_allowed:
+        # разрешение применено — и это видно в причине, а не спрятано за 'own'
+        reason += '+scan-incomplete-allowed'
+    return True, reason
 
 
 def scan(root=None, requester=SELF, consent_from=None, now=None, min_age=MIN_AGE_MINUTES,

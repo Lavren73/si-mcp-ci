@@ -399,7 +399,7 @@ class НедообследованноеДерево(Фундамент):
             можно, причина = guard.decide(str(d), requester='agent-11', now=self.now,
                                           allow_list=self.allow('runs/43090000033-1'))
             self.assertTrue(можно, причина)
-            self.assertEqual('own-scan-incomplete-allowed', причина)
+            self.assertEqual('own+scan-incomplete-allowed', причина)
         finally:
             guard.NESTED_HOLD_BUDGET = сохранённый
 
@@ -439,6 +439,76 @@ class НедообследованноеДерево(Фундамент):
             guard.apply_deletions(rows, self.root / 'j.json', now=self.now, allow_list=al)
             журнал = json.loads((self.root / 'j.json').read_text(encoding='utf-8'))
             self.assertEqual(al, журнал['whole_run_allowlist'])
+        finally:
+            guard.NESTED_HOLD_BUDGET = сохранённый
+
+
+class AllowListНеОбходитВладельца(Фундамент):
+    """Разрешение whole-run снимает только блокировку недосмотра (координатор, 22.11).
+
+    B3c2b11dd содержал ранний return True прямо в ветке scan-incomplete - и он
+    перескакивал foreign-uid, чужого владельца, возраст и unmarked. Здесь ровно
+    те четыре отказа, которые координатор воспроизвёл decide-only прогоном:
+    теперь они обязаны остаться отказами даже при выписанном разрешении.
+    """
+
+    def небогатое_дерево(self, имя, метка=None, возраст=600):
+        d = self.папка_прогона(имя=имя, метка=метка)
+        for i in range(6):
+            sub = d / ('dir%02d' % i)
+            sub.mkdir()
+            for j in range(4):
+                (sub / ('f%d.bin' % j)).write_text('x', encoding='utf-8')
+        al = self.root / ('allow-%s.txt' % имя)
+        al.write_text('runs/%s\n' % имя, encoding='utf-8')
+        # штамп времени - ПОСЛЕ создания подкаталогов: mkdir двигает mtime
+        # родителя, и папка снова становилась «слишком свежей»
+        штамп = self.now - возраст * 60
+        os.utime(d, (штамп, штамп))
+        return d, str(al)
+
+    def test_разрешение_не_открывает_чужую_папку(self):
+        d, al = self.небогатое_дерево('43091000001-1', метка=('OWNER-Agent-16.txt', 'личная папка агента 16'))
+        сохранённый = guard.NESTED_HOLD_BUDGET
+        try:
+            guard.NESTED_HOLD_BUDGET = 3
+            можно, причина = guard.decide(str(d), requester='agent-11', now=self.now, allow_list=al)
+            self.assertFalse(можно, причина)
+            self.assertEqual('needs-consent-from-agent-16', причина)
+        finally:
+            guard.NESTED_HOLD_BUDGET = сохранённый
+
+    def test_разрешение_не_отменяет_выдержку_по_возрасту(self):
+        d, al = self.небогатое_дерево('43091000002-1', метка=('OWNER.txt', 'agent 11'), возраст=2)
+        сохранённый = guard.NESTED_HOLD_BUDGET
+        try:
+            guard.NESTED_HOLD_BUDGET = 3
+            можно, причина = guard.decide(str(d), requester='agent-11', now=self.now, allow_list=al)
+            self.assertFalse(можно, причина)
+            self.assertEqual('too-fresh', причина)
+        finally:
+            guard.NESTED_HOLD_BUDGET = сохранённый
+
+    def test_разрешение_не_делает_немаркированную_своей(self):
+        d, al = self.небогатое_дерево('43091000003-1')     # ни метки, ни в claim-list
+        сохранённый = guard.NESTED_HOLD_BUDGET
+        try:
+            guard.NESTED_HOLD_BUDGET = 3
+            можно, причина = guard.decide(str(d), requester='agent-11', now=self.now, allow_list=al)
+            self.assertFalse(можно, причина)
+            self.assertEqual('unmarked', причина)
+        finally:
+            guard.NESTED_HOLD_BUDGET = сохранённый
+
+    def test_согласие_владельца_и_разрешение_складываются_честно(self):
+        d, al = self.небогатое_дерево('43091000004-1', метка=('OWNER-Agent-16.txt', 'личная папка агента 16'))
+        сохранённый = guard.NESTED_HOLD_BUDGET
+        try:
+            guard.NESTED_HOLD_BUDGET = 3
+            можно, причина = guard.decide(str(d), requester='agent-11', now=self.now,
+                                          consent_from='agent-16', allow_list=al)
+            self.assertTrue(можно, причина)
+            self.assertEqual('consented-by-agent-16+scan-incomplete-allowed', причина)
         finally:
             guard.NESTED_HOLD_BUDGET = сохранённый
 
