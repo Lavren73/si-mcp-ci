@@ -178,6 +178,25 @@ jobs:
           # They stay local on the ephemeral runner and are never printed or uploaded.
           exit "$code"
 
+      - name: 6b. Доказательство «-fae» — состав итога реактора (только счётчики)
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          L="$RUNNER_TEMP/mvn.log"
+          [ -f "$L" ] || { echo 'REACTOR=no-log'; exit 0; }
+          # Печатаем ТОЛЬКО количества строк по типам из Reactor Summary: без имён модулей,
+          # без путей и без текста ошибок — репозиторий публичный.
+          SUM=$(awk '/Reactor Summary/,0' "$L")
+          echo "REACTOR_SUCCESS=$(printf '%s' "$SUM" | grep -cE '^\[INFO\] [^ ]+ .*SUCCESS')"
+          echo "REACTOR_FAILURE=$(printf '%s' "$SUM" | grep -cE '^\[INFO\] [^ ]+ .*FAILURE')"
+          echo "REACTOR_SKIPPED=$(printf '%s' "$SUM" | grep -cE '^\[INFO\] [^ ]+ .*SKIPPED')"
+          # При -ff (fail-fast) модули после первого падения получают SKIPPED и почти нет SUCCESS
+          # после FAILURE; при -fae они продолжают выполняться.
+          echo "REACTOR_TOTAL=$(printf '%s' "$SUM" | grep -cE '^\[INFO\] [^ ]+ \.+ ')"
+          echo "MVN_SAW_FAE=$(grep -cE '^\[INFO\] BUILD FAILURE|^\[ERROR\] Failures:' "$L")"
+          exit 0
+
       - name: 7. Сводка surefire по счётчикам
         if: always()
         shell: bash
