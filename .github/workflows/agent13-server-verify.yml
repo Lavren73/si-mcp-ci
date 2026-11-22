@@ -173,6 +173,27 @@ jobs:
                   print('FAILED: <identifier omitted>')
           PY
 
+      - name: 7b. Evidence exact #464 batch-precheck test
+        if: always()
+        shell: bash
+        run: |
+          cd "$RUNNER_TEMP/src"
+          python3 - <<'PY'
+          import glob, xml.etree.ElementTree as ET, sys
+          cls='si.edt.mcp.server.toolkit.ops.AConstructorWritesRefuseUnderWriteBlockingPresetsTest'
+          name='theBatchPrecheckNamesEveryPreviewlessDryRunEntry'
+          seen=[]; unreadable=0
+          for f in glob.glob('server/**/target/surefire-reports/TEST-*.xml',recursive=True):
+              try:root=ET.parse(f).getroot()
+              except Exception:unreadable+=1;continue
+              for tc in root.iter('testcase'):
+                  if tc.get('classname')==cls and tc.get('name')==name:
+                      status='FAIL' if tc.find('failure') is not None or tc.find('error') is not None else ('SKIP' if tc.find('skipped') is not None else 'PASS')
+                      seen.append(status)
+          print('BATCH_PRECHECK_TEST='+('MISSING' if not seen else ','.join(seen))+' UNREADABLE_XML='+str(unreadable))
+          sys.exit(0 if unreadable==0 and seen==['PASS'] else 1)
+          PY
+
       - name: 8. Сторож красных (fail-closed)
         if: always()
         shell: bash
