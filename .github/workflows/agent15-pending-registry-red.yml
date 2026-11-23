@@ -81,7 +81,7 @@ jobs:
           MAVEN_OPTS: -Xmx3g
         run: |
           set +e
-          xvfb-run --auto-servernum mvn -B -ntp -Dstyle.color=never -pl tests/si.edt.mcp.server.tests -am -Dtest=ASaturatedDomainDoesNotRunOnItsCallerTest test > "$RUNNER_TEMP/targeted.log" 2>&1
+          xvfb-run --auto-servernum mvn -B -ntp -Dstyle.color=never -pl tests/si.edt.mcp.server.tests -am -Dtest=ASaturatedDomainDoesNotRunOnItsCallerTest verify > "$RUNNER_TEMP/targeted.log" 2>&1
           code=$?
           echo "TARGETED_MVN_EXIT=$code"
           echo "TARGETED_LOG_LINES=$(grep -c . "$RUNNER_TEMP/targeted.log")"
