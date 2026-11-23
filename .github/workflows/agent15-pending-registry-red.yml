@@ -1,0 +1,114 @@
+name: '№15 — PendingWorkRegistry saturation targeted RED'
+on:
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: 'Exact SI-MCP SHA'
+        required: true
+permissions:
+  contents: read
+concurrency:
+  group: agent15-pending-registry-${{ github.event.inputs.sha }}
+  cancel-in-progress: false
+jobs:
+  targeted:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      TARGET_SHA: ${{ github.event.inputs.sha }}
+      LANG: C.UTF-8
+      LC_ALL: C.UTF-8
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Exact private source
+        env:
+          DEPLOY_KEY: ${{ secrets.SI_MCP_DEPLOY_KEY }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/.ssh" && chmod 700 "$RUNNER_TEMP/.ssh"
+          if printf '%s' "$DEPLOY_KEY" | grep -q 'BEGIN [A-Z ]*PRIVATE KEY'; then
+            printf '%s\n' "$DEPLOY_KEY" > "$RUNNER_TEMP/.ssh/id_deploy"
+            chmod 600 "$RUNNER_TEMP/.ssh/id_deploy"
+            ssh-keyscan -t rsa,ecdsa,ed25519 github.com > "$RUNNER_TEMP/.ssh/known_hosts" 2>/dev/null
+            GIT_SSH_COMMAND="ssh -i $RUNNER_TEMP/.ssh/id_deploy -o UserKnownHostsFile=$RUNNER_TEMP/.ssh/known_hosts -o IdentitiesOnly=yes" git clone --quiet --no-checkout git@github.com:Lavren73/SI-MCP.git "$RUNNER_TEMP/src"
+          else
+            printf '%s\n' '#!/bin/sh' 'case "$1" in *Username*) printf "x-access-token\n";; *) printf "%s\n" "$DEPLOY_KEY";; esac' > "$RUNNER_TEMP/.ssh/askpass"
+            chmod 700 "$RUNNER_TEMP/.ssh/askpass"
+            GIT_ASKPASS="$RUNNER_TEMP/.ssh/askpass" GIT_TERMINAL_PROMPT=0 git clone --quiet --no-checkout https://github.com/Lavren73/SI-MCP.git "$RUNNER_TEMP/src"
+          fi
+          cd "$RUNNER_TEMP/src"
+          git checkout --quiet --detach "$TARGET_SHA"
+          echo "HEAD_SHA=$(git rev-parse HEAD)"
+          echo "HEAD_TREE=$(git rev-parse HEAD^{tree})"
+          test "$(git rev-parse HEAD)" = "$TARGET_SHA"
+          rm -f "$RUNNER_TEMP/.ssh/id_deploy" "$RUNNER_TEMP/.ssh/askpass"
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Maven 3.9.9 and xvfb
+        run: |
+          set -euo pipefail
+          curl -sSL -o "$RUNNER_TEMP/maven.tar.gz" https://archive.apache.org/dist/maven/maven-3/3.9.9/binaries/apache-maven-3.9.9-bin.tar.gz
+          mkdir -p "$RUNNER_TEMP/maven"
+          tar -xzf "$RUNNER_TEMP/maven.tar.gz" -C "$RUNNER_TEMP/maven" --strip-components=1
+          echo "$RUNNER_TEMP/maven/bin" >> "$GITHUB_PATH"
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq xvfb
+      - name: Compile exact test bundle without executing tests
+        working-directory: ${{ runner.temp }}/src/server
+        env:
+          MAVEN_OPTS: -Xmx3g
+        run: |
+          set +e
+          xvfb-run --auto-servernum mvn -B -ntp -Dstyle.color=never -pl :si.edt.mcp.server.tests -am -DskipTests package > "$RUNNER_TEMP/compile.log" 2>&1
+          code=$?
+          echo "COMPILE_EXIT=$code"
+          echo "COMPILE_LOG_LINES=$(grep -c . "$RUNNER_TEMP/compile.log")"
+          exit "$code"
+      - name: Run exact saturation class only; RED is expected evidence
+        working-directory: ${{ runner.temp }}/src/server
+        env:
+          MAVEN_OPTS: -Xmx3g
+        run: |
+          set +e
+          xvfb-run --auto-servernum mvn -B -ntp -Dstyle.color=never -pl :si.edt.mcp.server.tests -am -Dtest=ASaturatedDomainDoesNotRunOnItsCallerTest test > "$RUNNER_TEMP/targeted.log" 2>&1
+          code=$?
+          echo "TARGETED_MVN_EXIT=$code"
+          echo "TARGETED_LOG_LINES=$(grep -c . "$RUNNER_TEMP/targeted.log")"
+          echo "$code" > "$RUNNER_TEMP/targeted.exit"
+          exit 0
+      - name: Exact targeted result and expected-RED verdict
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/src"
+          python3 - <<'PY'
+          import glob, os, xml.etree.ElementTree as ET
+          wanted='ASaturatedDomainDoesNotRunOnItsCallerTest'
+          files=glob.glob('server/**/target/surefire-reports/TEST-*'+wanted+'*.xml',recursive=True)
+          tests=fail=err=skip=0; bad=[]
+          for f in files:
+              r=ET.parse(f).getroot(); s=r if r.tag=='testsuite' else r.find('testsuite')
+              tests+=int(s.get('tests') or 0); fail+=int(s.get('failures') or 0); err+=int(s.get('errors') or 0); skip+=int(s.get('skipped') or 0)
+              for t in s.findall('testcase'):
+                  node=t.find('failure')
+                  if node is None: node=t.find('error')
+                  if node is not None: bad.append((t.get('classname','?')+'#'+t.get('name','?'),node.get('type','?'),(node.get('message') or '').split('\n')[0][:240]))
+          print('TARGET_REPORTS='+str(len(files)))
+          print(f'TARGET_TESTS={tests} FAILURES={fail} ERRORS={err} SKIPPED={skip}')
+          for name,typ,msg in sorted(bad): print('TARGET_FAILED:',name,'TYPE='+typ,'MESSAGE='+msg)
+          expected={'si.edt.mcp.server.support.ASaturatedDomainDoesNotRunOnItsCallerTest#theDefaultDomainDoesNotRunWorkOnTheSubmittingThread','si.edt.mcp.server.support.ASaturatedDomainDoesNotRunOnItsCallerTest#theCustomTtlDomainDoesNotRunWorkOnTheSubmittingThread'}
+          got={x[0] for x in bad}
+          code=int(open(os.path.join(os.environ['RUNNER_TEMP'],'targeted.exit')).read())
+          ok=(len(files)==1 and tests==2 and fail==2 and err==0 and skip==0 and got==expected and code!=0)
+          print('EXPECTED_RED_PROVEN='+str(ok).lower())
+          raise SystemExit(0 if ok else 1)
+          PY
+      - name: Exact identity
+        if: always()
+        run: |
+          echo "HEAD_SHA=$(cd "$RUNNER_TEMP/src" && git rev-parse HEAD)"
+          echo "HEAD_TREE=$(cd "$RUNNER_TEMP/src" && git rev-parse HEAD^{tree})"
