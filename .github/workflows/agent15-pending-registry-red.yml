@@ -67,6 +67,13 @@ jobs:
           code=$?
           echo "COMPILE_EXIT=$code"
           echo "COMPILE_LOG_LINES=$(grep -c . "$RUNNER_TEMP/compile.log")"
+          grep -q 'Could not find the selected project in the reactor' "$RUNNER_TEMP/compile.log" && echo 'DIAG_PROJECT_SELECTOR=true' || true
+          grep -q 'Non-resolvable parent POM' "$RUNNER_TEMP/compile.log" && echo 'DIAG_PARENT_RESOLUTION=true' || true
+          grep -q 'Unknown packaging' "$RUNNER_TEMP/compile.log" && echo 'DIAG_UNKNOWN_PACKAGING=true' || true
+          grep -q 'Unknown lifecycle phase' "$RUNNER_TEMP/compile.log" && echo 'DIAG_UNKNOWN_LIFECYCLE=true' || true
+          grep -q 'Child module.*does not exist' "$RUNNER_TEMP/compile.log" && echo 'DIAG_CHILD_MODULE=true' || true
+          grep -q 'Could not resolve target platform specification artifact' "$RUNNER_TEMP/compile.log" && echo 'DIAG_TARGET_PLATFORM=true' || true
+          grep -q 'Unresolveable build extension' "$RUNNER_TEMP/compile.log" && echo 'DIAG_BUILD_EXTENSION=true' || true
           exit "$code"
       - name: Run exact saturation class only; RED is expected evidence
         working-directory: ${{ runner.temp }}/src/server
