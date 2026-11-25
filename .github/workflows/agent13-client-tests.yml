@@ -21,7 +21,7 @@ on:
       subtests_baseline:
         description: 'Минимум subTest-сценариев; уменьшение требует пояснения и даёт ненулевой код'
         required: true
-        default: '0'
+        default: '213'
 permissions:
   contents: read
 concurrency:
