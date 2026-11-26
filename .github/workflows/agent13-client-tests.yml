@@ -112,6 +112,9 @@ jobs:
       - name: 3b. Сторож красных клиента (по именам, fail-closed)
         if: always()
         run: |
+          # Сверка идёт по ИМЕНАМ, а не по числу падений (промах #631: «2 failed → 2 failed»
+          # при другом красном тесте). Окруженческие ERROR прячутся не молча, а через
+          # `# Исключение:` в эталоне — они печатаются как СТОРОЖ_ИСКЛЮЧЕНО/ИСКЛЮЧЁН.
           set +e
           LOG=/tmp/pytest_before.log
           GUARD="$GITHUB_WORKSPACE/gate/tools/red_names_guard.py"
