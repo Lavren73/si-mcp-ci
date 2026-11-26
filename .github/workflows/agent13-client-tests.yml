@@ -21,7 +21,15 @@ on:
       subtests_baseline:
         description: 'Минимум subTest-сценариев; уменьшение требует пояснения и даёт ненулевой код'
         required: true
-        default: '213'
+        # 217 — эталон для связки #599 + #627, переснятый 26.11 на final 51eb1cfa
+        # (голова #627 = 7c1af8db). Замерено полным клиентом (PYTHONPATH=client, client/tests):
+        #   final 51eb1cfa            -> 2 failed, 1397 passed, 21 skipped, 2 errors, 213 subtests
+        #   final + #599 (67ccc315)   -> то же, но 212 subtests (снята проверка ПРОВЕРКА.bat)
+        #   final + #599 + #627       -> 2 failed, 1398 passed, 21 skipped, 2 errors, 217 subtests
+        # После одного #599 в trunk стоит 212, и снимок final будет красным до вливания #627 —
+        # это намеренно (#613: падение покрытия не должно проходить как «чисто»).
+        # Вливать порядком: #599 -> #627 -> этот PR.
+        default: '217'
 permissions:
   contents: read
 concurrency:
