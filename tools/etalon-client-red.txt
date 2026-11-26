@@ -1,12 +1,14 @@
-# Эталон красных клиентского прогона SI-MCP (домик si-mcp-ci, шаг «Сторож красных»).
-# Дерево: final 51eb1cfa57966d1af61de77d989d0b42634e9da4 (уже с #631); окружение: Linux,
-# python3.13, `PYTHONPATH=client python3 -m pytest client/tests -q -rf --tb=no`, 151.72 с.
-# В hosted-окружении этот же фон: 2 failed, 1412 passed, 1 skipped (прогон 45879518001 на
-# 5d337d08) — имён ERROR там нет, порог полноты проходит с запасом.
-# Снят автоматически: red_names_guard.py <лог> --снять. Не редактировать руками —
-# только переснимать с полного прогона и править шапку (SHA, окружение, дата).
-# Total: 1399  (failed+passed; ниже — итоговая строка прогона)
-# 2 failed, 1397 passed, 21 skipped, 2 errors, 213 subtests passed in 151.72s (0:02:31)
-# Формат записи: <узел pytest как его печатает -rfE>, по одному на строку.
-client/tests/test_panel_unknown_outcome.py::PanelUnknownOutcome::test_lost_write_response_does_not_trigger_rollback
-client/tests/test_terminal_offline.py::OfflineTests::test_no_rollback_on_malformed_diagnostics_after_write
+# Эталон красных клиентского прогона SI-MCP (домик si-mcp-ci, шаг 3b «Сторож красных»).
+# Снят: red_names_guard.py --снять с полного прогона на final 51eb1cfa57966d1af61de77d989d0b42634e9da4
+#   (в нём уже лежит #631); окружение прогона — Linux, python3.13,
+#   `PYTHONPATH=client python3 -m pytest client/tests -q -rfE --tb=no`, 151.72 с,
+#   итог: 2 failed, 1397 passed, 21 skipped, 2 errors, 213 subtests.
+# Hosted-окружение (run 45884867004 на этом же SHA): 2 failed, 1419 passed, 1 skipped,
+#   213 subtests — те же два имени, ERROR-записей нет (в hosted тесты запускаются из
+#   каталога client/, часть skip-условий иная). Порог полноты поэтому проходит с запасом.
+# Имена канонизируются относительно client/ — см. канон() в стороже: без этого локальный
+# прогон даёт `client/tests/…`, hosted — `tests/…`, и сверка расходится на пустом месте.
+# Формат записи: <узел pytest без префикса client/>, по одному на строку.
+# Правка: только пересъёмкой (--снять) в том же PR, что меняет фон; руками не редактировать.
+tests/test_panel_unknown_outcome.py::PanelUnknownOutcome::test_lost_write_response_does_not_trigger_rollback
+tests/test_terminal_offline.py::OfflineTests::test_no_rollback_on_malformed_diagnostics_after_write

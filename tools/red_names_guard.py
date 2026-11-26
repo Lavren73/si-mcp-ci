@@ -39,13 +39,33 @@ import sys
 ПОРОГ = re.compile(r"^#\s*Total:\s*(\d+)", re.M)
 
 
+def канон(имя: str) -> str:
+    """Каноническая форма узла: путь относительно client/.
+
+    Нужна обязательно: hosted-шаг запускает pytest с рабочим каталогом `client/`
+    и получает `tests/test_x.py::K::m`, а локальный прогон от корня репозитория —
+    `client/tests/test_x.py::K::m`. На прогоне 45884867004 из-за этого сторож
+    выдал РЕГРЕСС на совпадающем по составу фоне (2 failed == 2 эталонных записи),
+    потому что сравнивались префиксы, а не имена.
+    """
+    имя = имя.strip()
+    for pref in ("client/", "./client/", "./"):
+        if имя.startswith(pref):
+            имя = имя[len(pref):]
+            break
+    return имя
+
+
 def имена_из_лога(текст: str) -> list[str]:
     """Узлы FAILED/ERROR из короткой сводки, в порядке появления, без дублей."""
     seen: list[str] = []
     for line in текст.splitlines():
         m = ИМЯ.match(line)
-        if m and m.group(1) not in seen:
-            seen.append(m.group(1))
+        if not m:
+            continue
+        nm = канон(m.group(1))
+        if nm not in seen:
+            seen.append(nm)
     return seen
 
 
@@ -64,7 +84,7 @@ def сводка(текст: str) -> tuple[int, int] | None:
 
 
 def эталонных_имени(текст: str) -> list[str]:
-    return [ln.strip() for ln in текст.splitlines() if ln.strip() and not ln.startswith("#")]
+    return [канон(ln) for ln in текст.splitlines() if ln.strip() and not ln.startswith("#")]
 
 
 def снять(текст: str) -> str:
