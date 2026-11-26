@@ -103,13 +103,37 @@ jobs:
           else
             echo "INSTALLER_SIZE=НЕТ_ФАЙЛА"
           fi
-          python3 -m pytest tests -q >/tmp/pytest_before.log 2>&1; CODE=$?
+          python3 -m pytest tests -q -rfE --tb=no >/tmp/pytest_before.log 2>&1; CODE=$?
           echo "PYTEST_BEFORE_EXIT=$CODE"
           grep -aE "^(=|[0-9]+ (passed|failed))" /tmp/pytest_before.log | tail -2
           grep -aE "passed|failed|error" /tmp/pytest_before.log | tail -1
           echo "SKIP_BEFORE:"; grep -a "SKIPPED" /tmp/pytest_before.log | sed -E 's/\[[0-9]+%\]//' | head -30
 
-      - name: 3b. Повторы порядкочувствительных файлов (мера #611, гейт #633)
+      - name: 3b. Сторож красных клиента (по именам, fail-closed)
+        if: always()
+        run: |
+          set +e
+          LOG=/tmp/pytest_before.log
+          GUARD="$GITHUB_WORKSPACE/gate/tools/red_names_guard.py"
+          ETALON="$GITHUB_WORKSPACE/gate/tools/etalon-client-red.txt"
+          if [ ! -f "$GUARD" ] || [ ! -f "$ETALON" ] || [ ! -s "$LOG" ]; then
+            echo "CLIENT_REDS=missing-input"
+            echo "::error::Сторож или эталон не найдены, либо лог пуст — вердикта по красным нет, а не «красных нет»."
+            exit 1
+          fi
+          python3 "$GUARD" "$LOG" "$ETALON"
+          CODE=$?
+          echo "CLIENT_REDS_CODE=$CODE"
+          if [ "$CODE" -eq 1 ]; then
+            echo "::error::Имена красных разошлись с эталоном (или прогон неполный) — см. строки НОВЫЙ/ВЕРДИКТ выше."
+            exit 1
+          fi
+          if [ "$CODE" -eq 2 ]; then
+            echo "::warning::Красных стало меньше эталона: обнови gate/tools/etalon-client-red.txt в том же PR, что чинит падение."
+          fi
+          echo "CLIENT_REDS_VERDICT=ok"
+
+      - name: 3c. Повторы порядкочувствительных файлов (мера #611, гейт #633)
         if: ${{ github.event.inputs.repeat_files != '' }}
         working-directory: ${{ runner.temp }}/src/client
         run: |
@@ -134,11 +158,12 @@ jobs:
             k=0
             while [ "$k" -lt "$REPEATS" ]; do
               k=$((k+1)); total=$((total+1))
-              python3 -m pytest "$f" -q --tb=no >/tmp/repeat.log 2>&1
+              python3 -m pytest "$f" -q -rf --tb=no >/tmp/repeat.log 2>&1
               c=$?
               if [ "$c" -ne 0 ]; then
                 red=$((red+1))
                 echo "REPEAT_RED file=$f attempt=$k exit=$c :: $(grep -aE 'passed|failed|error' /tmp/repeat.log | tail -1)"
+                grep -aE '^(FAILED|ERROR) ' /tmp/repeat.log | head -5 | sed 's/^/  REDNAME /'
               fi
             done
             echo "REPEAT_FILE_DONE file=$f repeats=$REPEATS total_red_so_far=$red"
@@ -168,7 +193,7 @@ jobs:
           echo "PATCH_LINES_TOOLS=$(grep -c 'os.pardir, "data", "bsl-corpus"' tests/test_bsl_tools.py)"
           echo "--- git diff --stat (в репозиторий не коммитится) ---"
           git diff --stat
-          python3 -m pytest tests -q >/tmp/pytest_after.log 2>&1; CODE=$?
+          python3 -m pytest tests -q -rfE --tb=no >/tmp/pytest_after.log 2>&1; CODE=$?
           echo "PYTEST_AFTER_EXIT=$CODE"
           grep -aE "passed|failed|error" /tmp/pytest_after.log | tail -1
           echo "SKIP_AFTER:"; grep -a "SKIPPED" /tmp/pytest_after.log | sed -E 's/\[[0-9]+%\]//' | head -30
