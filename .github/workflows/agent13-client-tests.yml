@@ -21,7 +21,12 @@ on:
       subtests_baseline:
         description: 'Минимум subTest-сценариев; уменьшение требует пояснения и даёт ненулевой код'
         required: true
-        default: '213'
+        # 212 — с момента, когда в final ляжет связка #599 + #627 (снятая проверка
+        # ПРОВЕРКА.bat в установщике, покрытая тестом). Замерено на tree merge(final 941c162f
+        # + #599 67ccc315): 2 failed, 1435 passed, 21 skipped, 2 errors, 212 subtests;
+        # со стеком #627 — 1436 passed, те же 212. Не мержить раньше #599: иначе падение
+        # 213 -> 212 пройдёт гейтом как «чисто» (#613).
+        default: '212'
 permissions:
   contents: read
 concurrency:
