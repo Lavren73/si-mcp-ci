@@ -25,15 +25,15 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: si-mcp-client-tests-${{ github.event.inputs.sha }}
-  cancel-in-progress: false
+  group: si-mcp-client-tests-${{ github.event.inputs.sha }}-${{ github.actor }}
+  cancel-in-progress: true
 jobs:
   client:
     name: pytest клиента на hosted
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     env:
-      TARGET_SHA: ${{ github.event.inputs.sha }}
+      TARGET_SHA: ${{ github.event.inputs.sha }}-${{ github.actor }}
       CORPUS_FIX: ${{ github.event.inputs.corpus_fix }}
       SUBTESTS_BASELINE: ${{ github.event.inputs.subtests_baseline }}
       LANG: C.UTF-8
