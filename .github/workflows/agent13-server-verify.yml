@@ -15,7 +15,7 @@ on:
         required: true
         default: '7f001a3a28306c77102743a2879c9542491f52e8'
       goal:
-        description: 'Цель Maven (по умолчанию verify)'
+        description: 'Цель Maven (по умолчанию verify); -fae обязателен'
         required: true
         default: 'verify'
       profile:
@@ -121,15 +121,81 @@ jobs:
           # Профиль отдельным входом: цель в кавычках уходит в Maven одним словом, поэтому
           # "-Pedt-2026.2 verify" в goal было бы прочитано как один аргумент -P "edt-2026.2 verify"
           # и Maven ответил бы "No goals have been specified" (находка прогона 44028718674).
-          PROFILE_ARG=""
-          if [ -n "$PROFILE" ]; then PROFILE_ARG="-P$PROFILE"; fi
-          echo "команда: mvn -B -ntp -Dstyle.color=never $PROFILE_ARG $GOAL"
-          xvfb-run --auto-servernum mvn -B -ntp -Dstyle.color=never $PROFILE_ARG $GOAL > "$RUNNER_TEMP/mvn.log" 2>&1
+          # Inputs are parsed once as arguments, never expanded as shell words/globs.
+          # In particular a profile containing " -fn" must not be able to sneak a
+          # second reactor policy past the goal check.
+          PROFILE_ARGS=()
+          if [ -n "$PROFILE" ]; then
+            if [[ ! "$PROFILE" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]]; then
+              echo 'PROFILE_REJECTED=invalid Maven profile'; exit 2
+            fi
+            PROFILE_ARGS=("-P$PROFILE")
+          fi
+          if [[ "$GOAL" == *$'\n'* || "$GOAL" == *$'\r'* ]]; then
+            echo 'GOAL_REJECTED=multiline input'; exit 2
+          fi
+          read -r -a GOAL_ARGS <<< "$GOAL"
+          if [ "${#GOAL_ARGS[@]}" -eq 0 ]; then
+            echo 'GOAL_REJECTED=empty'; exit 2
+          fi
+          # Разрешён только обычный вызов: биндинги целей без опций, профиль — отдельным
+          # входом. Иначе красное можно сделать зелёным незаметно: -Dmaven.test.failure.ignore=true,
+          # -DskipTests, -pl (часть реактора), -o/-U (другие артефакты), -s/-gs (свой settings).
+          GOAL_HINT='GOAL_REJECTED=options and properties are not allowed in goal; pass profile via the profile input'
+          for arg in "${GOAL_ARGS[@]}"; do
+            case "$arg" in
+              -*)
+                echo "$GOAL_HINT"; exit 2 ;;
+            esac
+            if [[ ! "$arg" =~ ^[A-Za-z][A-Za-z0-9_.:-]*$ ]]; then
+              echo 'GOAL_REJECTED=only lifecycle goals and plugin:goal are allowed'; exit 2
+            fi
+          done
+          printf 'команда: mvn -B -ntp -fae -Dstyle.color=never'
+          printf ' %q' "${PROFILE_ARGS[@]}" "${GOAL_ARGS[@]}"
+          printf '\n'
+          xvfb-run --auto-servernum mvn -B -ntp -fae -Dstyle.color=never "${PROFILE_ARGS[@]}" "${GOAL_ARGS[@]}" > "$RUNNER_TEMP/mvn.log" 2>&1
           code=$?
+          # Признаки того, что тесты фактически не работали: тогда красное молча стало бы зелёным.
+          if grep -qE 'Tests are skipped|maven\.test\.skip|\[INFO\] Skipping .*(tests|Surefire)' "$RUNNER_TEMP/mvn.log"; then
+            echo 'MVN_REJECTED=build reports skipped tests'
+            [ "$code" -eq 0 ] && code=95
+          fi
+          # Диагностика без содержимого лога (репозиторий публичный): только счётчики.
+          echo "MVN_LOG_BYTES=$(wc -c < "$RUNNER_TEMP/mvn.log" 2>/dev/null || echo 0)"
+          echo "MVN_LOG_LINES_MID=$(grep -c . "$RUNNER_TEMP/mvn.log" 2>/dev/null || echo 0)"
+          # Шаг идёт в runner.temp/src/server, поэтому смотрим и от текущего каталога, и от корня src.
+          # Отчёты считаем фактом: если их нет — тесты не запускались, красное стало бы зелёным.
+          if find . "$RUNNER_TEMP/src/server" -name 'TEST-*.xml' -path '*surefire-reports*' -print -quit 2>/dev/null | grep -q .; then
+            echo "MVN_REPORTS=present original_exit=$code"
+            [ "$code" -eq 0 ] && echo 'MVN_NOTE=exit0 with reports'
+          else
+            echo 'MVN_REJECTED=no surefire reports produced'
+            [ "$code" -eq 0 ] && code=96
+          fi
           echo "MVN_EXIT=$code"
           # Maven log, failures, paths, and stack traces may contain private data.
           # They stay local on the ephemeral runner and are never printed or uploaded.
           exit "$code"
+
+      - name: 6b. Доказательство «-fae» — состав итога реактора (только счётчики)
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          L="$RUNNER_TEMP/mvn.log"
+          [ -f "$L" ] || { echo 'REACTOR=no-log'; exit 0; }
+          # Печатаем ТОЛЬКО количества строк по типам из Reactor Summary: без имён модулей,
+          # без путей и без текста ошибок — репозиторий публичный.
+          SUM=$(awk '/Reactor Summary/,0' "$L")
+          echo "REACTOR_SUCCESS=$(printf '%s' "$SUM" | grep -cE '^\[INFO\] [^ ]+ .*SUCCESS')"
+          echo "REACTOR_FAILURE=$(printf '%s' "$SUM" | grep -cE '^\[INFO\] [^ ]+ .*FAILURE')"
+          echo "REACTOR_SKIPPED=$(printf '%s' "$SUM" | grep -cE '^\[INFO\] [^ ]+ .*SKIPPED')"
+          # При -ff (fail-fast) модули после первого падения получают SKIPPED и почти нет SUCCESS
+          # после FAILURE; при -fae они продолжают выполняться.
+          echo "REACTOR_TOTAL=$(printf '%s' "$SUM" | grep -cE '^\[INFO\] [^ ]+ \.+ ')"
+          echo "MVN_SAW_FAE=$(grep -cE '^\[INFO\] BUILD FAILURE|^\[ERROR\] Failures:' "$L")"
+          exit 0
 
       - name: 7. Сводка surefire по счётчикам
         if: always()
