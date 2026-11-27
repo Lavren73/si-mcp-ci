@@ -1,0 +1,245 @@
+name: '№13 — EDT-free проверки SI-MCP на hosted (точный SHA)'
+
+on:
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: 'Точный 40-символьный SHA SI-MCP'
+        required: true
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: si-mcp-edt-free-${{ inputs.sha }}-${{ github.actor }}
+  cancel-in-progress: true
+jobs:
+  checks:
+    name: 'Hosted EDT-free: ${{ matrix.check }}'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        check: [client, text, gitleaks, scripts, docs, form-skd, bsl, contract, powershell, server, snapshot]
+    env:
+      TARGET_SHA: ${{ inputs.sha }}
+      LANG: C.UTF-8
+      LC_ALL: C.UTF-8
+    steps:
+      - name: Validate immutable source SHA
+        shell: bash
+        run: |
+          [[ "$TARGET_SHA" =~ ^[0-9a-fA-F]{40}$ ]] || { echo 'Invalid SHA input'; exit 2; }
+      - name: Checkout public workflow wrapper
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Checkout private SI-MCP at exact SHA using read-only deploy key
+        uses: actions/checkout@v4
+        with:
+          repository: Lavren73/SI-MCP
+          ref: ${{ inputs.sha }}
+          ssh-key: ${{ secrets.SI_MCP_DEPLOY_KEY }}
+          persist-credentials: false
+          fetch-depth: 0
+          path: source
+      - name: Verify checked-out source
+        shell: bash
+        run: |
+          actual=$(git -C source rev-parse HEAD)
+          echo "SOURCE_SHA=$actual"
+          test "${actual,,}" = "${TARGET_SHA,,}"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install Python test dependencies
+        if: matrix.check == 'client' || matrix.check == 'form-skd' || matrix.check == 'contract'
+        run: python -m pip install --quiet --disable-pip-version-check pytest requests pyyaml
+      - uses: actions/setup-java@v4
+        if: matrix.check == 'scripts' || matrix.check == 'server'
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: actions/setup-go@v5
+        if: matrix.check == 'gitleaks'
+        with:
+          go-version: '1.24.x'
+      - name: Install pinned Gitleaks
+        if: matrix.check == 'gitleaks'
+        shell: bash
+        run: |
+          go install github.com/gitleaks/gitleaks/v8@v8.24.3
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+      - name: Client tests
+        if: matrix.check == 'client'
+        shell: bash
+        run: |
+          set +e
+          (cd source/client && python make_installer.py) > "$RUNNER_TEMP/installer.log" 2>&1
+          build_rc=$?
+          if [ "$build_rc" -eq 0 ]; then
+            (cd source/client && python -m pytest -q tests > "$RUNNER_TEMP/client-tests.log" 2>&1)
+            test_rc=$?
+          else
+            test_rc=99
+          fi
+          echo "INSTALLER_EXIT=$build_rc CLIENT_TESTS_EXIT=$test_rc"
+          python - "$RUNNER_TEMP/client-tests.log" <<'PY'
+          import re,sys
+          try: text=open(sys.argv[1],encoding='utf-8',errors='replace').read()
+          except OSError: text=''
+          lines=re.findall(r'(?m)^=+\s*(\d+\s+passed(?:,\s*\d+\s+(?:failed|skipped|error|errors))*(?:,\s*[0-9.]+s)?)\s*=+$',text)
+          print('CLIENT_TESTS_SUMMARY='+ (lines[-1] if lines else 'unavailable'))
+          PY
+          [ "$build_rc" -eq 0 ] && [ "$test_rc" -eq 0 ]
+      - name: Clean text gate
+        if: matrix.check == 'text'
+        shell: bash
+        run: |
+          set +e
+          python source/tools/проверка-текста.py > "$RUNNER_TEMP/text.log" 2>&1
+          rc=$?
+          echo "TEXT_GATE_EXIT=$rc"
+          [ "$rc" -eq 0 ]
+      - name: Gitleaks scan of private source history (redacted, no report upload)
+        if: matrix.check == 'gitleaks'
+        shell: bash
+        run: |
+          set +e
+          gitleaks git --redact --report-format json --report-path "$RUNNER_TEMP/gitleaks.json" source > "$RUNNER_TEMP/gitleaks.log" 2>&1
+          rc=$?
+          python - "$RUNNER_TEMP/gitleaks.json" <<'PY'
+          import json,sys
+          try: findings=json.load(open(sys.argv[1],encoding='utf-8'))
+          except Exception: findings=[]
+          print('GITLEAKS_FINDINGS='+str(len(findings)))
+          PY
+          echo "GITLEAKS_EXIT=$rc"
+          [ "$rc" -eq 0 ]
+      - name: Server script gates and Python tests
+        if: matrix.check == 'scripts'
+        shell: bash
+        run: |
+          set +e
+          (cd source/server && bash scripts/run-gates.sh) > "$RUNNER_TEMP/script-gates.log" 2>&1
+          gates_rc=$?
+          (cd source/server/scripts/tests && python -m unittest discover -s . -p 'test_*.py') > "$RUNNER_TEMP/script-tests.log" 2>&1
+          tests_rc=$?
+          echo "SCRIPT_GATES_EXIT=$gates_rc SCRIPT_TESTS_EXIT=$tests_rc"
+          [ "$gates_rc" -eq 0 ] && [ "$tests_rc" -eq 0 ]
+      - name: Documentation hygiene and ZIP path regression
+        if: matrix.check == 'docs'
+        shell: bash
+        run: |
+          set +e
+          python source/tools/проверка-длин-имен.py > "$RUNNER_TEMP/docs-hygiene.log" 2>&1
+          hygiene_rc=$?
+          python - <<'PYZIP'
+          from pathlib import Path
+          from zipfile import ZIP_DEFLATED,ZipFile
+          root=Path('source/docs')
+          with ZipFile('/tmp/si-mcp-docs.zip','w',compression=ZIP_DEFLATED) as z:
+              for p in sorted(root.rglob('*')):
+                  z.write(p,p.as_posix())
+          PYZIP
+          unzip -l /tmp/si-mcp-docs.zip > "$RUNNER_TEMP/unzip-list.log" 2>&1
+          zip_rc=$?
+          if grep -q 'File name too long' "$RUNNER_TEMP/unzip-list.log"; then zip_rc=1; fi
+          echo "DOCS_HYGIENE_EXIT=$hygiene_rc ZIP_PATH_REGRESSION_EXIT=$zip_rc"
+          [ "$hygiene_rc" -eq 0 ] && [ "$zip_rc" -eq 0 ]
+      - name: Form and SKD offline tools
+        if: matrix.check == 'form-skd'
+        shell: bash
+        run: |
+          set +e
+          for f in tests/test_form_tools.py tests/test_skd_tools.py tests/test_form_roundtrip.py tests/test_skd_roundtrip.py; do
+            python "source/$f" > "$RUNNER_TEMP/$(basename "$f").log" 2>&1
+            rc=$?
+            echo "${f##*/}_EXIT=$rc"
+            [ "$rc" -eq 0 ] || exit "$rc"
+          done
+      - name: Static BSL corpus validation
+        if: matrix.check == 'bsl'
+        shell: bash
+        run: |
+          set +e
+          (cd source/data/bsl-corpus && python check_corpus.py) > "$RUNNER_TEMP/bsl-corpus.log" 2>&1
+          rc=$?
+          echo "BSL_CORPUS_EXIT=$rc"
+          [ "$rc" -eq 0 ]
+      - name: MCP contract tests (no EDT)
+        if: matrix.check == 'contract'
+        shell: bash
+        run: |
+          set +e
+          python -m pytest -q source/tests/mcp/test_mcp_contract.py > "$RUNNER_TEMP/mcp-contract.log" 2>&1
+          rc=$?
+          python - "$RUNNER_TEMP/mcp-contract.log" <<'PY'
+          import re,sys
+          text=open(sys.argv[1],encoding='utf-8',errors='replace').read()
+          m=re.search(r'(\d+ passed(?:, \d+ failed)?(?:, \d+ skipped)?(?: in [0-9.]+s)?)',text)
+          print('MCP_CONTRACT_SUMMARY='+ (m.group(1) if m else 'unavailable'))
+          PY
+          echo "MCP_CONTRACT_EXIT=$rc"
+          [ "$rc" -eq 0 ]
+      - name: PowerShell EDT-update unit test (mock-only, no EDT)
+        if: matrix.check == 'powershell'
+        shell: bash
+        run: |
+          set +e
+          pwsh -NoLogo -NoProfile -File source/server/scripts/tests/test_edt_selfupdate.ps1 > "$RUNNER_TEMP/powershell.log" 2>&1
+          rc=$?
+          echo "POWERSHELL_TEST_EXIT=$rc"
+          [ "$rc" -eq 0 ]
+      - name: Install Xvfb for the hosted Maven test suite
+        if: matrix.check == 'server'
+        shell: bash
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq xvfb
+      - name: Install pinned Maven 3.9.9
+        if: matrix.check == 'server'
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL --connect-timeout 20 --max-time 300 -o "$RUNNER_TEMP/maven.tar.gz" https://archive.apache.org/dist/maven/maven-3/3.9.9/binaries/apache-maven-3.9.9-bin.tar.gz
+          mkdir -p "$RUNNER_TEMP/maven"
+          tar -xzf "$RUNNER_TEMP/maven.tar.gz" -C "$RUNNER_TEMP/maven" --strip-components=1
+          echo "$RUNNER_TEMP/maven/bin" >> "$GITHUB_PATH"
+      - name: Server Maven verify
+        if: matrix.check == 'server'
+        shell: bash
+        env:
+          MAVEN_OPTS: -Xmx3g
+        run: |
+          set +e
+          xvfb-run --auto-servernum mvn -B -ntp -Dstyle.color=never -f source/server/pom.xml verify > "$RUNNER_TEMP/server-maven.log" 2>&1
+          rc=$?
+          python - "$RUNNER_TEMP/server-maven.log" <<'PY'
+          import re,sys
+          text=open(sys.argv[1],encoding='utf-8',errors='replace').read()
+          print('MAVEN_VERDICT='+ ('BUILD SUCCESS' if 'BUILD SUCCESS' in text else 'BUILD FAILURE' if 'BUILD FAILURE' in text else 'unavailable'))
+          counts=re.findall(r'Tests run: [^\r\n]+',text)
+          print('SUREFIRE_LINES='+str(len(counts)))
+          PY
+          echo "SERVER_VERIFY_EXIT=$rc"
+          [ "$rc" -eq 0 ]
+      - name: Snapshot packaging smoke test (private output not uploaded)
+        if: matrix.check == 'snapshot'
+        shell: bash
+        run: |
+          set -euo pipefail
+          SHA=$(git -C source rev-parse HEAD)
+          git -C source archive --format=zip --prefix="SI-MCP-$SHA/" -o "$RUNNER_TEMP/snapshot.zip" "$SHA"
+          git -C source bundle create "$RUNNER_TEMP/history.bundle" --all
+          git -C source bundle verify "$RUNNER_TEMP/history.bundle" >/dev/null 2>&1
+          python - "$SHA" "$RUNNER_TEMP/snapshot.zip" "$RUNNER_TEMP/history.bundle" <<'PY'
+          import sys,zipfile
+          z=zipfile.ZipFile(sys.argv[2]);bad=z.testzip()
+          if bad: raise SystemExit('ZIP integrity failed')
+          print('SNAPSHOT_SHA='+sys.argv[1])
+          print('SNAPSHOT_FILE_COUNT='+str(len([n for n in z.namelist() if not n.endswith('/')])) )
+          print('SNAPSHOT_PACKAGING=valid')
+          PY
+          rm -f "$RUNNER_TEMP/snapshot.zip" "$RUNNER_TEMP/history.bundle"
