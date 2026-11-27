@@ -115,16 +115,30 @@ jobs:
           esac
           if [ -z "$RESOLVED" ]; then
             annotate notice "РАЗРЕШАЮ ЦЕЛЬ ЧЕРЕЗ ls-remote: $TARGET_SHA"
-            RESOLVED="$(git ls-remote origin "$TARGET_SHA" | head -1 | cut -f1 || true)"
+            RESOLVED="$(git ls-remote origin "$TARGET_SHA" 2>/dev/null | head -1 | cut -f1 || true)"
             if [ -z "$RESOLVED" ]; then
-              RESOLVED="$(git ls-remote origin "refs/heads/$TARGET_SHA" | head -1 | cut -f1 || true)"
+              RESOLVED="$(git ls-remote origin "refs/heads/$TARGET_SHA" 2>/dev/null | head -1 | cut -f1 || true)"
             fi
-            if [ -z "$RESOLVED" ]; then
-              say "ls-remote по «$TARGET_SHA» ничего не вернул — в SI-MCP такой цели нет"
-              exit 9
+            if [ -n "$RESOLVED" ]; then
+              say "ls-remote «$TARGET_SHA» → $RESOLVED"
+            else
+              # Прямой ls-remote из клона ключом не авторизуется (прогон 46036317881: код 9).
+              # Пробуем тот же ref аутентифицированным fetch'ом и берём FETCH_HEAD.
+              say "ls-remote молчит — пробую fetch $TARGET_SHA с тем же ключом"
+              if GIT_SSH_COMMAND="ssh -i $RUNNER_TEMP/.ssh/id_deploy -o UserKnownHostsFile=$RUNNER_TEMP/.ssh/known_hosts -o IdentitiesOnly=yes"                    git fetch -q origin "$TARGET_SHA" > "$RUNNER_TEMP/fetch.log" 2>&1; then
+                RESOLVED="$(git rev-parse FETCH_HEAD 2>/dev/null || true)"
+                say "fetch состоялся → $RESOLVED"
+              else
+                rc=$?
+                say "FETCH НЕ УДАЛСЯ (код $rc): $(tail -n 1 "$RUNNER_TEMP/fetch.log" | tr -d '\r' | cut -c1-140)"
+                say "remote: $(git remote get-url origin | sed -E 's#//[^@]*@#//<СКРЫТО>@#')"
+                say "ls-remote без фильтра вернул $(git ls-remote origin 2>&1 | wc -l) строк (первая: $(git ls-remote origin 2>/dev/null | head -1 | cut -c1-60))"
+                exit 9
+              fi
             fi
-            say "ls-remote «$TARGET_SHA» → $RESOLVED"
           fi
+          if [ -z "$RESOLVED" ]; then say "ЦЕЛЬ НЕ РАЗРЕШЕНА: ни ls-remote, ни fetch не дали объекта"; exit 9; fi
+          annotate notice "РЕЗОЛВ: $TARGET_SHA → $RESOLVED"
           if ! git cat-file -e "$RESOLVED^{commit}" 2>/dev/null; then
             git fetch -q origin "$RESOLVED" 2>/dev/null || true
           fi
