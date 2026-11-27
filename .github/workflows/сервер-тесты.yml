@@ -229,8 +229,11 @@ jobs:
       - name: Экран для SWT (Xvfb)
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq xvfb xauth libgtk-3-0 >/dev/null
+          # Шрифты с кириллицей: без них русский текст на снимке страницы (тест
+          # TheToolsTabOnAScreenTest, №13) выходит квадратами. Добавлено №13.
+          sudo apt-get install -y -qq xvfb xauth libgtk-3-0 fonts-dejavu-core fonts-liberation >/dev/null
           echo "xvfb: $(which xvfb-run)"
+          fc-list :lang=ru 2>/dev/null | head -3 || true
 
       - name: Сколько у раннера памяти
         run: |
@@ -336,5 +339,8 @@ jobs:
           path: |
             /tmp/mvn.log
             /tmp/compile.log
+            # Снимки страницы прав: их рисует тест TheToolsTabOnAScreenTest (№13),
+            # чтобы владелец видел настоящую страницу без запуска EDT.
+            /tmp/скрин-*.png
           retention-days: 1
           if-no-files-found: ignore
