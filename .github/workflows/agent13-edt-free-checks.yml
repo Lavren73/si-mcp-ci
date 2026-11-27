@@ -76,7 +76,7 @@ jobs:
         shell: bash
         run: |
           set +e
-          python source/client/make_installer.py > "$RUNNER_TEMP/installer.log" 2>&1
+          (cd source/client && python make_installer.py) > "$RUNNER_TEMP/installer.log" 2>&1
           build_rc=$?
           if [ "$build_rc" -eq 0 ]; then
             (cd source/client && python -m pytest -q tests > "$RUNNER_TEMP/client-tests.log" 2>&1)
