@@ -13,6 +13,9 @@
 # или не отвечает, и workflow честно краснеет. Пропуск не превращается в успех.
 name: №11 — check-env на hosted (node, python, gh из SI-MCP scripts/)
 on:
+  push:
+    branches:
+      - agent/11-a1-0392-check-env-20261127
   workflow_dispatch:
     inputs:
       sha:
@@ -30,7 +33,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     env:
-      TARGET_SHA: ${{ github.event.inputs.sha }}
+      TARGET_SHA: ${{ github.event.inputs.sha || github.sha }}
     steps:
       - name: 1. Приватный SI-MCP на точном SHA (deploy key)
         env:
