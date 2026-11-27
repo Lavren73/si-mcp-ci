@@ -1,0 +1,87 @@
+# А1-0392 · hosted-проверка окружения прогоном scripts/check-env.sh из SI-MCP.
+#
+# Зачем дому отдельный workflow: SI-MCP приватный, и его hosted-минуты исчерпаны,
+# а проверить «есть ли на машине node, python и gh» надо именно на чистом
+# GitHub-hosted раннере — там эталонный набор инструментов. Сам чинк живёт в
+# репозитории проекта (scripts/check-env.sh), чтобы его нельзя было разошиться с
+# тем, что требует CI; домик только одалживает раннер.
+#
+# Откуда берётся скрипт: клон SI-MCP по deploy key на точный SHA — тот же
+# проверенный шаблон, что в agent13-client-tests.yml (прогон 44182257752).
+#
+# Честность вывода: чинк возвращает 1, если хотя бы один инструмент отсутствует
+# или не отвечает, и workflow честно краснеет. Пропуск не превращается в успех.
+name: №11 — check-env на hosted (node, python, gh из SI-MCP scripts/)
+on:
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: 'Точный SHA SI-MCP, откуда берётся scripts/check-env.sh'
+        required: true
+        default: '04b0f4c9e663da0413de2f137690363bb585dac0'
+permissions:
+  contents: read
+concurrency:
+  group: agent11-check-env
+  cancel-in-progress: false
+jobs:
+  env:
+    name: bash scripts/check-env.sh (hosted ubuntu-24.04)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      TARGET_SHA: ${{ github.event.inputs.sha }}
+    steps:
+      - name: 1. Приватный SI-MCP на точном SHA (deploy key)
+        env:
+          DEPLOY_KEY: ${{ secrets.SI_MCP_DEPLOY_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "${TARGET_SHA}"
+          mkdir -p "$RUNNER_TEMP/.ssh" && chmod 700 "$RUNNER_TEMP/.ssh"
+          if printf '%s' "$DEPLOY_KEY" | grep -q 'BEGIN [A-Z ]*PRIVATE KEY'; then
+            echo "KEY_KIND=ssh-private-key"
+            printf '%s\n' "$DEPLOY_KEY" > "$RUNNER_TEMP/.ssh/id_deploy"
+            chmod 600 "$RUNNER_TEMP/.ssh/id_deploy"
+            ssh-keyscan -t rsa,ecdsa,ed25519 github.com > "$RUNNER_TEMP/.ssh/known_hosts" 2>/dev/null
+            GIT_SSH_COMMAND="ssh -i $RUNNER_TEMP/.ssh/id_deploy -o UserKnownHostsFile=$RUNNER_TEMP/.ssh/known_hosts -o IdentitiesOnly=yes" \
+              git clone --no-checkout git@github.com:Lavren73/SI-MCP.git "$RUNNER_TEMP/src"
+          else
+            echo "KEY_KIND=token"
+            git clone --no-checkout "https://x-access-token:${DEPLOY_KEY}@github.com/Lavren73/SI-MCP.git" "$RUNNER_TEMP/src"
+          fi
+          cd "$RUNNER_TEMP/src"
+          git checkout --detach "$TARGET_SHA"
+          HEAD_SHA=$(git rev-parse HEAD)
+          echo "HEAD_SHA=$HEAD_SHA"
+          echo "HEAD_TREE=$(git rev-parse HEAD^{tree})"
+          echo "HEAD_SUBJECT=$(git log -1 --format=%s)"
+          test "$HEAD_SHA" = "$TARGET_SHA" || { echo "SHA MISMATCH"; exit 1; }
+          rm -f "$RUNNER_TEMP/.ssh/id_deploy"
+
+      - name: 2. Прогнать чинк окружения из проверяемого дерева
+        run: |
+          set -uo pipefail
+          cd "$RUNNER_TEMP/src"
+          if [ ! -f scripts/check-env.sh ]; then
+            echo "::error::scripts/check-env.sh не найден на этом SHA — чинк пушить некуда"
+            exit 2
+          fi
+          echo "файл: $(git hash-object scripts/check-env.sh) | размер $(wc -c < scripts/check-env.sh) байт"
+          bash scripts/check-env.sh 2>&1 | tee "$RUNNER_TEMP/check-env.log"
+          rc=${PIPESTATUS[0]}
+          echo "CHECK_ENV_EXIT=$rc" >> "$GITHUB_ENV"
+          {
+            echo "### check-env · $(uname -srm)"
+            echo
+            echo '```'
+            cat "$RUNNER_TEMP/check-env.log"
+            echo '```'
+            echo
+            if [ "$rc" -eq 0 ]; then
+              echo "**Как читать:** \`ИТОГО: 3 из 3\` и код 0 — node, python и gh на месте, \`--version\` отработал."
+            else
+              echo "**Как читать:** код $rc — строка \`НЕ ХВАТАЕТ\` означает отсутствие в PATH, \`НЕ ОТВЕЧАЕТ\` — бинарник есть, но \`--version\` вернул ненулевой код. Пропуск инструмента зелёным не считается."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$rc"
