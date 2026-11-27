@@ -5,8 +5,9 @@ name: '№13 — Сервер SI-MCP mvn verify на hosted (ЗД-29, точны
 # Рецепт прогона взят из приватного .github/workflows/сервер-тесты.yml (четыре находки
 # первого настоящего прогона: Maven 3.9.9 вместо 4.x, xvfb-run, кэш ~/.m2 выключен,
 # корректный код возврата через PIPESTATUS).
-# Репозиторий публичный, поэтому НИ логи, НИ артефакты не выгружаются: печатаются только
-# счётчики, хеши и вердикт сторожа красных.
+# Репозиторий публичный: сырые логи не печатаются и не выгружаются. При ошибке последние
+# 80 строк печатаются после редактирования секретов; redacted Maven log и Surefire XML
+# публикуются отдельными публичными artifacts на 1 день, без исходников/прочих файлов.
 on:
   workflow_dispatch:
     inputs:
@@ -127,8 +128,31 @@ jobs:
           xvfb-run --auto-servernum mvn -B -ntp -Dstyle.color=never $PROFILE_ARG $GOAL > "$RUNNER_TEMP/mvn.log" 2>&1
           code=$?
           echo "MVN_EXIT=$code"
-          # Maven log, failures, paths, and stack traces may contain private data.
-          # They stay local on the ephemeral runner and are never printed or uploaded.
+          # Print only the sanitized tail; never dump the raw Maven stream to public logs.
+          if [ "$code" -ne 0 ]; then
+            python3 - "$RUNNER_TEMP/mvn.log" <<'PY'
+          import re,sys
+          try: text=open(sys.argv[1],encoding='utf-8',errors='replace').read()
+          except OSError: text='[maven.log unavailable]'
+          def redact(text):
+              text=re.sub(r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----.*?-----END [A-Z0-9 ]*PRIVATE KEY-----","[REDACTED PRIVATE KEY]",text,flags=re.S)
+              pat=r"(?i)((?:password|passwd|token|secret|api[_-]?key|authorization)[\x22\x27]?\s*[:=]\s*)([\x22\x27]?)([^\x22\x27\s<>&]+)([\x22\x27]?)"
+              text=re.sub(pat,lambda m:m.group(1)+m.group(2)+"[REDACTED]"+m.group(4),text)
+              def redact_xml_tags(text):
+                  pat=r"(?is)<(password|passwd|token|secret|api[_-]?key)[^>]*>.*?</\1\s*>"
+                  return re.sub(pat,lambda m:"<"+m.group(1)+">[REDACTED]</"+m.group(1)+">",text)
+              text=redact_xml_tags(text)
+              text=re.sub(r"(?i)Bearer\s+[A-Za-z0-9._~+/=-]{12,}","Bearer [REDACTED]",text)
+              text=re.sub(r"https?://[^/\s:@]+:[^/\s@]+@","https://[REDACTED]@",text)
+              text=re.sub(r"gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,}","[REDACTED_GITHUB_TOKEN]",text)
+              text=re.sub(r"AKIA[0-9A-Z]{16}","[REDACTED_AWS_KEY]",text)
+              return text
+          text=redact(text)
+          print('MVN_LOG_LAST_80_BEGIN')
+          print('\n'.join(text.splitlines()[-80:]))
+          print('MVN_LOG_LAST_80_END')
+          PY
+          fi
           exit "$code"
 
       - name: 7. Сводка surefire по счётчикам
@@ -200,3 +224,54 @@ jobs:
           echo "HEAD_TREE=$(cd "$RUNNER_TEMP/src" && git rev-parse HEAD^{tree})"
           grep -c . "$RUNNER_TEMP/mvn.log" | sed 's/^/MVN_LOG_LINES=/'
 
+      - name: Prepare redacted Maven diagnostics
+        if: failure()
+        shell: bash
+        run: |
+          python3 - "$RUNNER_TEMP/src" "$RUNNER_TEMP/mvn.log" "$RUNNER_TEMP/diagnostics" <<'PY'
+          import glob,os,re,sys
+          from pathlib import Path
+          source,log_path,out=sys.argv[1:]
+          out=Path(out); out.mkdir(parents=True,exist_ok=True)
+          def redact(text):
+              text=re.sub(r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----.*?-----END [A-Z0-9 ]*PRIVATE KEY-----","[REDACTED PRIVATE KEY]",text,flags=re.S)
+              pat=r"(?i)((?:password|passwd|token|secret|api[_-]?key|authorization)[\x22\x27]?\s*[:=]\s*)([\x22\x27]?)([^\x22\x27\s<>&]+)([\x22\x27]?)"
+              text=re.sub(pat,lambda m:m.group(1)+m.group(2)+"[REDACTED]"+m.group(4),text)
+              def redact_xml_tags(text):
+                  pat=r"(?is)<(password|passwd|token|secret|api[_-]?key)[^>]*>.*?</\1\s*>"
+                  return re.sub(pat,lambda m:"<"+m.group(1)+">[REDACTED]</"+m.group(1)+">",text)
+              text=redact_xml_tags(text)
+              text=re.sub(r"(?i)Bearer\s+[A-Za-z0-9._~+/=-]{12,}","Bearer [REDACTED]",text)
+              text=re.sub(r"https?://[^/\s:@]+:[^/\s@]+@","https://[REDACTED]@",text)
+              text=re.sub(r"gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,}","[REDACTED_GITHUB_TOKEN]",text)
+              text=re.sub(r"AKIA[0-9A-Z]{16}","[REDACTED_AWS_KEY]",text)
+              return text
+          try: raw=Path(log_path).read_text(encoding='utf-8',errors='replace')
+          except OSError: raw='[maven.log unavailable]\n'
+          (out/'maven.log').write_text(redact(raw),encoding='utf-8')
+          reports=glob.glob(os.path.join(source,'server/**/target/surefire-reports/TEST-*.xml'),recursive=True)
+          report_dir=out/'surefire-reports'; report_dir.mkdir(parents=True,exist_ok=True)
+          for report in reports:
+              rel=os.path.relpath(report,source); dest=report_dir/rel;dest.parent.mkdir(parents=True,exist_ok=True)
+              dest.write_text(redact(Path(report).read_text(encoding='utf-8',errors='replace')),encoding='utf-8')
+          if not reports: (report_dir/'NO_REPORTS.txt').write_text('No Surefire TEST-*.xml files were produced.\n',encoding='utf-8')
+          print('DIAGNOSTICS_PREPARED=1 SUREFIRE_REPORTS='+str(len(reports))+' SECRETS_REDACTED=1')
+          PY
+
+      - name: Upload sanitized Maven log artifact
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: maven-log-${{ github.event.inputs.sha }}
+          path: ${{ runner.temp }}/diagnostics/maven.log
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Upload sanitized Surefire reports artifact
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: surefire-reports-${{ github.event.inputs.sha }}
+          path: ${{ runner.temp }}/diagnostics/surefire-reports/
+          if-no-files-found: error
+          retention-days: 1
