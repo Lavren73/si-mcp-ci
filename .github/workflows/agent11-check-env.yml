@@ -3,17 +3,25 @@
 # Зачем дому отдельный workflow: SI-MCP приватный, и его hosted-минуты исчерпаны,
 # а проверить «есть ли на машине node, python и gh» надо именно на чистом
 # GitHub-hosted раннере — там эталонный набор инструментов. Сам чинк живёт в
-# репозитории проекта (scripts/check-env.sh), чтобы его нельзя было разошиться с
-# тем, что требует CI; домик только одалживает раннер.
+# репозитории проекта (scripts/check-env.sh), чтобы он не мог разошиться с тем,
+# что требует CI; домик только одалживает раннер.
 #
-# Откуда берётся скрипт: клон SI-MCP по deploy key на точный SHA — тот же
-# проверенный шаблон, что в agent13-client-tests.yml (прогон 44182257752).
+# Откуда берётся скрипт: клон SI-MCP по deploy key — тот же проверенный шаблон,
+# что в agent13-client-tests.yml (прогон 45899490256, success).
 #
-# А1-0393: добавлен триггер push на ветку PR — без него домик исполняет workflow
-# только с default branch, то есть чинк нельзя было проверить до мержа #15.
-# Плюс шаг 0 (предпроверка ключа) и честные диагностические строки в шаге 1:
-# шаг не может «просмолчать» отказ клона, код возврата снимается до следующей
-# команды (в `cmd | sed … || diag "${PIPESTATUS[0]}"` PIPESTATUS уже пустеет).
+# А1-0393 (этот коммит):
+#  - on.push.branches на ветку PR — без него домик исполняет workflow только с
+#    default branch, то есть чинк нельзя было проверить до мержа #15;
+#  - цель (TARGET_SHA) разрешается, а не подставляется в checkout: sha домика не
+#    существует в SI-MCP, отсюда «exit code 8» в прогоне 46035735830; теперь цель —
+#    ref головы ветки SI-MCP (push-прогон) или точный sha из входа (dispatch);
+#  - шаг 0 пишет в job-сводку событие, раннера, длину секрета (значение не
+#    печатается) и наличие git/node/python3/gh;
+#  - отказы шага 1 диагностируются явно (клон, ls-remote, checkout, mismatch),
+#    rc снимается до следующей команды;
+#  - шаг 2 дублирует вывод чинка аннотацией: её читает публичный
+#    GET /repos/<домик>/check-runs/<job>/annotations, тогда как логи шагов
+#    интеграции недоступны (401 на /actions/jobs/<id>/logs).
 #
 # Честность вывода: чинк возвращает 1, если хотя бы один инструмент отсутствует
 # или не отвечает, и workflow честно краснеет. Пропуск не превращается в успех.
@@ -25,9 +33,9 @@ on:
   workflow_dispatch:
     inputs:
       sha:
-        description: 'Точный SHA SI-MCP, откуда берётся scripts/check-env.sh'
+        description: 'Цель в SI-MCP: полный sha или ref с чинком (пусто = голова ветки SI-MCP)'
         required: true
-        default: '04b0f4c9e663da0413de2f137690363bb585dac0'
+        default: 'refs/heads/agent/11-a1-0392-check-env-20261127'
 permissions:
   contents: read
 concurrency:
@@ -39,7 +47,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     env:
-      TARGET_SHA: ${{ github.event.inputs.sha || github.sha }}
+      TARGET_SHA: ${{ github.event.inputs.sha || 'refs/heads/agent/11-a1-0392-check-env-20261127' }}
     steps:
       - name: 0. Предпроверка (событие, ключ, инструменты раннера)
         env:
@@ -50,17 +58,17 @@ jobs:
             echo "### check-env · предпроверка · $(uname -srm)"
             echo
             echo "- событие \`$GITHUB_EVENT_NAME\` · раннер \`${RUNNER_NAME:-?}\` (id ${RUNNER_ID:-?})"
-            echo "- TARGET_SHA: \`${TARGET_SHA:-ПУСТО}\`"
+            echo "- цель SI-MCP: \`${TARGET_SHA:-ПУСТО}\`"
             if [ -n "${DEPLOY_KEY}" ]; then
-              echo "- секрет \`SI_MCP_DEPLOY_KEY\`: не пустой, ${#DEPLOY_KEY} байт, начинается с \"$(printf '%s' "${DEPLOY_KEY}" | head -c 5)\""
+              echo "- секрет \`SI_MCP_DEPLOY_KEY\`: не пустой, ${#DEPLOY_KEY} байт, начинается с \`$(printf '%s' "${DEPLOY_KEY}" | head -c 5)\`"
             else
-              echo "- секрет \`SI_MCP_DEPLOY_KEY\`: **пустой** на событии \"$GITHUB_EVENT_NAME\""
+              echo "- секрет \`SI_MCP_DEPLOY_KEY\`: **пустой** на событии \`$GITHUB_EVENT_NAME\`"
             fi
             for x in git node python3 gh; do printf -- '- %-8s %s\n' "$x" "$(command -v $x || echo НЕТ)"; done
           } >> "$GITHUB_STEP_SUMMARY"
-          echo "event=${GITHUB_EVENT_NAME} | target=${TARGET_SHA:-EMPTY} | key_bytes=${#DEPLOY_KEY}"
+          echo "event=$GITHUB_EVENT_NAME | target=${TARGET_SHA:-EMPTY} | key_bytes=${#DEPLOY_KEY}"
 
-      - name: 1. Приватный SI-MCP на точном SHA (deploy key)
+      - name: 1. Приватный SI-MCP — клон по deploy key и переход на цель
         env:
           DEPLOY_KEY: ${{ secrets.SI_MCP_DEPLOY_KEY }}
         run: |
@@ -69,49 +77,70 @@ jobs:
             printf '%s\n' "$1"
             printf -- '- %s\n' "$1" >> "$GITHUB_STEP_SUMMARY"
           }
-          mkdir -p "$RUNNER_TEMP/.ssh" && chmod 700 "$RUNNER_TEMP/.ssh"
+          annotate() { printf '::%s::%s\n' "$1" "$2"; }
+          trap 'annotate notice "ШАГ 1 ПРЕРВАН НА НЕОЖИДАННОЙ КОМАНДЕ (код $?) — см. строки clone и ls-remote выше"' ERR
           if [ -z "${TARGET_SHA}" ]; then
-            say "ЦЕЛЬ ПУСТА: workflow вызван без sha — клон не на что нацеливать"
+            say "ЦЕЛЬ ПУСТА: workflow вызван без sha — переходить некуда"
             exit 1
           fi
           if [ -z "${DEPLOY_KEY}" ]; then
             say "СЕКРЕТ ПУСТОЙ: SI_MCP_DEPLOY_KEY не долетел до прогона на событии $GITHUB_EVENT_NAME — приватник не открыть"
             exit 1
           fi
-          if printf '%s' "${DEPLOY_KEY}" | grep -q 'BEGIN OPENSSH PRIVATE KEY'; then
-            say "ключ: формат OPENSSH, ${#DEPLOY_KEY} байт"
-            printf '%s\n' "${DEPLOY_KEY}" > "$RUNNER_TEMP/.ssh/id_deploy"
-            chmod 600 "$RUNNER_TEMP/.ssh/id_deploy"
-            ssh-keyscan -t rsa,ecdsa,ed25519 github.com > "$RUNNER_TEMP/.ssh/known_hosts" 2>/dev/null || true
-            GIT_SSH_COMMAND="ssh -i $RUNNER_TEMP/.ssh/id_deploy -o UserKnownHostsFile=$RUNNER_TEMP/.ssh/known_hosts -o IdentitiesOnly=yes" \
-              git clone --no-checkout git@github.com:Lavren73/SI-MCP.git "$RUNNER_TEMP/src" > "$RUNNER_TEMP/clone.log" 2>&1
-            rc=$?
-            tail -n 3 "$RUNNER_TEMP/clone.log" || true
-            if [ "$rc" -ne 0 ]; then
-              say "КЛОН НЕ УДАЛСЯ (код $rc): $(tail -n 1 "$RUNNER_TEMP/clone.log" | tr -d '\r')"
-              exit "$rc"
-            fi
-            say "клон по ssh состоялся"
-          elif printf '%s' "${DEPLOY_KEY}" | grep -q 'PRIVATE KEY'; then
-            say "ключ: приватный, но НЕ openssh-формата — клон им не выполняется"
-            exit 3
-          else
-            say "КЛОН ТОКЕНОМ НЕ ДЕЛАЕТСЯ: нужен ssh-deploy-ключ, а в секрете лежит что-то другое (${#DEPLOY_KEY} байт)"
+          if ! printf '%s' "${DEPLOY_KEY}" | grep -q 'BEGIN [A-Z ]*PRIVATE KEY'; then
+            say "СЕКРЕТ НЕ ПОХОЖ НА deploy-ключ: нет строки BEGIN ... PRIVATE KEY (${#DEPLOY_KEY} байт)"
             exit 4
           fi
-          cd "$RUNNER_TEMP/src" || { say "СИСТЕМА: каталог клона $RUNNER_TEMP/src не появился"; exit 7; }
-          git checkout --detach "$TARGET_SHA" || { say "CHECKOUT НЕ УДАЛСЯ (код $?): на ${TARGET_SHA} в этом клоне не переходится"; exit 8; }
-          HEAD_SHA=$(git rev-parse HEAD)
-          say "head: ${HEAD_SHA} | $(git log -1 --format=%s | cut -c1-64)"
-          if [ "$HEAD_SHA" != "$TARGET_SHA" ]; then
-            say "HEAD MISMATCH: получили ${HEAD_SHA}, хотели ${TARGET_SHA}"
+          mkdir -p "$RUNNER_TEMP/.ssh"
+          chmod 700 "$RUNNER_TEMP/.ssh"
+          rm -rf "$RUNNER_TEMP/src"
+          printf '%s\n' "${DEPLOY_KEY}" > "$RUNNER_TEMP/.ssh/id_deploy"
+          chmod 600 "$RUNNER_TEMP/.ssh/id_deploy"
+          ssh-keyscan -t rsa,ecdsa,ed25519 github.com > "$RUNNER_TEMP/.ssh/known_hosts" 2>/dev/null || true
+          say "ключ принят: приватный PEM, ${#DEPLOY_KEY} байт"
+          GIT_SSH_COMMAND="ssh -i $RUNNER_TEMP/.ssh/id_deploy -o UserKnownHostsFile=$RUNNER_TEMP/.ssh/known_hosts -o IdentitiesOnly=yes" \
+            git clone --no-checkout git@github.com:Lavren73/SI-MCP.git "$RUNNER_TEMP/src" > "$RUNNER_TEMP/clone.log" 2>&1
+          rc=$?
+          if [ "$rc" -ne 0 ]; then
+            tail -n 3 "$RUNNER_TEMP/clone.log" || true
+            say "КЛОН НЕ УДАЛСЯ (код $rc): $(tail -n 1 "$RUNNER_TEMP/clone.log" | tr -d '\r' | cut -c1-160)"
+            exit "$rc"
+          fi
+          say "клон по ssh состоялся"
+          cd "$RUNNER_TEMP/src" || { say "СИСТЕМА: каталог клона не появился"; exit 7; }
+          RESOLVED=""
+          case "$TARGET_SHA" in
+            *[!0-9a-fA-F]*|"") : ;;
+            *) if [ "${#TARGET_SHA}" -eq 40 ]; then RESOLVED="$TARGET_SHA"; fi ;;
+          esac
+          if [ -z "$RESOLVED" ]; then
+            annotate notice "РАЗРЕШАЮ ЦЕЛЬ ЧЕРЕЗ ls-remote: $TARGET_SHA"
+            RESOLVED="$(git ls-remote origin "$TARGET_SHA" | head -1 | cut -f1 || true)"
+            if [ -z "$RESOLVED" ]; then
+              RESOLVED="$(git ls-remote origin "refs/heads/$TARGET_SHA" | head -1 | cut -f1 || true)"
+            fi
+            if [ -z "$RESOLVED" ]; then
+              say "ls-remote по «$TARGET_SHA» ничего не вернул — в SI-MCP такой цели нет"
+              exit 9
+            fi
+            say "ls-remote «$TARGET_SHA» → $RESOLVED"
+          fi
+          if ! git cat-file -e "$RESOLVED^{commit}" 2>/dev/null; then
+            git fetch -q origin "$RESOLVED" 2>/dev/null || true
+          fi
+          git checkout -q --detach "$RESOLVED" || { say "CHECKOUT НЕ УДАЛСЯ (код $?): $RESOLVED"; exit 8; }
+          HEAD_SHA="$(git rev-parse HEAD)"
+          say "head: $HEAD_SHA | $(git log -1 --format=%s | cut -c1-64)"
+          if [ "$HEAD_SHA" != "$RESOLVED" ]; then
+            say "HEAD MISMATCH: получили $HEAD_SHA, хотели $RESOLVED"
             exit 5
           fi
           if [ ! -f scripts/check-env.sh ]; then
-            say "НА ЭТОМ SHA файла scripts/check-env.sh нет — чинк не с этим коммитом"
+            say "НА ЭТОМ КОММИТЕ файла scripts/check-env.sh нет — чинк приехал не тем коммитом"
             exit 6
           fi
           rm -f "$RUNNER_TEMP/.ssh/id_deploy"
+          say "ключ удалён из $RUNNER_TEMP/.ssh, чинк на месте ($(wc -c < scripts/check-env.sh) байт)"
 
       - name: 2. Прогнать чинк окружения из проверяемого дерева
         run: |
@@ -121,6 +150,8 @@ jobs:
           bash scripts/check-env.sh 2>&1 | tee "$RUNNER_TEMP/check-env.log"
           rc=${PIPESTATUS[0]}
           echo "CHECK_ENV_EXIT=$rc" >> "$GITHUB_ENV"
+          oneline="$(tr '\n' '|' < "$RUNNER_TEMP/check-env.log" | tr -d '`%()' | cut -c1-460)"
+          printf '::%s::check-env rc=%s · %s\n' "$([ "$rc" -eq 0 ] && echo notice || echo warning)" "$rc" "$oneline"
           {
             echo
             echo '```'
