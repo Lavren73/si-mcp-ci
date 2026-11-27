@@ -34,15 +34,15 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: si-mcp-server-verify-${{ github.event.inputs.sha }}
-  cancel-in-progress: false
+  group: si-mcp-server-verify-${{ github.event.inputs.sha }}-${{ github.actor }}
+  cancel-in-progress: true
 jobs:
   verify:
     name: mvn verify на hosted
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     env:
-      TARGET_SHA: ${{ github.event.inputs.sha }}
+      TARGET_SHA: ${{ github.event.inputs.sha }}-${{ github.actor }}
       GOAL: ${{ github.event.inputs.goal }}
       PROFILE: ${{ github.event.inputs.profile }}
       LANG: C.UTF-8
@@ -262,7 +262,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: maven-log-${{ github.event.inputs.sha }}
+          name: maven-log-${{ github.event.inputs.sha }}-${{ github.actor }}
           path: ${{ runner.temp }}/diagnostics/maven.log
           if-no-files-found: error
           retention-days: 1
@@ -271,7 +271,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: surefire-reports-${{ github.event.inputs.sha }}
+          name: surefire-reports-${{ github.event.inputs.sha }}-${{ github.actor }}
           path: ${{ runner.temp }}/diagnostics/surefire-reports/
           if-no-files-found: error
           retention-days: 1

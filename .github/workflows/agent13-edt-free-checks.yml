@@ -10,7 +10,7 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: si-mcp-edt-free-${{ inputs.sha }}
+  group: si-mcp-edt-free-${{ inputs.sha }}-${{ github.actor }}
   cancel-in-progress: true
 jobs:
   checks:
@@ -21,9 +21,9 @@ jobs:
       fail-fast: false
       max-parallel: 2
       matrix:
-        check: [client, text, gitleaks, scripts, docs, form-skd, bsl]
+        check: [client, text, gitleaks, scripts, docs, form-skd, bsl, contract, powershell, server, snapshot]
     env:
-      TARGET_SHA: ${{ inputs.sha }}
+      TARGET_SHA: ${{ inputs.sha }}-${{ github.actor }}
       LANG: C.UTF-8
       LC_ALL: C.UTF-8
     steps:
@@ -39,7 +39,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: Lavren73/SI-MCP
-          ref: ${{ inputs.sha }}
+          ref: ${{ inputs.sha }}-${{ github.actor }}
           ssh-key: ${{ secrets.SI_MCP_DEPLOY_KEY }}
           persist-credentials: false
           fetch-depth: 0
@@ -54,10 +54,10 @@ jobs:
         with:
           python-version: '3.12'
       - name: Install Python test dependencies
-        if: matrix.check == 'client' || matrix.check == 'form-skd'
+        if: matrix.check == 'client' || matrix.check == 'form-skd' || matrix.check == 'contract'
         run: python -m pip install --quiet --disable-pip-version-check pytest requests pyyaml
       - uses: actions/setup-java@v4
-        if: matrix.check == 'scripts'
+        if: matrix.check == 'scripts' || matrix.check == 'server'
         with:
           distribution: temurin
           java-version: '17'
@@ -168,3 +168,78 @@ jobs:
           rc=$?
           echo "BSL_CORPUS_EXIT=$rc"
           [ "$rc" -eq 0 ]
+      - name: MCP contract tests (no EDT)
+        if: matrix.check == 'contract'
+        shell: bash
+        run: |
+          set +e
+          python -m pytest -q source/tests/mcp/test_mcp_contract.py > "$RUNNER_TEMP/mcp-contract.log" 2>&1
+          rc=$?
+          python - "$RUNNER_TEMP/mcp-contract.log" <<'PY'
+          import re,sys
+          text=open(sys.argv[1],encoding='utf-8',errors='replace').read()
+          m=re.search(r'(\d+ passed(?:, \d+ failed)?(?:, \d+ skipped)?(?: in [0-9.]+s)?)',text)
+          print('MCP_CONTRACT_SUMMARY='+ (m.group(1) if m else 'unavailable'))
+          PY
+          echo "MCP_CONTRACT_EXIT=$rc"
+          [ "$rc" -eq 0 ]
+      - name: PowerShell EDT-update unit test (mock-only, no EDT)
+        if: matrix.check == 'powershell'
+        shell: bash
+        run: |
+          set +e
+          pwsh -NoLogo -NoProfile -File source/server/scripts/tests/test_edt_selfupdate.ps1 > "$RUNNER_TEMP/powershell.log" 2>&1
+          rc=$?
+          echo "POWERSHELL_TEST_EXIT=$rc"
+          [ "$rc" -eq 0 ]
+      - name: Install Xvfb for the hosted Maven test suite
+        if: matrix.check == 'server'
+        shell: bash
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq xvfb
+      - name: Install pinned Maven 3.9.9
+        if: matrix.check == 'server'
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL --connect-timeout 20 --max-time 300 -o "$RUNNER_TEMP/maven.tar.gz" https://archive.apache.org/dist/maven/maven-3/3.9.9/binaries/apache-maven-3.9.9-bin.tar.gz
+          mkdir -p "$RUNNER_TEMP/maven"
+          tar -xzf "$RUNNER_TEMP/maven.tar.gz" -C "$RUNNER_TEMP/maven" --strip-components=1
+          echo "$RUNNER_TEMP/maven/bin" >> "$GITHUB_PATH"
+      - name: Server Maven verify
+        if: matrix.check == 'server'
+        shell: bash
+        env:
+          MAVEN_OPTS: -Xmx3g
+        run: |
+          set +e
+          xvfb-run --auto-servernum mvn -B -ntp -Dstyle.color=never -f source/server/pom.xml verify > "$RUNNER_TEMP/server-maven.log" 2>&1
+          rc=$?
+          python - "$RUNNER_TEMP/server-maven.log" <<'PY'
+          import re,sys
+          text=open(sys.argv[1],encoding='utf-8',errors='replace').read()
+          print('MAVEN_VERDICT='+ ('BUILD SUCCESS' if 'BUILD SUCCESS' in text else 'BUILD FAILURE' if 'BUILD FAILURE' in text else 'unavailable'))
+          counts=re.findall(r'Tests run: [^\r\n]+',text)
+          print('SUREFIRE_LINES='+str(len(counts)))
+          PY
+          echo "SERVER_VERIFY_EXIT=$rc"
+          [ "$rc" -eq 0 ]
+      - name: Snapshot packaging smoke test (private output not uploaded)
+        if: matrix.check == 'snapshot'
+        shell: bash
+        run: |
+          set -euo pipefail
+          SHA=$(git -C source rev-parse HEAD)
+          git -C source archive --format=zip --prefix="SI-MCP-$SHA/" -o "$RUNNER_TEMP/snapshot.zip" "$SHA"
+          git -C source bundle create "$RUNNER_TEMP/history.bundle" --all
+          git -C source bundle verify "$RUNNER_TEMP/history.bundle" >/dev/null 2>&1
+          python - "$SHA" "$RUNNER_TEMP/snapshot.zip" "$RUNNER_TEMP/history.bundle" <<'PY'
+          import sys,zipfile
+          z=zipfile.ZipFile(sys.argv[2]);bad=z.testzip()
+          if bad: raise SystemExit('ZIP integrity failed')
+          print('SNAPSHOT_SHA='+sys.argv[1])
+          print('SNAPSHOT_FILE_COUNT='+str(len([n for n in z.namelist() if not n.endswith('/')])) )
+          print('SNAPSHOT_PACKAGING=valid')
+          PY
+          rm -f "$RUNNER_TEMP/snapshot.zip" "$RUNNER_TEMP/history.bundle"
