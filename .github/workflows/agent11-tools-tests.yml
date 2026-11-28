@@ -1,0 +1,109 @@
+name: '№11 — тесты tools/ SI-MCP на точной голове (+ RED на базе)'
+# Кто:    участник №11 (агент si-mcp-agent).
+# Когда:  28.11.2026.
+# Что:    hosted-прогон тестов инструментов из корня SI-MCP (`tests/…`) на точном SHA; при заданной
+#         базе — тот же тест против файла инструмента из базы (ожидается красный: тест ловит дефект).
+# Почему:  тесты верхнего `tests/` не входят ни в один существующий workflow домика, а CI в самом
+#         SI-MCP не стартует (O-196). Первый потребитель — задача SI-MCP #674 (F-11 из #668).
+# Публичный репозиторий: артефакты не грузим, печатаем только счётчики, коды и хеши.
+on:
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: 'Точный SHA SI-MCP (голова)'
+        required: true
+      base_sha:
+        description: 'SHA базы для RED-проверки (пусто — пропустить)'
+        required: false
+        default: ''
+      tests:
+        description: 'Пути тестов через пробел'
+        required: true
+        default: 'tests/test_pre_push_root.py'
+      tool:
+        description: 'Инструмент, который тест берёт из PRE_PUSH_SCRIPT (для RED на базе)'
+        required: true
+        default: 'tools/проверить-перед-пушем.py'
+permissions:
+  contents: read
+concurrency:
+  group: agent11-tools-tests-${{ github.event.inputs.sha }}
+  cancel-in-progress: false
+jobs:
+  tools-tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      TARGET_SHA: ${{ github.event.inputs.sha }}
+      BASE_SHA: ${{ github.event.inputs.base_sha }}
+      TESTS: ${{ github.event.inputs.tests }}
+      TOOL: ${{ github.event.inputs.tool }}
+      LANG: C.UTF-8
+      LC_ALL: C.UTF-8
+    steps:
+      - name: 1. Приватный исходник SI-MCP на точном SHA (deploy key)
+        env:
+          DEPLOY_KEY: ${{ secrets.SI_MCP_DEPLOY_KEY }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/.ssh" && chmod 700 "$RUNNER_TEMP/.ssh"
+          if printf '%s' "$DEPLOY_KEY" | grep -q 'BEGIN [A-Z ]*PRIVATE KEY'; then
+            printf '%s\n' "$DEPLOY_KEY" > "$RUNNER_TEMP/.ssh/id_deploy"; chmod 600 "$RUNNER_TEMP/.ssh/id_deploy"
+            ssh-keyscan -t rsa,ecdsa,ed25519 github.com > "$RUNNER_TEMP/.ssh/known_hosts" 2>/dev/null
+            GIT_SSH_COMMAND="ssh -i $RUNNER_TEMP/.ssh/id_deploy -o UserKnownHostsFile=$RUNNER_TEMP/.ssh/known_hosts -o IdentitiesOnly=yes" \
+              git clone -q --no-checkout git@github.com:Lavren73/SI-MCP.git "$RUNNER_TEMP/src"
+          else
+            git clone -q --no-checkout "https://x-access-token:${DEPLOY_KEY}@github.com/Lavren73/SI-MCP.git" "$RUNNER_TEMP/src"
+          fi
+          shred -u "$RUNNER_TEMP/.ssh/id_deploy" 2>/dev/null || rm -f "$RUNNER_TEMP/.ssh/id_deploy"
+          cd "$RUNNER_TEMP/src"
+          git -c advice.detachedHead=false checkout -q --detach "$TARGET_SHA"
+          HEAD_SHA=$(git rev-parse HEAD); echo "HEAD_SHA=$HEAD_SHA"
+          test "$HEAD_SHA" = "$TARGET_SHA" || { echo "SHA MISMATCH"; exit 1; }
+          git -c core.quotePath=false ls-files -s -- "$TOOL" $TESTS
+          if [ -n "$BASE_SHA" ]; then
+            git cat-file -e "$BASE_SHA^{commit}" && echo "BASE_SHA=$(git rev-parse "$BASE_SHA")"
+          fi
+
+      - name: 2. Окружение
+        run: |
+          set -euo pipefail
+          python3 -V; git --version
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install -q --disable-pip-version-check pytest==9.0.3
+          "$RUNNER_TEMP/venv/bin/pytest" --version
+
+      - name: 3. GREEN на голове
+        run: |
+          set -uo pipefail
+          cd "$RUNNER_TEMP/src"
+          "$RUNNER_TEMP/venv/bin/python" -m pytest -q -rA --tb=short -p no:cacheprovider $TESTS 2>&1 | tail -20
+          code=${PIPESTATUS[0]}
+          echo "HEAD_EXIT=$code"
+          exit "$code"
+
+      - name: 4. RED на базе (тот же тест, инструмент из базы)
+        if: env.BASE_SHA != ''
+        run: |
+          set -uo pipefail
+          cd "$RUNNER_TEMP/src"
+          git show "$BASE_SHA:$TOOL" > "$RUNNER_TEMP/base-tool.py"
+          sha256sum "$RUNNER_TEMP/base-tool.py" "$TOOL"
+          PRE_PUSH_SCRIPT="$RUNNER_TEMP/base-tool.py" "$RUNNER_TEMP/venv/bin/python" -m pytest -q -rA --tb=line -p no:cacheprovider $TESTS 2>&1 | tail -20
+          code=${PIPESTATUS[0]}
+          echo "BASE_EXIT=$code (ожидается ненулевой: тест должен ловить дефект базы)"
+          test "$code" -ne 0 || { echo "BASE НЕ КРАСНЫЙ — тест дефект не ловит"; exit 1; }
+
+      - name: 5. Сам инструмент в git worktree (живой сценарий F-11)
+        run: |
+          set -uo pipefail
+          cd "$RUNNER_TEMP/src"
+          git worktree add -q --detach "$RUNNER_TEMP/wt" "$TARGET_SHA"
+          head -c 80 "$RUNNER_TEMP/wt/.git"; echo
+          cd "$RUNNER_TEMP/wt"
+          python3 "$TOOL" --без-тестов > "$RUNNER_TEMP/wt.out" 2> "$RUNNER_TEMP/wt.err"
+          code=$?
+          sed 's/\x1b\[[0-9]*m//g' "$RUNNER_TEMP/wt.out"; echo "--- stderr:"; cat "$RUNNER_TEMP/wt.err"
+          echo "WORKTREE_EXIT=$code"
+          if grep -q 'Это не корень репозитория' "$RUNNER_TEMP/wt.err"; then echo "WORKTREE: ОТКАЗ"; exit 1; fi
+          echo "WORKTREE: корень признан"
