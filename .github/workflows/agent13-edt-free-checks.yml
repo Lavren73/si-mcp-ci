@@ -42,14 +42,14 @@ concurrency:
 jobs:
   checks:
     name: 'Hosted EDT-free: ${{ matrix.check }}'
-    if: ${{ (inputs.check || 'all') == 'all' || inputs.check == matrix.check }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     strategy:
       fail-fast: false
       max-parallel: 2
       matrix:
-        check: [client, text, gitleaks, scripts, docs, form-skd, bsl, contract, powershell, server, snapshot]
+        # было: check: [client, text, gitleaks, scripts, docs, form-skd, bsl, contract, powershell, server, snapshot]
+        check: ${{ fromJSON((!inputs.check || inputs.check == 'all') && '["client","text","gitleaks","scripts","docs","form-skd","bsl","contract","powershell","server","snapshot"]' || format('["{0}"]', inputs.check)) }}
     env:
       TARGET_SHA: ${{ inputs.sha }}
       LANG: C.UTF-8
