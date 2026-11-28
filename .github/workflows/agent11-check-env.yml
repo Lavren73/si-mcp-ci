@@ -22,6 +22,11 @@
 #  - шаг 2 дублирует вывод чинка аннотацией: её читает публичный
 #    GET /repos/<домик>/check-runs/<job>/annotations, тогда как логи шагов
 #    интеграции недоступны (401 на /actions/jobs/<id>/logs).
+#  - A1-0494: hosted-прогон дополнительно вызывает check-env-selftest.sh (P-4).
+# Кто: №13. Когда: 28.11.2026. Что: selftest добавлен в этот workflow после реального check-env.
+# Почему: локально фиксируются П-1/П-2, теперь те же сценарии исполняются на hosted; #659.
+# Было: домик прогонял только check-env.sh, самотест не запускался автоматически.
+# Основание: handoff №12 к №13, комментарий #7240227362, пункт П-4.
 #
 # Честность вывода: чинк возвращает 1, если хотя бы один инструмент отсутствует
 # или не отвечает, и workflow честно краснеет. Пропуск не превращается в успех.
@@ -177,5 +182,22 @@ jobs:
             else
               echo "**Как читать:** код $rc — строка \`НЕ ХВАТАЕТ\` означает отсутствие в PATH, \`НЕ ОТВЕЧАЕТ\` — бинарник есть, но \`--version\` вернул ненулевой код. Пропуск инструмента зелёным не считается."
             fi
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$rc"
+
+      - name: 3. Самотест на ложных окружениях (П-1/П-2)
+        run: |
+          set +e
+          cd "$RUNNER_TEMP/src"
+          bash scripts/check-env-selftest.sh > "$RUNNER_TEMP/check-env-selftest.log" 2>&1
+          rc=$?
+          cat "$RUNNER_TEMP/check-env-selftest.log"
+          echo "CHECK_ENV_SELFTEST_EXIT=$rc"
+          {
+            echo
+            echo '### check-env selftest (из точной головы SI-MCP)'
+            echo '```'
+            cat "$RUNNER_TEMP/check-env-selftest.log"
+            echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
           exit "$rc"
