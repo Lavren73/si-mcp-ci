@@ -247,13 +247,21 @@ jobs:
         shell: bash
         run: |
           set +e
-          python -m pytest -q source/tests/mcp/test_mcp_contract.py > "$RUNNER_TEMP/mcp-contract.log" 2>&1
+          # Файл гоняем КАК СКРИПТ, а не через pytest: check() копит провалы в списке
+          # и не поднимает исключение, поэтому под pytest файл всегда выглядел как
+          # «3 passed» с кодом 0 — гейт по контракту MCP ничего не проверял (#715).
+          # В режиме скрипта печатается фактическое число выполненных проверок.
+          python3 source/tests/mcp/test_mcp_contract.py > "$RUNNER_TEMP/mcp-contract.log" 2>&1
           rc=$?
           python - "$RUNNER_TEMP/mcp-contract.log" <<'PY'
           import re,sys
           text=open(sys.argv[1],encoding='utf-8',errors='replace').read()
-          m=re.search(r'(\d+ passed(?:, \d+ failed)?(?:, \d+ skipped)?(?: in [0-9.]+s)?)',text)
-          print('MCP_CONTRACT_SUMMARY='+ (m.group(1) if m else 'unavailable'))
+          m=re.search(r'(\d+) passed, (\d+) failed',text)
+          if m:
+              print('MCP_CONTRACT_SUMMARY=%s passed, %s failed' % (m.group(1), m.group(2)))
+          else:
+              m2=re.search(r'(\d+ passed(?:, \d+ failed)?(?:, \d+ skipped)?(?: in [0-9.]+s)?)',text)
+              print('MCP_CONTRACT_SUMMARY='+ (m2.group(1) if m2 else 'unavailable'))
           PY
           echo "MCP_CONTRACT_EXIT=$rc"
           [ "$rc" -eq 0 ]
