@@ -5,10 +5,11 @@ name: '№13 — EDT-free проверки SI-MCP на hosted (точный SHA)
 # Что:    1) добавлен workflow_call и вход check (all по умолчанию) для маршрутизации workflow SI-MCP без ubuntu-*;
 #         2) починена установка gitleaks v8.24.3 (модуль github.com/zricethezav/gitleaks/v8) и передача .gitleaksignore;
 #         3) починен парсер сводки pytest -q в client + подключена проверка baseline subTest (213);
-#         4) добавлена безопасная сводка кодов проверок run-gates.sh без вывода приватных путей.
+#         4) добавлена безопасная сводка кодов проверок run-gates.sh без вывода приватных путей;
+#         5) серверный job суммирует tests/failures/errors/skipped из Surefire/Failsafe XML без имён тестов.
 # Почему: в матрице #46053956569 на 57e8ca96 gitleaks падал на go.mod пути, client печатал CLIENT_TESTS_SUMMARY=unavailable,
-#         а scripts не сообщал имя покрасневшего гейта.
-# Основание: issue #660, наряд А1-0487.
+#         scripts не сообщал имя покрасневшего гейта; #678 требует сравнить тестовые счётчики головы и базы.
+# Основание: issue #660 / А1-0487; issue #678 / А1-0494.
 
 on:
   workflow_dispatch:
@@ -288,15 +289,39 @@ jobs:
           set +e
           xvfb-run --auto-servernum mvn -B -ntp -Dstyle.color=never -f source/server/pom.xml verify > "$RUNNER_TEMP/server-maven.log" 2>&1
           rc=$?
-          python - "$RUNNER_TEMP/server-maven.log" <<'PY'
-          import re,sys
+          python - "$RUNNER_TEMP/server-maven.log" source/server <<'PY'
+          # Кто: №13, 28.11.2026. Что: агрегировать только четыре числовых счётчика JUnit.
+          # Почему: #678 требует сравнить passed/failed/errors/skipped на точной голове и базе;
+          #      имена классов/кейсов и содержимое отчётов в публичный домик не выводятся.
+          # Основание: issue #678, критерий 4.
+          # Было: SUREFIRE_LINES считал строки Maven, но не сообщал общее число тестов.
+          import pathlib,re,sys,xml.etree.ElementTree as ET
           text=open(sys.argv[1],encoding='utf-8',errors='replace').read()
+          source=pathlib.Path(sys.argv[2])
           print('MAVEN_VERDICT='+ ('BUILD SUCCESS' if 'BUILD SUCCESS' in text else 'BUILD FAILURE' if 'BUILD FAILURE' in text else 'unavailable'))
           counts=re.findall(r'Tests run: [^\r\n]+',text)
           print('SUREFIRE_LINES='+str(len(counts)))
+          totals={'tests':0,'failures':0,'errors':0,'skipped':0}
+          xml_files=0
+          parse_errors=0
+          for path in source.rglob('TEST-*.xml'):
+              if not any(part in ('surefire-reports','failsafe-reports') for part in path.parts):
+                  continue
+              xml_files+=1
+              try:
+                  root=ET.parse(path).getroot()
+                  for key in totals:
+                      totals[key]+=int(root.attrib.get(key,'0'))
+              except (OSError,ET.ParseError,ValueError):
+                  parse_errors+=1
+          print('SERVER_TEST_COUNTS='+' '.join(f'{key}={value}' for key,value in totals.items()))
+          print(f'SERVER_TEST_XML_FILES={xml_files} SERVER_TEST_XML_PARSE_ERRORS={parse_errors}')
+          if xml_files == 0 or parse_errors:
+              raise SystemExit(2)
           PY
-          echo "SERVER_VERIFY_EXIT=$rc"
-          [ "$rc" -eq 0 ]
+          summary_rc=$?
+          echo "SERVER_VERIFY_EXIT=$rc SERVER_TEST_SUMMARY_EXIT=$summary_rc"
+          [ "$rc" -eq 0 ] && [ "$summary_rc" -eq 0 ]
       - name: Snapshot packaging smoke test (private output not uploaded)
         if: matrix.check == 'snapshot'
         shell: bash
