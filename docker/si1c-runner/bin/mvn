@@ -1,0 +1,4 @@
+#!/bin/bash
+# mvn с гарантированным JAVA_HOME (jdk17), если workflow не задал свой
+export JAVA_HOME="${JAVA_HOME:-/home/runner/jdk17}"
+exec /home/runner/maven/bin/mvn "$@"

@@ -2,6 +2,9 @@
 
 Recipe: [`hermes-si.Dockerfile`](./hermes-si.Dockerfile). Built on `nousresearch/hermes-agent:latest`.
 
+Self-hosted GitHub Actions runner image (`si1c-runner` / container `si1c-ci`):
+recipe and capture/recreate procedure in [`si1c-runner/`](./si1c-runner/) (задача SI-MCP #640 §5).
+
 ## What is baked into the image (public, no secrets)
 - Temurin **JDK 17** (`/opt/jdk-17`, as CI) + **Maven** — `mvn compile` / `mvn verify`.
 - **gh** CLI, **pnpm** (symlinked into `/usr/local/bin`).

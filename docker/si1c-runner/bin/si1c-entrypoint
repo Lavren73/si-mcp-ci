@@ -1,0 +1,8 @@
+#!/bin/bash
+set -e
+if [ -f /home/runner/actions-runner/.runner ]; then
+  cd /home/runner/actions-runner
+  exec gosu runner ./run.sh
+fi
+echo 'Runner ещё не зарегистрирован; ожидаю настройки.'
+exec sleep infinity
