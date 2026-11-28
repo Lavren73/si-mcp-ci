@@ -1,5 +1,15 @@
 name: '№13 — EDT-free проверки SI-MCP на hosted (точный SHA)'
 
+# Кто:    участник №13.
+# Когда:  28.11.2026.
+# Что:    1) добавлен workflow_call и вход check (all по умолчанию) для маршрутизации workflow SI-MCP без ubuntu-*;
+#         2) починена установка gitleaks v8.24.3 (модуль github.com/zricethezav/gitleaks/v8) и передача .gitleaksignore;
+#         3) починен парсер сводки pytest -q в client + подключена проверка baseline subTest (213);
+#         4) добавлена безопасная сводка кодов проверок run-gates.sh без вывода приватных путей.
+# Почему: в матрице #46053956569 на 57e8ca96 gitleaks падал на go.mod пути, client печатал CLIENT_TESTS_SUMMARY=unavailable,
+#         а scripts не сообщал имя покрасневшего гейта.
+# Основание: issue #660, наряд А1-0487.
+
 on:
   workflow_dispatch:
     inputs:
@@ -7,14 +17,32 @@ on:
         description: 'Точный 40-символьный SHA SI-MCP'
         required: true
         type: string
+      check:
+        description: 'Категория матрицы или all (по умолчанию all)'
+        required: false
+        default: 'all'
+        type: string
+  workflow_call:
+    inputs:
+      sha:
+        description: 'Точный 40-символьный SHA SI-MCP'
+        required: true
+        type: string
+      check:
+        description: 'Категория матрицы или all (по умолчанию all)'
+        required: false
+        default: 'all'
+        type: string
 permissions:
   contents: read
 concurrency:
-  group: si-mcp-edt-free-${{ inputs.sha }}-${{ github.actor }}
+  # было: group: si-mcp-edt-free-${{ inputs.sha }}-${{ github.actor }}
+  group: si-mcp-edt-free-${{ inputs.sha }}-${{ inputs.check || 'all' }}-${{ github.actor }}
   cancel-in-progress: true
 jobs:
   checks:
     name: 'Hosted EDT-free: ${{ matrix.check }}'
+    if: ${{ (inputs.check || 'all') == 'all' || inputs.check == matrix.check }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     strategy:
@@ -69,7 +97,12 @@ jobs:
         if: matrix.check == 'gitleaks'
         shell: bash
         run: |
-          go install github.com/gitleaks/gitleaks/v8@v8.24.3
+          # Кто: участник №13. Когда: 28.11.2026.
+          # Что: исправлен Go module path для gitleaks v8.24.3.
+          # Почему: go.mod v8.24.3 объявляет module github.com/zricethezav/gitleaks/v8 (падение job 140691814951).
+          # Основание: issue #660, наряд А1-0487.
+          # было: go install github.com/gitleaks/gitleaks/v8@v8.24.3
+          go install github.com/zricethezav/gitleaks/v8@v8.24.3
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
       - name: Client tests
         if: matrix.check == 'client'
@@ -85,14 +118,27 @@ jobs:
             test_rc=99
           fi
           echo "INSTALLER_EXIT=$build_rc CLIENT_TESTS_EXIT=$test_rc"
+          # Кто: участник №13. Когда: 28.11.2026.
+          # Что: парсер сводки pytest -q поддерживает failed перед passed, subtests passed и отсутствие рамок ===,
+          #      плюс вызывает tools/pytest_subtests.py --baseline 213 (#613).
+          # Почему: прежняя регулярка требовала рамки === и passed первым полем, возвращая CLIENT_TESTS_SUMMARY=unavailable (job 140691814999).
+          # Основание: issue #660, наряд А1-0487.
+          # было: lines=re.findall(r'(?m)^=+\s*(\d+\s+passed(?:,\s*\d+\s+(?:failed|skipped|error|errors))*(?:,\s*[0-9.]+s)?)\s*=+$',text)
           python - "$RUNNER_TEMP/client-tests.log" <<'PY'
           import re,sys
           try: text=open(sys.argv[1],encoding='utf-8',errors='replace').read()
           except OSError: text=''
-          lines=re.findall(r'(?m)^=+\s*(\d+\s+passed(?:,\s*\d+\s+(?:failed|skipped|error|errors))*(?:,\s*[0-9.]+s)?)\s*=+$',text)
+          pat=re.compile(r'(?m)^=*\s*((?:\d+\s+(?:failed|passed|skipped|xfailed|xpassed|warnings?|errors?|subtests?\s+passed)(?:,\s*)?)+(?:\s+in\s+[0-9.]+s(?:\s*\([0-9:]+\))?)?)\s*=*$')
+          lines=[m.group(1).strip() for m in pat.finditer(text)]
           print('CLIENT_TESTS_SUMMARY='+ (lines[-1] if lines else 'unavailable'))
           PY
-          [ "$build_rc" -eq 0 ] && [ "$test_rc" -eq 0 ]
+          subtest_rc=0
+          if [ "$build_rc" -eq 0 ] && [ -f tools/pytest_subtests.py ]; then
+            python tools/pytest_subtests.py "$RUNNER_TEMP/client-tests.log" --baseline 213
+            subtest_rc=$?
+            echo "SUBTEST_CHECK_EXIT=$subtest_rc"
+          fi
+          [ "$build_rc" -eq 0 ] && [ "$test_rc" -eq 0 ] && [ "$subtest_rc" -eq 0 ]
       - name: Clean text gate
         if: matrix.check == 'text'
         shell: bash
@@ -107,7 +153,16 @@ jobs:
         shell: bash
         run: |
           set +e
-          gitleaks git --redact --report-format json --report-path "$RUNNER_TEMP/gitleaks.json" source > "$RUNNER_TEMP/gitleaks.log" 2>&1
+          # Кто: участник №13. Когда: 28.11.2026.
+          # Что: передача --gitleaks-ignore-path source/.gitleaksignore при наличии файла в приватном дереве.
+          # Почему: скан вызывается из родительского каталога по пути source, явный флаг гарантирует учёт исключений не-секретов.
+          # Основание: issue #660, наряд А1-0487.
+          # было: gitleaks git --redact --report-format json --report-path "$RUNNER_TEMP/gitleaks.json" source > "$RUNNER_TEMP/gitleaks.log" 2>&1
+          ignore_args=()
+          if [ -f source/.gitleaksignore ]; then
+            ignore_args=(--gitleaks-ignore-path source/.gitleaksignore)
+          fi
+          gitleaks git --redact "${ignore_args[@]}" --report-format json --report-path "$RUNNER_TEMP/gitleaks.json" source > "$RUNNER_TEMP/gitleaks.log" 2>&1
           rc=$?
           python - "$RUNNER_TEMP/gitleaks.json" <<'PY'
           import json,sys
@@ -126,6 +181,23 @@ jobs:
           gates_rc=$?
           (cd source/server/scripts/tests && python -m unittest discover -s . -p 'test_*.py') > "$RUNNER_TEMP/script-tests.log" 2>&1
           tests_rc=$?
+          # Кто: участник №13. Когда: 28.11.2026.
+          # Что: печать безопасной сводки имён/кодов проверок run-gates.sh без приватных путей и исходников.
+          # Почему: в прогоне #46053956569 (job 140691814854) выводился только SCRIPT_GATES_EXIT=1 без имени упавшей проверки.
+          # Основание: issue #660, наряд А1-0487.
+          python - "$RUNNER_TEMP/script-gates.log" <<'PY'
+          import re,sys
+          try: text=open(sys.argv[1],encoding='utf-8',errors='replace').read()
+          except OSError: text=''
+          failed=[]
+          total=0
+          for m in re.finditer(r'(?m)^([A-Za-z0-9_.-]+\.py)\s+(\d+)\s+(\S+)\s+([^\r\n]+)$',text):
+              name,code,verdict=m.group(1),int(m.group(2)),m.group(4).strip()
+              total+=1
+              if code==1:
+                  failed.append(f'{name}(rc={code},{verdict})')
+          print(f"SCRIPT_GATES_COUNT={total} SCRIPT_GATES_FAILED={','.join(failed) if failed else 'none'}")
+          PY
           echo "SCRIPT_GATES_EXIT=$gates_rc SCRIPT_TESTS_EXIT=$tests_rc"
           [ "$gates_rc" -eq 0 ] && [ "$tests_rc" -eq 0 ]
       - name: Documentation hygiene and ZIP path regression
