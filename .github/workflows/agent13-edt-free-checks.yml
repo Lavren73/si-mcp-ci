@@ -264,6 +264,11 @@ jobs:
               print('MCP_CONTRACT_SUMMARY='+ (m2.group(1) if m2 else 'unavailable'))
           PY
           echo "MCP_CONTRACT_EXIT=$rc"
+          # Тот же файл через pytest — замер ради доказательства, что после правки
+          # теста (#717) и этот путь честный: на старой версии он давал «3 passed».
+          python3 -m pytest -q source/tests/mcp/test_mcp_contract.py > "$RUNNER_TEMP/mcp-contract-pytest.log" 2>&1
+          echo "MCP_CONTRACT_PYTEST_EXIT=$?"
+          tail -2 "$RUNNER_TEMP/mcp-contract-pytest.log"
           [ "$rc" -eq 0 ]
       - name: PowerShell EDT-update unit test (mock-only, no EDT)
         if: matrix.check == 'powershell'
