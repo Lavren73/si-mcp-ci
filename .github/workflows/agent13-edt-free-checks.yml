@@ -6,7 +6,8 @@ name: '№13 — EDT-free проверки SI-MCP на hosted (точный SHA)
 #         2) починена установка gitleaks v8.24.3 (модуль github.com/zricethezav/gitleaks/v8) и передача .gitleaksignore;
 #         3) починен парсер сводки pytest -q в client + подключена проверка baseline subTest (213);
 #         4) добавлена безопасная сводка кодов проверок run-gates.sh без вывода приватных путей;
-#         5) серверный job суммирует tests/failures/errors/skipped из Surefire/Failsafe XML без имён тестов.
+#         5) серверный job суммирует tests/failures/errors/skipped из Surefire/Failsafe XML без имён тестов;
+#         6) при сбое печатается только безопасный класс причины, не Maven-лог.
 # Почему: в матрице #46053956569 на 57e8ca96 gitleaks падал на go.mod пути, client печатал CLIENT_TESTS_SUMMARY=unavailable,
 #         scripts не сообщал имя покрасневшего гейта; #678 требует сравнить тестовые счётчики головы и базы.
 # Основание: issue #660 / А1-0487; issue #678 / А1-0494.
@@ -301,6 +302,9 @@ jobs:
           print('MAVEN_VERDICT='+ ('BUILD SUCCESS' if 'BUILD SUCCESS' in text else 'BUILD FAILURE' if 'BUILD FAILURE' in text else 'unavailable'))
           counts=re.findall(r'Tests run: [^\r\n]+',text)
           print('SUREFIRE_LINES='+str(len(counts)))
+          # Кто: №13, 28.11.2026. Что: выводить безопасный класс сбоя, не печатая Maven-лог.
+          # Почему: base #57e8 завершился без BUILD-маркера; нужен диагноз, не traceback.
+          # Основание: #678, hosted server comparison.
           totals={'tests':0,'failures':0,'errors':0,'skipped':0}
           xml_files=0
           parse_errors=0
@@ -316,6 +320,21 @@ jobs:
                   parse_errors+=1
           print('SERVER_TEST_COUNTS='+' '.join(f'{key}={value}' for key,value in totals.items()))
           print(f'SERVER_TEST_XML_FILES={xml_files} SERVER_TEST_XML_PARSE_ERRORS={parse_errors}')
+          if 'BUILD SUCCESS' in text:
+              failure_class='none'
+          elif re.search(r'command not found|No such file or directory',text,re.I):
+              failure_class='tool_launch'
+          elif re.search(r'Could not resolve|Could not transfer|Non-resolvable parent|UnknownHostException|Connection timed out',text,re.I):
+              failure_class='dependency_resolution'
+          elif re.search(r'COMPILATION ERROR|Compilation failure',text,re.I):
+              failure_class='compilation'
+          elif totals['failures'] or totals['errors']:
+              failure_class='test_failure'
+          elif 'BUILD FAILURE' in text:
+              failure_class='maven_build_failure'
+          else:
+              failure_class='no_build_marker'
+          print('MAVEN_FAILURE_CLASS='+failure_class)
           if xml_files == 0 or parse_errors:
               raise SystemExit(2)
           PY
