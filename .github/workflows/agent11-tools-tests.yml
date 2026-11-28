@@ -75,7 +75,7 @@ jobs:
 
       - name: 3. GREEN на голове
         run: |
-          set -uo pipefail
+          set +e -uo pipefail
           cd "$RUNNER_TEMP/src"
           "$RUNNER_TEMP/venv/bin/python" -m pytest -q -rA --tb=short -p no:cacheprovider $TESTS 2>&1 | tail -20
           code=${PIPESTATUS[0]}
@@ -85,7 +85,9 @@ jobs:
       - name: 4. RED на базе (тот же тест, инструмент из базы)
         if: env.BASE_SHA != ''
         run: |
-          set -uo pipefail
+          # set +e: раннер запускает bash -e, и красный pytest (ожидаемый здесь) оборвал бы шаг
+          # раньше разбора кода — №11, 28.11.2026, первый прогон 46125788826.
+          set +e -uo pipefail
           cd "$RUNNER_TEMP/src"
           git show "$BASE_SHA:$TOOL" > "$RUNNER_TEMP/base-tool.py"
           sha256sum "$RUNNER_TEMP/base-tool.py" "$TOOL"
@@ -96,7 +98,7 @@ jobs:
 
       - name: 5. Сам инструмент в git worktree (живой сценарий F-11)
         run: |
-          set -uo pipefail
+          set +e -uo pipefail
           cd "$RUNNER_TEMP/src"
           git worktree add -q --detach "$RUNNER_TEMP/wt" "$TARGET_SHA"
           head -c 80 "$RUNNER_TEMP/wt/.git"; echo
