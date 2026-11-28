@@ -109,3 +109,21 @@ jobs:
           echo "WORKTREE_EXIT=$code"
           if grep -q 'Это не корень репозитория' "$RUNNER_TEMP/wt.err"; then echo "WORKTREE: ОТКАЗ"; exit 1; fi
           echo "WORKTREE: корень признан"
+
+      - name: 6. Тот же инструмент в обычном клоне (контроль для шага 5)
+        # №11, 28.11.2026: в прогоне 46125855693 шаг «Компиляция сервера» в worktree дал FAIL
+        # (PluginManagerException). Чтобы отличить «worktree ломает сборку» от «сборка падает везде»,
+        # тот же инструмент гоняем в основном клоне и печатаем хвост mvn у обоих.
+        if: always()
+        run: |
+          set +e -uo pipefail
+          cd "$RUNNER_TEMP/src"
+          python3 "$TOOL" --без-тестов > "$RUNNER_TEMP/clone.out" 2> "$RUNNER_TEMP/clone.err"
+          echo "CLONE_EXIT=$?"
+          sed 's/\x1b\[[0-9]*m//g' "$RUNNER_TEMP/clone.out"
+          for d in "$RUNNER_TEMP/src" "$RUNNER_TEMP/wt"; do
+            [ -d "$d/server" ] || continue
+            echo "=== mvn compile в $d"
+            (cd "$d/server" && mvn -B -ntp -q -DskipTests compile > "$RUNNER_TEMP/mvn.log" 2>&1; echo "MVN_EXIT=$?")
+            grep -E '^\[ERROR\]' "$RUNNER_TEMP/mvn.log" | head -8
+          done
